@@ -1,0 +1,154 @@
+# =============================================================================
+# detector.yaml — NN 与传统灯条检测器、位姿估计
+#
+# 检测链选择的总控开关在 gimbal_pipeline.yaml 的 global.detector_impl
+# （"nn" | "traditional" | "auto"）。package:// 路径经 ament_index_cpp
+# 兼容 shim 解析到检测器资产目录。
+# =============================================================================
+detector:
+  # impl 已移至总控 gimbal_pipeline.yaml global.detector_impl
+  backend:
+    type: "onnxruntime"
+    device: "cuda"
+    precision: "fp16"
+    model_path: "package://armor_detector_nn/model/RobotDetectionModel/0708.onnx"
+    engine_path: "package://armor_detector_nn/model/RobotDetectionModel/0708.onnx"
+    input_name: "images"
+    output_names: ["output"]
+    warmup_iterations: 10
+    num_threads: 2
+    allow_fallback: true
+    fallback_type: "onnxruntime"
+
+  preprocess:
+    input_width: 640
+    input_height: 640
+    input_color: "rgb"
+    normalize: true
+    mean: [0.0, 0.0, 0.0]
+    std: [255.0, 255.0, 255.0]
+    pad_value: 114.0
+
+  postprocess:
+    strategy: "robotpilots_landmark"
+    num_classes: 14
+    num_keypoints: 4
+    keypoint_dims: 2
+    bbox_offset: 0
+    class_offset: 4
+    keypoint_offset: 18
+    conf_threshold: 0.35
+    nms_threshold: 0.3
+    max_detections: 32
+    class_agnostic_nms: false
+    keypoint_remap: [0, 1, 2, 3]
+    keypoint_auto_reorder: true
+
+  label_map:
+    path: "package://armor_detector_nn/config/label_map.yaml"
+
+  quality_filter:
+    enabled: true
+    min_armor_ratio: 1.0
+    max_armor_ratio: 5.0
+    max_side_ratio: 1.5
+    max_rectangular_error_deg: 25.0
+    min_lightbar_length_px: 4.0
+    min_area_px: 40.0
+    deduplicate_enabled: true
+    duplicate_iou_threshold: 0.60
+    duplicate_keypoint_mean_dist_px: 8.0
+
+  pose:
+    pnp_method: "ippe"
+    # 板宽与仿真 mesh 一致（WEBOTS_ARMOR_BOUNDING_SIZE 0.135）；真车板为
+    # 135mm 名义值，PnP 求解按实际灯条外缘为准，按平台标定可调 0.133。
+    small_armor_width: 0.135
+    small_armor_height: 0.050
+    large_armor_width: 0.225
+    large_armor_height: 0.050
+    force_pnp_rotate_180: false
+    refiner:
+      mode: "single_yaw"
+    single_yaw:
+      max_iterations: 12
+      huber_delta: 4.0
+      pitch_deg_default: 15.0
+      roll_deg_default: 0.0
+      outpost_pitch_sign: true
+    gate:
+      max_raw_reproj_error: 4.0
+      max_reproj_error: 5.0
+      max_pose_delta_m: 0.35
+      max_yaw_delta_deg: 35.0
+      require_finite: true
+
+  tracker:
+    strategy: "internal_iou"
+    iou_threshold: 0.20
+    max_missed: 15
+    min_hits: 2
+    max_center_dist_px: 180
+
+  runtime:
+    color_filter_source: "model"
+
+# --- Traditional light-bar detector (armor_detector port, ROS-free) ---
+# Used when detector.impl is "traditional", or as the fallback chain when
+# detector.impl is "auto" and the NN backend fails to initialize. Pose
+# estimation reuses the shared `detector.pose` adapter settings above.
+# Keypoints come out of the light-bar geometry + PCA corner refinement, so
+# the gestalt keypoint upscale (bridge.gestalt.sim_quad_scale) is NOT applied
+# to this chain.
+
+  # NN 关键点角点精化（sp_vision 式混合）：在每块检测板的局部 ROI 内重跑
+  # 传统灯条拟合，几何校验通过才替换关键点；失败保留 NN 关键点，光照/模糊/
+  # 遮挡等极端环境下行为与未开启完全一致（非单一环境过拟合设计）。
+  corner_refine:
+    enabled: true
+    method: "full_lightbar_roi"   # minAreaRect 灯条重拟合（鲁棒）；split_pca 为备选
+    time_budget_ms: 2.0
+    binary_threshold: 0.0         # 0=OTSU 自适应亮度阈值，跨光照环境泛化；>0 为固定阈值
+    # NN 关键点在远距/模糊下本身有较大误差，"与 NN 的位移"门不能误杀有效修正，
+    # 真正的安全网是灯条几何约束与 match 距离（见下）。
+    max_corner_shift_px: 0.0      # 0=不限制
+    max_mean_corner_shift_px: 0.0
+    max_refined_center_shift_px: 0.0
+    min_refine_quality: 0.0
+    # 灯条对几何与匹配约束（安全网）
+    full_roi_expand_ratio: 1.45
+    min_contour_area_px: 6.0
+    min_lightbar_length_px: 6.0
+    min_lightbar_ratio: 1.4
+    max_lightbar_ratio: 20.0
+    max_lightbar_angle_error_deg: 45.0
+    max_rectangular_error_deg: 25.0
+    max_side_ratio: 2.2
+    max_lightbar_match_error_px: 26.0
+    max_pair_center_shift_px: 45.0
+
+detector_traditional:
+  # Enemy armor color: "red" | "blue". Empty => infer from the transport path
+  # (webots => red, gestalt => bridge.gestalt.enemy_color).
+  enemy_color: ""
+  # Sim plate lights are dimmer than real overexposed LEDs (frame gray peak
+  # ~143); 160 suits real-camera images, the webots sim needs ~100.
+  binary_thres: 90
+  light:
+    min_ratio: 0.08
+    max_ratio: 0.4
+    max_angle: 40.0
+    color_diff_thresh: 25
+  armor:
+    min_light_ratio: 0.6
+    min_small_center_distance: 0.8
+    max_small_center_distance: 3.2
+    min_large_center_distance: 3.2
+    max_large_center_distance: 5.0
+    max_angle: 35.0
+  classifier_threshold: 0.7
+  # "negative" 过滤误检；outpost 在整车特殊处理完成前一并屏蔽。
+  ignore_classes: ["negative", "outpost"]
+  use_pca: true
+  model_path: "package://armor_detector_nn/model/lenet.onnx"
+  label_path: "package://armor_detector_nn/model/lenet_labels.txt"

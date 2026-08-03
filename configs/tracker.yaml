@@ -1,0 +1,437 @@
+# =============================================================================
+# tracker.yaml — 跟踪/滤波/结构/输出平滑 + ros-free 跟踪防抖覆盖
+#
+# 跟踪器实现与后端选择在总控 gimbal_pipeline.yaml（tracker.implementation、
+# norm4_v3.backend_config）。ros-free 规范段名 vehicle_tracker（norm4_v3 为
+# 遗留别名，参数层自动回退）。
+#
+# 文件结构：
+#   gimbal_pipeline.ros__parameters   跟踪主参数（ROS 风格，参数层读取）
+#   tracking                          ros-free 跟踪防抖覆盖（bringup 直接读取）
+#
+# 2026-07-26 清理：删除 ROS 仓移植遗留的死配置（entropy/binder/norm4_v2/
+# external_targets/panel_mismatch/outpost v2 等零消费段），保留项均有运行
+# 时代码消费；休眠后端（ukf_v1/ukf_v2）参数保留以便切换后端时调参。
+# =============================================================================
+gimbal_pipeline:
+  ros__parameters:
+    enable_oscillation_detection: false  # 跟踪抖动检测开关
+    # 结构初值仅为种子，实际结构由观测在线学习。对称 0.20m 与 sp_vision_25
+    # 普通四板一致，避免旧 r1=0.15 种子自带的 5cm 中心偏差。
+    default_r1: 0.20                     # 初始半径1(m)
+    default_r2: 0.20                     # 初始半径2(m)
+    # 结构不可观（长期单板）时使用车型先验；双板证据出现后会在线修正。
+    default_dza: 0.03                    # 初始高低板差(m)
+    robot_description:
+      strict_unknown_reject: true        # 严格拒绝未知 robot_id
+      # 普通车辆保持 Z/yaw 主导投影；仅当 center_pose 姿态与角速度来自可信
+      # 标定源时才对指定 id/车型启用 full_se3。
+      default_projection_mode: "yaw_plane" # yaw_plane | full_se3
+      full_se3_ids: ["big_buff", "small_buff"]
+
+    # =========================
+    # UKF 公共参数（仅 ukf_v1/ukf_v2 后端生效；当前默认后端为 inekf）
+    # =========================
+    ukf:
+      alpha: 0.001                    # UKF sigma 点分布参数，通常保持默认
+      beta: 2.0                       # 高斯分布推荐值
+      kappa: 0.0                      # 次要调节项，通常保持默认
+
+    # =========================
+    # 运动模型（全部后端共享；inekf 可用 inekf_runtime 覆盖）
+    # 典型症状->动作：
+    # - 轨迹“发虚漂移”：减小过程噪声或增大观测噪声；
+    # - 突发机动跟不住：增大过程噪声或切 Singer；
+    # - yaw 抖但位置稳：增大 yaw 观测/过程噪声。
+    # =========================
+    motion:
+      translation_model: "Singer"  # "CV"匀速 | "CA"匀加速 | "Singer"机动更鲁棒
+      cv_process_noise_vel: 1.20    # CV速度过程噪声，越大越能跟突变
+      ca_process_noise_acc: 0.1     # CA加速度噪声，过大可能导致轨迹毛刺（InEKF 经 inekf_runtime 覆盖为 8.0）
+      singer_alpha: 0.8             # Singer相关时间参数，越大速度变化越平滑
+      singer_sigma: 5.0             # 机动过程噪声，独立于结构先验（激进随机靶调节：高机动量级；R4 干净复测 DPS 235>214>177）
+      process_noise_r: 0.002         # 几何半径状态噪声
+      process_noise_dz: 0.00005      # 高低板差状态噪声
+
+    spin:
+      spin_process_noise_delta_rate: 3.50 # 面间相位变化速度噪声（自适应带宽：静止 0.3x 抑制假旋转，旋转/不确定时全额）
+      spin_process_noise_delta_acc: 45.0  # 面间相位变化加速度噪声
+
+    # =========================
+    # 通用 Tracker 生命周期参数
+    # =========================
+    tracker:
+      implementation: "norm4_v2" # 非 outpost 目标；"vehicle" 为规范名，"norm4"/"norm4_v2" 为遗留别名自动映射
+      tracking_thres: 2          # 连续命中多少帧进入TRACKING
+      reject_reset_streak_frames: 6  # 连续门控拒止帧数：到顶且当帧假设过NIS门则用当前观测重新初始化（12→6：预测器发散时更快用观测自愈，避免"歪预测器持续拒准观测"）
+      lost_thres: 20             # 约0.67s无观测后才进入LOST，短时漏检保持预测跟随
+
+    constraints:
+      min_radius: 0.12 # 物理半径下限，过大可能拒绝近身真实目标
+      max_radius: 0.3  # 物理半径上限，过小可能压制大机动估计
+      min_dz: -1.0     # 高低板差下限（dza 有符号，见 norm4_v3.ukf_v1.posterior_sanity）
+      max_dz: 1.0      # 高低板差上限
+
+    # 机动检测用于控制/预测策略切换，误报高就提高阈值，漏报高就降低阈值
+    maneuver:
+      enable: true
+      nis_threshold_single: 238.807      # 单观测NIS阈值
+      nis_threshold_dual: 4132.110       # 双观测NIS阈值
+      innov_norm_threshold_single: 0.1279 # 单观测新息范数阈值
+      innov_norm_threshold_dual: 0.0613   # 双观测新息范数阈值
+      mad_filter_enable: false            # 启用MAD去极值后再做机动判定
+      mad_window: 10                      # MAD滚动窗口
+      mad_k: 3.0                          # MAD阈值倍数
+
+    # 整车（标准4装甲）跟踪器配置。ros-free 规范段名为 vehicle_tracker（本段名作为遗留别名兼容）
+    norm4_v3:
+      ukf_v1:
+        enabled: true
+        force_rotation_ca: false
+        dual_raw_batch: true
+        sigma_pos_xy: 0.06        # 位置观测噪声(m)：增大更稳/更钝，减小更灵敏
+        sigma_pos_z: 0.08         # 纵深观测噪声(m)
+        sigma_yaw: 0.12           # yaw观测噪声(rad)，过小易引发抖动
+        dual_raw_R_scale: 1.5     # 双板观测噪声整体倍率
+        # 以下 7 键为 ukf_v1 垂向/见证/结构证据参数，历史上一直被错误写在
+        # 一个无效嵌套段里（从未生效），此处按代码实际默认显式列出：
+        vertical_dynamics_scale: 1.0   # Z/VZ/AZ 过程协方差缩放：1.0=无阻尼；InEKF 实测 0.02 在 random 格有害
+        max_vertical_speed: 0.5        # 垂向速度限幅(m/s)
+        max_vertical_acceleration: 4.0 # 垂向加速度限幅(m/s^2)
+        rotation_witness_ema_alpha: 0.10 # 旋转见证 EMA 系数：0.10 可在 5 帧内形成方向证据，同时抑制静态 PnP 抖动
+        dual_height_evidence_gain: 0.15  # 同帧双板高度差学习 dza 的增益（不经结构协方差耦合）
+        dual_height_evidence_window: 21  # 证据中值滤波窗口
+        dual_height_evidence_min_samples: 5 # 最小样本数
+        gate:
+          single_total_nis: 25.0
+          single_pos_chi2: 16.0
+          single_yaw_chi2: 9.0
+          dual_total_nis: 45.0
+          dual_each_pos_chi2: 16.0
+          dual_each_yaw_chi2: 9.0
+          # 重捕获宽容度：非 TRACKING 期间门限放宽倍数。远距 vision 观测
+          # 噪声大（换向过冲/ yaw 失真），固定门会让轨迹在 all_gate_fail 与
+          # 重初始化间永远弹跳、到不了 TRACKING。TRACKING 中的持续冲突
+          # 放宽门也复用此倍数（观测宽容度机制）。
+          init_relax: 3.0
+        single_update:
+          # 单板结构不可观，冻结 r1/r2/dza。dza 由同帧双板高度证据独立更新，
+          # 避免把移动时的 PnP 深度偏差经结构协方差耦合进中心 z/vz。
+          structural_gain_r: 0.0
+          structural_gain_dza: 0.0
+        # Structure is observable from dual panels, but a full-gain correction
+        # lets one noisy edge-on pair move r1/r2 by 5-8cm in one frame. That
+        # trips posterior_sanity and drops an otherwise valid motion update.
+        # Use a bounded learning gain; single-panel structure remains frozen.
+        dual_update:
+          structural_gain_r: 0.25
+          # dza 走上面的稳健双板高度证据，避免一次高视角双板批量更新翻转符号。
+          structural_gain_dza: 0.0
+        posterior_sanity:
+          # Close-range depth reversals can require a ~0.27m relaxed
+          # reacquisition correction. Match the existing reconstruction cap;
+          # NIS/yaw/structure gates still reject incompatible hypotheses.
+          max_center_jump: 0.30
+          max_yaw_jump: 0.80
+          min_r: 0.05
+          max_r: 0.50
+          max_r_jump: 0.05
+          # The first observed panel defines an arbitrary phase. A negative
+          # dza with swapped r1/r2 is the same layout shifted by 90 degrees.
+          min_dza: -0.15
+          max_dza: 0.15
+          max_dza_jump: 0.03
+      ukf_v2:
+        enabled: true              # 休眠备选后端；选 backend_type=ukf_v2 时生效
+      # ── InEKF (Left-Invariant Error-State EKF) 配置（当前默认后端） ──
+      # 使用左不变误差 + 体系框架创新，与 ukf_v1/ukf_v2 解耦。
+      # 关键差异:
+      #   - 创新在 body frame 定义（ν_pos = R̂⁻¹·(z_pos − h_pos)）
+      #   - H 的 yaw/radius 导数仅依赖 panel phase φ（不含 center_yaw）
+      #   - R 矩阵从世界系旋转到本体系
+      #   - NIS 在坐标变换下严格不变，Gate 阈值与 ukf_v1 保持一致
+      inekf:
+        enabled: true
+        force_rotation_ca: false
+        dual_raw_batch: true
+        sigma_pos_xy: 0.06
+        sigma_pos_z: 0.08
+        sigma_yaw: 0.12
+        dual_raw_R_scale: 1.5
+        # 垂直通道：1.0=无阻尼。0.02（ukf_v1 历史值）实测在 random 格 TRK% 下降，
+        # InEKF 暂不阻尼（评估记录见 VALIDATION.md 2026-07-25 条目）。
+        vertical_dynamics_scale: 1.0
+        max_vertical_speed: 0.5
+        max_vertical_acceleration: 4.0
+        rotation_witness_ema_alpha: 0.10
+        # 同帧双板高度差 dza 证据（移植自 ukf_v1）：0=关闭。0.15 实测 zpp
+        # 改善但 random 格 eDPS 下降，默认关闭，机制保留备查。
+        dual_height_evidence_gain: 0.0
+        dual_height_evidence_window: 21
+        dual_height_evidence_min_samples: 5
+        gate:
+          single_total_nis: 25.0
+          single_pos_chi2: 16.0
+          single_yaw_chi2: 9.0
+          dual_total_nis: 45.0
+          dual_each_pos_chi2: 16.0
+          dual_each_yaw_chi2: 9.0
+          # 注意：重捕获/持续冲突宽容门统一使用 ukf_v1.gate.init_relax
+          # （本段不再单列 init_relax，避免误以为可独立调节）。
+        single_update:
+          structural_gain_r: 0.0
+          structural_gain_dza: 0.0
+        dual_update:
+          # 与 ukf_v1 已验证值对齐：全增益修正会让单帧噪声双板一次性拉动
+          # r1/r2 5-8cm 触发 posterior_sanity；dza 交给双板高度证据/慢结构。
+          structural_gain_r: 0.25
+          structural_gain_dza: 0.0
+        posterior_sanity:
+          # 与 ukf_v1 对齐：近距纵深反转的重捕获修正需要 ~0.27m 宽容。
+          max_center_jump: 0.30
+          max_yaw_jump: 0.80
+          min_r: 0.05
+          max_r: 0.50
+          max_r_jump: 0.05
+          # 与 ukf_v1 对齐：首块可见板定义的相位是任意的，[r1,r2,dza] 与
+          # [r2,r1,-dza] 是同一布局，dza 允许有符号。
+          min_dza: -0.15
+          max_dza: 0.15
+          max_dza_jump: 0.03
+      # InEKF 专用运行时配置（仅 backend_type=inekf 时生效）
+      # 用于单独覆盖 InEKF 的运动模型/过程噪声/观测噪声 profile，不影响 ukf_v2。
+      inekf_runtime:
+        motion_profile: "ca"  # default|cv|ca|singer|yaw_ca|<motion_profile.yaml路径>
+        noise_profile: "v1"   # default|v1|ypd_ba等：v1=V1风朝向/距离自适应R（已验证最优）
+        structure_profile: "slow"  # slow|snapshot
+        translation_model: ""       # ""=继承全局 motion.translation_model
+        cv_process_noise_vel: -1.0  # -1=继承全局
+        ca_process_noise_acc: 8.0   # InEKF 机动过程噪声：继承全局 0.1 会塌陷速度先验（高难度格拒止率 11% vs ukf_v1 4%）；5.0 修复拒止风暴（v3 矩阵 1712 vs 基线 1421），8.0 在真值误差口径下对高难度格 pe 小幅改善且无代价（E1 实验，2026-07-25）
+        singer_alpha: -1.0          # -1=继承全局
+        singer_sigma: -1.0
+        process_noise_r: -1.0
+        process_noise_dz: -1.0
+        spin_process_noise_delta_rate: -1.0
+        spin_process_noise_delta_acc: -1.0
+      slow_structure:
+        enable: true
+        q_theta_r1: 1.0e-6    # 慢结构 r1/r2/dza 过程噪声（越小越稳、收敛越慢）
+        q_theta_r2: 1.0e-6
+        q_theta_dza: 5.0e-7
+        prior_r1: 0.20        # 结构先验（与 default_r1/r2 对齐）
+        prior_r2: 0.20
+        prior_dza: 0.0
+        prior_sigma_r: 0.06
+        prior_sigma_dza: 0.06
+        alpha_r1_single: 0.0  # 单板结构学习率（0=冻结，单板结构不可观）
+        alpha_r2_single: 0.0
+        alpha_dza_single: 0.0
+        alpha_r1_dual: 0.05   # 双板结构学习率
+        alpha_r2_dual: 0.05
+        alpha_dza_dual: 0.02
+        prior_pull_gain: 0.002 # 缓慢拉向先验的增益（防结构漂移）
+        min_r: 0.05
+        max_r: 0.50
+        min_dza: 0.0
+        max_dza: 0.12
+      hypothesis_selector:
+        topk: 4
+        commit_top1_only: true
+        # 当前 norm4_v2 路由实际使用 norm4_v3 后端。四块同编号装甲高速旋转时
+        # 板号假设接近等概率；位置/NIS/相位门继续负责拒绝异常。
+        min_top1_confidence: 0.15
+        min_top1_top2_margin: 0.0
+        max_reconstruction_pos_error: 0.30  # 后验重建板位与观测的最大允许误差(m)
+        # 面板切换滞回（score 裕度，0=关闭）：面板边界附近相邻面板假设
+        # 拟合优度几乎相同，top1 选择会逐帧抖动；每次翻转把板重新锚定到
+        # 90° 外，滤波器可能将隐含跳变吸收为虚假整车平移。换板假设须比原
+        # 面板假设高出该裕度才允许切换。2026-07-25 评估（实片 10rad/s 原地
+        # 旋转靶 + webots vision）：0.3/0.8 裕度消除面板抖动但 |v| p90 反而
+        # 变差（1.39/1.48 vs 基线 1.00），未启用，保留机制备查。
+        panel_switch_hysteresis: 0.0
+      warmup:
+        warmup_frames: 8            # 建轨预热帧数
+        min_settle_frames: 3        # 预热最小稳定帧数
+        min_margin_to_commit: 1.5   # 预热提交最小假设裕度
+        min_confidence_to_commit: 0.70 # 预热提交最小置信度
+
+    smoother:
+      # 输出平滑器
+      # 调试建议：先只开一种平滑，再逐项叠加，避免难以定位延迟来源。
+      # 以下值为仿真闭环验证后的生效值（原 auto_aim.yaml output_stabilizer
+      # 覆盖项已合并至此，不再单独覆盖）。
+      enable: true
+      enable_position_smooth: true
+      enable_yaw_smooth: true
+      enable_velocity_smooth: true
+      enable_structural_convergence: true
+      # One-Euro 族参数：min_cutoff 控静态平滑，beta 控速度自适应，d_cutoff 控导数平滑
+      # beta 是速度自适应项：静止时 cutoff≈min（强平滑防抖），目标运动时
+      # cutoff 随 |dx/dt| 抬升（弱平滑防滞后）。d_cutoff 提高使机动段自适应
+      # 更快（逼近/急加速时速度估计不被导数滤波拖慢）。
+      pos_min_cutoff: 1.0
+      pos_beta: 4.0
+      pos_d_cutoff: 3.0
+      yaw_min_cutoff: 1.0
+      yaw_beta: 4.0
+      yaw_d_cutoff: 3.0
+      vel_min_cutoff: 0.8   # 实测对 pe 中性（2026-07-25 E2 实验），保持默认
+      vel_beta: 3.0
+      vel_d_cutoff: 3.0
+      yaw_vel_min_cutoff: 1.0
+      yaw_vel_beta: 3.0
+      yaw_vel_d_cutoff: 3.0
+      # Below 0.5rad/s the flight-horizon tangential displacement is at most
+      # about 1.5cm for a 0.2m radius, while static PnP yaw jitter otherwise
+      # produces short 0.1-0.48rad/s phantom-spin bursts. Keep the internal
+      # filter state for association, but publish zero to prediction/control.
+      yaw_vel_deadband: 0.5
+      # RM 参数：initial_step大=收敛快但波动大，gamma大=后期更新更慢
+      rm_initial_step: 0.5
+      rm_gamma: 0.75
+      rm_n0: 5
+      rm_dual_obs_boost: 3.0
+      rm_min_radius: 0.12
+      rm_max_radius: 0.5
+      rm_min_dz: -1.0
+      rm_max_dz: 1.0
+      rm_convergence_eps: 0.0001
+      default_freq: 30.0
+
+      # 外点过滤
+      # mad: 推荐默认；iqr: 抗偏态分布；mahalanobis: 依赖协方差质量
+      enable_outlier_filter: false
+      outlier_method: "mad" # "mad" | "iqr" | "mahalanobis"
+      outlier_window_size: 10
+      outlier_min_samples: 5
+      outlier_mad_k: 3.5
+      outlier_iqr_k: 1.5
+      outlier_mahal_threshold: 9.21
+
+    # =========================
+    # Outpost 专用 Tracker（假设检验 + InEKF，use_tracker_v3=true）
+    # =========================
+    outpost:
+      use_tracker_v2: false     # 旧版，勿开
+      use_tracker_v3: true      # 当前 outpost 链路
+      radius: 0.275             # outpost 装甲布局半径(m)
+
+      # z 语义: id0=高, id1=中, id2=低（相对旋转中心=靶根节点高度）
+      # 与 outpost_world 靶标对齐：板高 1.618/1.516/1.414m，根节点 1.516m。
+      z_offset_0: 0.102
+      z_offset_1: 0.00
+      z_offset_2: -0.102
+      panel_angle_step: 2.0943951023931953  # 3板=2pi/3
+
+      # OutpostTrackerV3（假设检验 + InEKF）
+      v3:
+        topk: 3
+        # 提交门（置信度/裕度）：旋转靶在 vyaw 未收敛时三板拟合接近，
+        # 裕度长期 <1.0，过严会导致"进不了 STRUCTURED→无法提交→vyaw
+        # 学不出来"的死锁（2026-07-30 armor_pose 闭环实锤）。
+        min_top1_confidence: 0.35
+        min_top1_top2_margin: 0.20
+        max_reconstruction_pos_error: 0.30
+        gate_single_total_nis: 11.34
+        gate_single_pos_chi2: 9.0
+        posterior_max_center_jump: 0.50
+        posterior_max_yaw_jump: 0.50
+        posterior_max_yaw_rate: 15.0
+        posterior_max_yaw_acc: 30.0
+        # 模式进出（AMBIGUOUS 只预测 / STRUCTURED 才提交）：入门须显著
+        # 低于出厂值，否则旋转靶 vyaw 未收敛前永远达不到连续高置信帧；
+        # 出门须低于入门，避免进出门重叠抖动。
+        mode_p_enter_structured: 0.35
+        mode_m_enter_structured: 0.30
+        mode_stable_frames: 2
+        mode_p_exit_structured: 0.25
+        mode_m_exit_structured: 0.15
+        mode_degraded_frames: 10
+        prior_panel_switch_penalty: 0.50
+        initial_p_pos: 0.01
+        initial_p_vel: 1.0
+        initial_p_acc: 10.0
+        initial_p_yaw: 0.10
+        initial_p_yaw_rate: 1.0
+        initial_p_yaw_acc: 5.0
+        process_noise_acc: 0.05   # outpost 是刚性静止转子：禁止中心漂移吸收旋转（manifold 歧义实锤）
+        process_noise_yaw_acc: 3.0
+        observation_sigma_pos_xy: 0.02
+        observation_sigma_pos_z: 0.03
+        warmup_enable: true
+        warmup_frames: 8
+        warmup_min_settle_frames: 3
+        warmup_min_margin_to_commit: 0.3
+        warmup_min_confidence_to_commit: 0.4
+        phase_audit_enable: true
+        phase_audit_min_jump: 0.015
+        phase_audit_dz_gate: 0.10
+        phase_audit_confirm_frames: 2
+
+# =============================================================================
+# ros-free 跟踪防抖覆盖（bringup_sim 直接读取，不经参数层）
+# =============================================================================
+tracking:
+  # Per-input-mode observation weight. armor_pose injects 0.02m/0.05rad truth
+  # noise -> 0.35 matches; vision PnP at ~2m measures ~0.09m/12deg (plus a
+  # systematic depth bias), so the gate needs a much looser R or every frame
+  # gets NIS-rejected and the tracker churns TRACKING<->TEMP_LOST.
+  observation_noise_scale:
+    vision: 1.5
+    armor_pose: 0.35
+
+  # Keep the tracker alive internally for reacquisition, but stop publishing and
+  # steering from a TEMP_LOST prediction once the last observation is this old.
+  max_temp_lost_prediction_s: 0.15
+  # Adaptive dead-reckoning: a target observed moving faster than
+  # temp_lost_coast_min_speed_mps may coast on the (velocity-decayed) prediction
+  # for up to temp_lost_coast_max_s, so a traversing target does not escape the
+  # FOV while the gimbal would otherwise freeze after 0.15s.
+  temp_lost_coast_max_s: 0.5
+  temp_lost_coast_min_speed_mps: 0.3
+
+  # 检测 ID 误读的空间关联半径（m）：NN 数字分类在远距不断误读
+  # （同一台车在 3/4/5/outpost 间跳动），误读会凭空建新轨迹、饿死真轨迹，
+  # 表现为"观测器不断清除目标"。观测位置落在某已有轨迹中心该半径内时，
+  # 归并到该轨迹。0 = 关闭（多车近距离混战场景可调小或关闭）。
+  id_association_max_distance_m: 0.6
+
+  # Whole-vehicle attitude (roll/pitch) estimation from plate orientations.
+  # mount_pitch_deg is the physical plate mount angle (15deg); the de-tilt
+  # SIGN is self-calibrated per frame (the more vertical of the two
+  # candidates wins), so the value is platform-agnostic — no per-renderer
+  # sign tuning needed. ema_alpha is the smoothing gain; the readout is a
+  # slow signal (slope/brake rocking), not a per-frame pose.
+  attitude:
+    mount_pitch_deg: 15.0
+    ema_alpha: 0.02
+    # Apply the estimated layout attitude to the plate geometry (visualization
+    # AND prediction): with a trusted attitude, center_pose carries the real
+    # roll/pitch and the full-SE(3) projection draws/predicts plates on the
+    # tilted installation plane instead of assuming it is ground-parallel.
+    apply_to_geometry: true
+
+  motion_guard:
+    enabled: true
+    # Suppress sub-0.15m/s velocity estimates caused by stationary PnP jitter.
+    stationary_speed_deadband_mps: 0.15
+    # Physical guards prevent a plate switch/dropout from creating a runaway
+    # whole-vehicle translation state. Gestalt 实测目标爆发速度可超 3m/s，
+    # 限幅过低会压住速度估计导致高速目标跟丢；5.0 已高于正常机动上限。
+    max_linear_speed_mps: 5.0
+    max_linear_acceleration_mps2: 12.0
+    # During rejected/missing observations, decay translation quickly while
+    # retaining yaw rate so rotation-only motion does not become straight-line drift.
+    # 0.12s 对突发提速过于激进（拒止帧恰好出现在机动瞬间时会把跟随所需的速度
+    # 衰减掉），0.30s 兼顾惯性外推可信度与真实机动跟随。
+    temp_lost_velocity_half_life_s: 0.30
+    # Covariance rebuild level for states the guard pins to zero. Keeps the
+    # filter able to leave the pin once real motion reappears.
+    velocity_reset_std_mps: 0.5
+    acceleration_reset_std_mps2: 2.0
+    # Whole-vehicle yaw-rate guard: clamps implausible spin estimates and
+    # deadbands stationary-target yaw jitter. Yaw rate is never decayed on
+    # missing frames so a spinning target keeps its rotational prediction.
+    max_yaw_rate_rad_s: 15.0
+    yaw_rate_deadband_rad_s: 0.05
+    yaw_rate_reset_std_rad_s: 0.5

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>HFUT 3D Debugger</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three.module.min.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <main id="app">
+    <div id="scene" aria-label="3D diagnostics scene"></div>
+
+    <header class="topbar">
+      <div class="brand-block">
+        <div class="brand">HFUT 3D DEBUG</div>
+        <div id="dataset-name" class="dataset-name">NO DATA</div>
+      </div>
+      <div class="toolbar" role="toolbar" aria-label="Scene tools">
+        <button id="reload-button" class="icon-button" type="button" title="Reload diagnostics" aria-label="Reload diagnostics">↻</button>
+        <button id="open-button" class="command-button" type="button">LOAD JSONL</button>
+        <input id="file-input" type="file" accept=".jsonl,.ndjson,application/x-ndjson" hidden>
+        <button id="fit-button" class="icon-button" type="button" title="Fit view" aria-label="Fit view">⌗</button>
+        <button id="panel-button" class="icon-button panel-button" type="button" title="Toggle inspector" aria-label="Toggle inspector">☷</button>
+      </div>
+    </header>
+
+    <aside id="inspector" class="inspector" aria-label="Diagnostics inspector">
+      <section class="inspector-section frame-summary">
+        <div class="section-title-row">
+          <h2>CURRENT FRAME</h2>
+          <span id="track-state" class="state-badge">NO DATA</span>
+        </div>
+        <dl class="readout-grid">
+          <dt>Frame</dt><dd id="value-frame">-</dd>
+          <dt>Time</dt><dd id="value-time">-</dd>
+          <dt>Target</dt><dd id="value-target">-</dd>
+          <dt>Detections</dt><dd id="value-detections">-</dd>
+          <dt>Pipeline</dt><dd id="value-latency">-</dd>
+        </dl>
+      </section>
+
+      <section class="inspector-section">
+        <h2>VEHICLE STATE</h2>
+        <dl class="readout-grid wide-values">
+          <dt>Position xyz</dt><dd id="value-position">-</dd>
+          <dt>Velocity xyz</dt><dd id="value-velocity">-</dd>
+          <dt>Accel xyz</dt><dd id="value-acceleration">-</dd>
+          <dt>Speed</dt><dd id="value-speed">-</dd>
+          <dt>yaw / vyaw</dt><dd id="value-yaw">-</dd>
+          <dt>r1 / r2</dt><dd id="value-radii">-</dd>
+          <dt>dza</dt><dd id="value-dza">-</dd>
+          <dt>Horizon</dt><dd id="value-horizon">-</dd>
+        </dl>
+      </section>
+
+      <section class="inspector-section layers-section">
+        <h2>LAYERS</h2>
+        <label class="layer-row"><input type="checkbox" data-layer="self" checked><span class="swatch self-color"></span><span>Ego / Links</span></label>
+        <label class="layer-row"><input type="checkbox" data-layer="observed" checked><span class="swatch observed-color"></span><span>Observed Armors</span></label>
+        <label class="layer-row"><input type="checkbox" data-layer="state" checked><span class="swatch state-color"></span><span>State Vehicle</span></label>
+        <label class="layer-row"><input type="checkbox" data-layer="prediction" checked><span class="swatch prediction-color"></span><span>Predicted Vehicle</span></label>
+        <label class="layer-row"><input type="checkbox" data-layer="velocity" checked><span class="swatch velocity-color"></span><span>Linear Velocity</span></label>
+        <label class="layer-row"><input type="checkbox" data-layer="spin" checked><span class="swatch spin-color"></span><span>Spin Rate</span></label>
+        <label class="layer-row"><input type="checkbox" data-layer="ballistic" checked><span class="swatch ballistic-color"></span><span>Ballistic</span></label>
+        <label class="layer-row"><input type="checkbox" data-layer="grid" checked><span class="swatch grid-color"></span><span>Ground / Axes</span></label>
+      </section>
+    </aside>
+
+    <div id="loading" class="loading" role="status">
+      <div class="loading-mark"></div>
+      <div id="loading-text">LOADING DIAGNOSTICS</div>
+    </div>
+
+    <footer class="timeline-bar">
+      <div class="transport" role="toolbar" aria-label="Playback controls">
+        <button id="previous-button" class="icon-button" type="button" title="Previous frame" aria-label="Previous frame">‹</button>
+        <button id="play-button" class="play-button" type="button" title="Play" aria-label="Play">▶</button>
+        <button id="next-button" class="icon-button" type="button" title="Next frame" aria-label="Next frame">›</button>
+      </div>
+      <div class="timeline-track">
+        <input id="timeline" type="range" min="0" max="0" value="0" step="1" aria-label="Playback timeline">
+        <div class="time-labels"><span id="current-time">0.00 s</span><span id="duration">0.00 s</span></div>
+      </div>
+      <label class="speed-control">SPEED
+        <select id="speed-select" aria-label="Playback speed">
+          <option value="0.1">0.1x</option>
+          <option value="0.25">0.25x</option>
+          <option value="0.5">0.5x</option>
+          <option value="1" selected>1x</option>
+          <option value="2">2x</option>
+          <option value="4">4x</option>
+        </select>
+      </label>
+      <label class="loop-control"><input id="loop-checkbox" type="checkbox" checked><span>LOOP</span></label>
+    </footer>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,375 @@
+# =============================================================================
+# controller.yaml — 解算、延时链、开火、MPC、日志
+#
+# 控制策略选择（strategy / ballistic_mode）在总控 gimbal_pipeline.yaml。
+# 弹速按传输路径区分，位于 simulation.yaml 的 controller.bullet_speed。
+# =============================================================================
+gimbal_pipeline:
+  ros__parameters:
+    # =========================
+    # 控制器
+    # 调试建议：
+    # - 先把 strategy 固定为 predicted 或 mpc（总控）；
+    # - 先调延时链(delay/solver.*delay)，再调 fire.probability；
+    # - 角度震荡先看 output_filter，再看 solver 选板策略。
+    # 典型症状->动作：
+    # - 开火总慢半拍：增大 prediction_extra_s 或 solver.prediction_delay；
+    # - 偶发“冲过头”：减小 delay 总和或减小 mpc N*dt；
+    # - 输出抖动：优先调 output_filter，再调 solver 选板。
+    # =========================
+    controller:
+      solver:
+        # 命中窗口: width/height 越大越容易触发开火，但精度要求更低
+        # HERO(低弹频)：窗口即脱靶量——门控在窗口“早边”打开即发射，弹着
+        # 系统性偏一个窗口宽度（实测 u≈+0.07~0.13m 与 1.0° 窗口一致）。
+        # 收紧窗口使弹着收敛到板内；开火时机宁可推迟到下一重合段。
+        shooting_range_width: 0.05
+        shooting_range_height: 0.1
+        # 开火判定角下限：默认 1.0° 会盖过收紧后的窗口；0.2° 使其生效。
+        min_shooting_angle: 0.2
+        side_angle: 25.0 # 侧身判定角(度)，过大可能放入不可打面
+        min_switching_v_yaw: 0.0
+        max_prediction_time: 0.700 # 预测时域上限(s)：12m/s 弹 5m 飞行 ~0.45s+时延补偿，留余量
+        max_tracking_v_yaw: 12.0
+        transfer_thresh: 5
+        gravity: 9.8
+        # HERO：与仿真计分器一致的二次空气阻力系数（室内理想环境，
+        # k = ½ρC_dA/m ≈ 0.0175，见仿真仓 docs/hero_branch.md）
+        resistance: 0.0175
+        iteration_times: 20
+        pitch_offset: 0.0
+        yaw_offset: 0.0
+        facing_enter_angle: 65.0
+        facing_exit_angle: 85.0
+        # 低速/静态角位下的收紧朝向门（高速段用上面 65/85，按 |v_yaw| 0.5~3.0 插值）：
+        # 一块板略正对、一块大角度时只瞄真正正对的板；高速自旋时回到宽门保 DPS。
+        facing_enter_low_spin_angle: 40.0
+        facing_exit_low_spin_angle: 60.0
+        # 选板切换滞回余量(rad^2)：上一板仍有效时，新板云台运动量须小出该余量
+        # 才切换；抑制整车观测抖动导致的相邻板来回跳选。
+        switch_movement_margin: 0.005
+        selection_method: "min_movement_with_facing"
+
+        radial_dynamic:
+          # 高转速时自动收缩“径向选板角阈值”，减少跟随反向跳板
+          enable: false
+          v_yaw_ref: 15.0
+          shrink_ratio: 60.0
+          min_angle_deg: 5.0
+          bias_gain_deg: 60.0
+          max_bias_deg: 50.0
+
+        virtual_pose:
+          # 虚拟板策略：高速旋转下可降低目标角速度突变
+          auto_switch:
+            enable: false
+            enter_vyaw: 8.0
+            exit_vyaw: 6.0
+            selection_method: "virtual_pose" # "virtual_pose" | "virtual_fixed_id"
+            fixed_id: 0
+          fixed_id: 0
+
+        adaptive_delay:
+          # AIMD 延时：开火连续失败时增大预测延时，命中后缓慢减小
+          enable: false
+          fire_wait_threshold: 10
+          mul_factor: 1.2
+          add_step: 0.005
+          max_delay: 0.10
+          min_delay: 0.0
+          max_linear_speed: 3.0
+          max_angular_speed: 10.0
+
+      # 统一延时参数（推荐新链路）
+      # 优先使用该组；旧的 solver/state_machine/mpc 同名延时仅做兼容。
+      # prediction_extra_s 是唯一来源：单帧实测算法耗时已自动计入预测时域。
+      # 该值用于补偿输出平滑/滤波的残余滞后（gestalt 实测轻微滞后量级 0~0.1s），
+      # 在实机上以 0.01-0.02 步长上调；旋转靶提前量过大则回调。
+      delay:
+        prediction_extra_s: 0.05    # 预测补偿额外项(s)
+        control_latency_s: 0.0       # 控制链路延时(s)
+        trigger_to_muzzle_s: 0.0     # 触发到出膛延时(s)
+        max_processing_delay_s: 0.5  # 处理延时上限保护(s)
+        flight_time_iters: 2         # 飞行时间迭代次数
+
+      # 目标丢失后的云台行为：默认立即回零（回家）；>0 则先保持最后瞄准方向
+      # idle_hold_s 秒再回零。扫掠/往复目标重新进入"保持中的视场"远比进入
+      # 回家视场快（webots 随机靶 L4 黑屏事件 onset 云台偏差 17-35°，回零后
+      # 黑屏长达 44-156 帧）。
+      idle_hold_s: 2.0
+
+      # 自瞄轨迹规划器（轨迹视角，参考 sp_vision_25 §4）：跟随段与射击轨迹
+      # （目标轨迹提前 延迟+飞行时间）重合，换板时以角加速度为决策变量做
+      # QP、按云台角加速度上限平滑过渡（平滑≠滞后）。开火引擎在规划轨迹
+      # 偏离射击轨迹时自然关断。兵种适配只需改角加速度上限。
+      aim_planner:
+        enable: true
+        max_yaw_acc: 12.0      # HERO 云台大而重：yaw 角加速度上限(rad/s²)
+        max_pitch_acc: 12.0    # HERO pitch 角加速度上限(rad/s²)
+        q_angle: 100.0         # 参考跟踪权重（角度）
+        q_rate: 1.0            # 参考跟踪权重（角速度）
+        r_acc: 0.001           # 输入权重（越大越平滑但越滞后）
+        half_horizon: 25       # 参考半程点数（总窗 2*half_horizon*dt = 1.0s）
+        dt: 0.02               # 参考步长(s)
+        fire_delay_s: 0.0      # 开火延迟 t_fire(s)
+        fire_thresh: 0.02      # t_fire 处轨迹偏差门控(rad)
+
+      # 开火决策与命中概率
+      # 调试建议：先在 probability.enable=false 下稳定跟踪，再逐步打开概率模块
+      fire:
+        decision_policy: "axis_threshold"
+        # HERO(低弹频)：开火防抖——估计翻转期(TEMP_LOST 级联)的闪烁开火
+        # 窗口会整段浪费弹药；引擎须连续 8 帧(≈0.27s)报可开火才放行。
+        min_consecutive_frames: 8
+        facing_filter_opening_angle_deg: 180.0
+        use_gimbal_kinematics: false
+        target_visibility_policy: "facing_only"
+        # 开火允许速度的低通滤波（抑制速度瞬变引起的误开火窗口抖动）
+        velocity_low_pass:
+          enable: false
+          alpha: 0.35           # 平滑系数，越大跟随越快
+          reset_timeout_s: 0.25 # 超过该时长无更新则重置滤波器
+
+        probability:
+          # 命中概率模块：窗口预测 + 融合 + 门控，适合高速/机动目标
+          # 参数组建议：
+          # - 先调窗口(future_window/step)，再调融合(softmax/window_fusion)，最后调门控(gate.*)
+          # HERO：弹频极低，开火门控必须保守——只在高命中概率时给出
+          # fire_advice（能否发射由下位机 CD 决定，不在此考虑）。
+          enable: false
+          future_window_ms: 100.0 # 预测窗口长度(ms)（12m/s 飞行 0.45s，放大采样窗）
+          future_step_ms: 20.0   # 采样步长(ms)
+          window_fusion: "max"
+          softmax_beta: 20.0     # 结果尖锐度，越大越“赢家通吃”
+          use_tracker_covariance: true
+          strict_covariance: false # true时协方差缺失会更保守
+          fallback_sigma_x: 0.02
+          fallback_sigma_y: 0.02
+          fallback_sigma_z: 0.03
+          ballistic_sigma_x0: 0.010
+          ballistic_sigma_y0: 0.015
+          ballistic_sigma_z0: 0.015
+          ballistic_growth_x: 0.03
+          ballistic_growth_y: 0.06
+          ballistic_growth_z: 0.08
+
+          normal_velocity_weight:
+            # 法向速度权重：目标面朝向“正对”时会抬升开火概率
+            enable: false
+            v_ref: 28.0
+            w_min: 0.5
+
+          normal_velocity_gate:
+            # 法向速度门控：在侧身或背身阶段抑制开火
+            enable: false
+            require_front_face: true
+            v_activate_min: 8.0
+            front_epsilon: 1e-4
+            max_complement_angle_deg: 90.0
+
+          sigma_point:
+            # sigma点传播：对速度/延时不确定性做概率传播
+            enable: false
+            method: "unscented"
+            sigma_v0: 0.3
+            sigma_delay: 0.005
+            rho: 0.0
+            alpha: 0.7
+            beta: 2.0
+            kappa: 0.0
+
+          gate:
+            # 输出门控：lowpass更平滑，integrator更“记忆化”
+            # HERO：门限收紧——低弹频下每一次 fire_advice=true 都是宝贵
+            # 开火时机，宁可少报不可误报。
+            strategy: "legacy" # legacy | burst_evidence
+            mode: "lowpass"
+            alpha: 0.85
+            fire_on_th: 0.80
+            fire_off_th: 0.55
+            integrator_base_probability: 0.45
+            integrator_rise: 8.0
+            integrator_fall: 6.0
+
+          burst:
+            burst_bullet_count: 5
+            min_hit_count: 1
+
+          evidence:
+            reference_probability_p0: 0.60
+            window_ms: 50.0
+            log_clip: 2.0
+            epsilon: 0.001
+
+          temperature:
+            value: 0.5
+            theta_on_cold: 0.90
+            theta_on_hot: 0.75
+            theta_hold_cold: 0.70
+            theta_hold_hot: 0.55
+            theta_reset_cold: 0.0
+            theta_reset_hot: 0.0
+
+          commit:
+            min_fire_ms: 20.0
+            cooldown_ms: 0.0
+
+        visualization:
+          enable: false
+          ellipse_samples: 64
+          max_impact_points: 120
+          image_debug:
+            enable: false
+            publish_rate_hz: 10.0
+            width: 960
+            height: 540
+            show_text: true
+            show_sigma_ellipse: true
+            show_velocity_fan: true
+
+      # 状态机策略参数
+      # spin阈值过低会频繁进spin态，过高会漏检旋转目标
+      state_machine:
+        facing_enter_angle: 40.0
+        facing_exit_angle: 60.0
+        spin_v_yaw_thresh: 4.0
+        calm_v_yaw_thresh: 2.0
+        spin_enter_count: 5
+        spin_exit_count: 5
+        side_angle: 15.0
+        max_prediction_time: 0.5
+
+      # MPC 参数
+      # 调试建议：先保证N,dt与控制频率匹配，再调Q/R/S权重比例。
+      # 经验范围（仅参考）：
+      # - dt: 0.01~0.05；N: 20~80；N*dt 通常 0.4~2.0s
+      # - q/r 比值越大，输出越激进；反之更平滑保守
+      mpc:
+        # N*dt 为优化时域：振荡目标上 CA 参考轨迹在换向后发散，2.5s 时域会
+        # 把云台拖向错误方向（实测跟踪率 59-65% vs predicted 96%），先用短
+        # 时域保跟随，后续再评估更长时域。
+        # HERO：outpost 匀速旋转，参考轨迹稳定无换向，可用较长时域换平滑；
+        # max_accel 对齐仿真云台物理限幅（12 rad/s²），r/s 权重上调抑制突变。
+        N: 20
+        dt: 0.05
+        max_accel: 12.0
+        q_yaw: 1000.0
+        q_pitch: 100.0
+        q_yaw_vel: 10.0
+        q_pitch_vel: 10.0
+        r_yaw: 0.01
+        r_pitch: 0.01
+        s_yaw: 0.01
+        s_pitch: 0.01
+        enable_delay_compensation: true
+        yaw_feedforward_k_s: 0.0
+
+        maneuver_adapt:
+          enable: false
+          a_max: 3.0
+          eta: 0.2
+          tau: 10.0
+          r_scale: 10.0
+
+        weighting:
+          # 命中概率加权：只缩放Q，提升“高把握”轨迹优先级
+          enable: false
+          alpha: 3.0
+          k_omega: 0.5
+          sigma_min: 0.05
+          sigma_max: 0.5
+          sigma_sys: 0.02
+          target_size: 0.135
+          delay_s: 0.0
+          max_w: 6.0
+          smooth_alpha: 0.7
+          min_distance: 0.1
+          sigma_beta: 0.3
+          gamma: 0.5
+
+        vel_clamp:
+          # 轨迹生成前速度限幅，防止极端状态导致优化发散
+          # 注意：该值同时是参考轨迹的速度上限——1.0 时无法跟随 >1m/s 的目标
+          # （实测 1.5m/s 横移目标必然跟丢），应不低于目标最大机动速度。
+          enable: false
+          max_linear_speed: 3.0
+          max_v_yaw: 10.0
+
+        fov_constraint:
+          # FOV软约束：用于限制参考轨迹不超云台视场
+          enable: false
+          margin: 0.05
+          slack_weight: 1000.0
+          constraint_steps: 0
+          dynamic_margin:
+            enable: false
+            vel_scale: 0.01
+          fallback_fov_yaw: 0.35
+          fallback_fov_pitch: 0.26
+
+        normalization:
+          # 归一化：rms适合在线，typical适合强约束场景的数值稳定
+          enable: false
+          mode: "rms"
+          window_size: 80
+          min_samples: 10
+          rms_epsilon: 1e-6
+          typical_state:
+            yaw: 1.0
+            pitch: 1.0
+            yaw_vel: 1.0
+            pitch_vel: 1.0
+          typical_control:
+            yaw_acc: 1.0
+            pitch_acc: 1.0
+          typical_delta_control:
+            yaw_acc: 1.0
+            pitch_acc: 1.0
+
+        regularization:
+          # 正则化：Hessian病态时自动加对角线，提升QP收敛稳定性
+          enable: false
+          epsilon_abs: 1e-8
+          epsilon_rel: 1e-6
+          epsilon_max: 1e-2
+          retry_on_fail: true
+          retry_scale: 10.0
+
+        diagnostics:
+          # 数值诊断：比赛模式可关闭高成本日志降低开销
+          enable: false
+          low_cost_always: true
+          high_cost_enable: false
+          high_cost_sample_every: 20
+          log_every: 50
+          log_on_failure: true
+          active_tol: 1e-4
+          rank_tol_rel: 1e-9
+
+      # GimbalCmd 输出保护链
+      # 调试顺序：clamp -> outlier -> rate_limit -> (可选)EMA/OneEuro
+      # 建议：
+      # - 高速场景先开 rate_limiter；
+      # - 低速精瞄再尝试 EMA/OneEuro；
+      # - moving_average 不宜窗口过大(通常 3~7)。
+      output_filter:
+        enable_clamping: true
+        max_yaw_diff: 15.0
+        max_pitch_diff: 10.0
+        enable_outlier_rejection: true
+        outlier_threshold_yaw: 8.0
+        outlier_threshold_pitch: 5.0
+        max_outlier_count: 3
+        enable_rate_limiter: true
+        max_yaw_rate: 5.0
+        max_pitch_rate: 3.0
+        enable_moving_average: false
+        moving_average_window_size: 3
+        enable_ema: false
+        ema_alpha: 0.7
+        enable_one_euro: false
+        one_euro_freq: 250.0
+        one_euro_min_cutoff: 1.0
+        one_euro_beta: 0.007
+        one_euro_d_cutoff: 1.0
+      flush_every_n: 50

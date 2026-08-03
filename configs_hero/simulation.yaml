@@ -1,0 +1,77 @@
+# =============================================================================
+# simulation.yaml — 仿真/传输参数（bringup_sim 直接读取）
+#
+# 传输路径与输入模式的总控开关在 gimbal_pipeline.yaml 的 global 段
+# （bridge_path / input_mode）。本文件放与仿真端对接的物理/连接参数。
+# =============================================================================
+
+# 相机光学系相对枪管坐标系。xyz 单位米（X前/Y左/Z上），rpy 单位弧度
+# （ROS 固定轴约定）。视觉/直接模式都按激活传输路径选择对应配置。
+camera_to_barrel:
+  webots:
+    # Matches rm_gimbal_sim_visual.urdf.xacro and dark_camera_world.wbt.
+    xyz: [0.12514, 0.0, 0.0505]
+    rpy: [0.0, 0.0, 0.0]
+  gestalt:
+    # armLength=0 is the HACHISEN muzzle-view camera.
+    xyz: [0.1, 0.05, 0.0505]
+    rpy: [0.0, 0.0, 0.0]
+
+controller:
+  # 按传输路径区分的弹速（覆盖 controller.yaml 中的声明值）。Gestalt Cal17mm
+  # 真值 24.2-24.5 m/s。
+  bullet_speed:
+    # HERO 配置：弹速 12 m/s（仿真 hero 分支计分器实发 12 + 空气阻力
+    # k=0.0175，见仿真仓 docs/hero_branch.md；阻力系数在 controller.yaml
+    # 的 solver.resistance 同步设置）。
+    webots: 12.0
+    gestalt: 12.0
+
+bridge:
+  # Directory holding camera_frame.bin / gimbal_command.bin. Empty => use
+  # $WEBOTS_ROS_FREE_BRIDGE_DIR or /tmp/hfut_auto_aim_webots.
+  dir: ""
+
+  webots:
+    # PnP-only keypoint correction for the webots render: the NN keypoints sit
+    # ~3% outside the true plate corners on the dark mesh, which makes PnP
+    # solve ~3% too close. Shrink keypoints toward their center to compensate
+    # (1.0 = disabled). Applied to vision frames only.
+    keypoint_scale: 0.9635
+
+  gestalt:
+    # Empty host => $GESTALT_BRIDGE_HOST or 127.0.0.1. In WSL2 NAT mode use
+    # the Windows host address reported by the default route.
+    host: ""
+    port: 47000
+    player_id: 0
+
+    # The prepared HACHISEN belongs to the red team, so Gestalt enemies are
+    # blue. This setting is applied only when bridge.path is "gestalt";
+    # Webots keeps the detector's red-enemy default.
+    enemy_color: "blue"
+
+    # Gestalt renders an ideal 1280x720 pinhole image at horizontal FOV 25 deg.
+    # Intrinsics are still computed from every frame's actual FOV. The rendered
+    # armor quad needs the same PnP-only correction used by the reference bridge.
+    sim_quad_scale: 1.192
+
+    # The pipeline output filter derives velocity with its configured 250 Hz
+    # sample rate, while Gestalt commands follow the variable render/inference
+    # frame rate (60 Hz cap by default in the Windows proxy).
+    # Normal aiming therefore sends angle-only commands like the reference
+    # bridge. The idle scanner still sends its own explicit velocity feedforward.
+    forward_auto_aim_velocity: false
+
+    # Gestalt-only search motion. It replaces only no_valid_measurement output;
+    # TRACKING and TEMP_LOST commands always retain control. A raw detection
+    # freezes the scan at feedback pose while the tracker acquires the target.
+    idle_scan:
+      enabled: true
+      # Start only after auto aim has produced no target for this duration.
+      activation_delay_s: 0.5
+      yaw_rate_deg_s: 120.0
+      pitch_rate_deg_s: 30.0
+      pitch_limit_deg: 10.0
+      # Cap real-time integration so a stalled frame cannot cause a large jump.
+      max_step_s: 0.20

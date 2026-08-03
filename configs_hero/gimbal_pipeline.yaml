@@ -1,0 +1,71 @@
+# =============================================================================
+# gimbal_pipeline.yaml — 总控开关（master）
+#
+# 配置文件按影响面拆分，本文件只放全局开关：
+#   global:            传输路径 / 输入模式 / 检测器实现（全局模式选择）
+#   ros__parameters:   基础运行参数、跟踪器实现与后端、目标选择策略、控制策略
+#
+# 详细调参分布在：
+#   simulation.yaml    仿真桥接、相机外参、弹速等仿真/传输参数
+#   detector.yaml      NN 与传统灯条检测器、位姿估计、检测器选择默认
+#   tracker.yaml       跟踪/滤波/结构/输出平滑 + ros-free 跟踪防抖覆盖
+#   controller.yaml    解算、延时链、开火、MPC、日志
+#
+# 参数层加载顺序：tracker.yaml -> controller.yaml -> gimbal_pipeline.yaml，
+# 后加载者覆盖先加载者（本文件优先级最高）。
+# =============================================================================
+
+# ---- 全局模式开关 ----
+global:
+  bridge_path: "webots"        # "webots" | "gestalt"
+  input_mode: "vision"         # "vision" | "armor_pose"（gestalt 强制 vision）
+  detector_impl: "auto"          # "nn" | "traditional" | "auto"（NN 失败回退）
+
+gimbal_pipeline:
+  ros__parameters:
+    # =========================
+    # 基础运行参数
+    # 调试建议：
+    # 1) 先保证 frame 一致，再调任何滤波参数；
+    # 2) predict_rate 过低会“跟随慢”，过高会放大噪声和 CPU 占用；
+    # 3) tracker_timeout 过小容易误丢目标，过大容易“粘住假目标”。
+    # =========================
+    target_frame: "odom"                 # 目标输出坐标系
+    source_frame: "camera_optical_frame" # 观测输入坐标系
+    predict_rate: 100.0                   # 预测/更新频率(Hz)
+    tracker_timeout: 2.50                # 观测超时(s)
+
+    # =========================
+    # 跟踪器实现与后端选择（详细参数见 tracker.yaml）
+    # =========================
+    tracker:
+      implementation: "norm4_v2" # "vehicle" 规范名；"norm4"/"norm4_v2" 为遗留别名
+    # 整车（标准4装甲）跟踪器后端。ros-free 规范段名为 vehicle_tracker（norm4_v3 为遗留别名）
+    norm4_v3:
+      backend_config:
+        backend_type: "inekf"   # "inekf"(默认) | "ukf_v1" | "ukf_v2"
+        motion_profile: "package://gimbal_pipeline/config/norm4_v3/profiles/motion/default.yaml"
+        noise_profile: "package://gimbal_pipeline/config/norm4_v3/profiles/noise/default.yaml"
+        structure_profile: "slow"
+
+    selector:
+      strategy: "priority_list" # "min_yaw_deviation" | "priority_list" | "sticky_min_yaw_deviation"
+      reference_yaw: 0.0
+      max_yaw_deviation: 3.14159
+      max_distance: 6.0    # 距离门(m)：超出距离的目标不参与选板，避免浪费弹丸
+      min_confidence: 0.6
+      hysteresis_threshold: 0.1
+      priority_robot_ids: ["1", "3", "4", "5", "2", "sentry", "outpost", "base"]
+      # 屏蔽列表：列表内的目标永不参与选板（跟踪仍继续）。默认空；当前生效值
+      # 屏蔽列表：列表内的目标永不参与选板（跟踪仍继续）。
+      # outpost 特殊处理未完成，暂时屏蔽；恢复时移除即可。
+      blocked_robot_ids: ["out_post","negtive"]
+      sticky_lock_frames: 3
+      sticky_lost_frames: 3
+
+    # =========================
+    # 控制策略选择（详细参数见 controller.yaml）
+    # =========================
+    controller:
+      strategy: "predicted" # "current" | "predicted" | "mpc" | "state_machine"。HERO 先用 predicted（按飞行时间正确提前量），平滑靠云台物理限幅+后续轨迹层
+      ballistic_mode: "local" # "service" | "local"
