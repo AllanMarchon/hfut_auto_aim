@@ -1,6 +1,6 @@
-# apps/bringup_real 的真实车启动默认配置。
-# 这里保持保守默认值：除非显式开启，否则不允许发送开火。
-real_vehicle:
+# apps/bringup_real 的硬件与实车启动默认配置。
+# 上车调试时优先看这个文件；除非显式开启，否则默认不允许发送开火。
+hardware:
   camera:
     # source 为空时通过 OpenCV 打开 device_index；非空时可以是视频文件、
     # 流地址，或 OpenCV 后端支持的设备路径。
@@ -9,7 +9,7 @@ real_vehicle:
     width: 1280
     height: 720
     fps: 120.0
-    camera_info: ""
+    camera_info: "configs/camera_info.yaml"
     calibration_mode: "strict"   # strict | scale | center_crop
 
     # 相机 optical 坐标系相对枪管坐标系的外参。xyz 单位米，rpy 单位弧度，

@@ -51,7 +51,7 @@ constexpr double kRadToDeg = 180.0 / kPi;
 
 struct Options {
   std::string config_dir{"configs"};
-  std::string real_config{"configs/real_vehicle.yaml"};
+  std::string hardware_config{"configs/hardware.yaml"};
   std::string camera_source;
   int camera_index{0};
   int camera_width{0};
@@ -117,10 +117,11 @@ Eigen::Vector3d readVector3(const YAML::Node& node,
   return value;
 }
 
-void loadRealConfig(Options& options) {
-  const YAML::Node file_root = YAML::LoadFile(options.real_config);
-  const YAML::Node root = file_root["real_vehicle"] ? file_root["real_vehicle"]
-                                                    : file_root;
+void loadHardwareConfig(Options& options) {
+  const YAML::Node file_root = YAML::LoadFile(options.hardware_config);
+  const YAML::Node root = file_root["hardware"] ? file_root["hardware"]
+                          : (file_root["real_vehicle"] ? file_root["real_vehicle"]
+                                                        : file_root);
 
   const YAML::Node camera = root["camera"];
   if (camera) {
@@ -184,19 +185,22 @@ Options parseOptions(int argc, char** argv) {
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg(argv[i]);
-    if (auto value = optionValue(argc, argv, i, arg, "--real-config"); !value.empty()) {
-      options.real_config = value;
+    if (auto value = optionValue(argc, argv, i, arg, "--hardware-config"); !value.empty()) {
+      options.hardware_config = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--real-config"); !value.empty()) {
+      options.hardware_config = value;
     }
   }
 
-  loadRealConfig(options);
+  loadHardwareConfig(options);
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg(argv[i]);
     if (arg == "--help" || arg == "-h") {
       std::printf(
           "Usage: bringup_real [options]\n"
-          "  --real-config PATH       real vehicle YAML (default configs/real_vehicle.yaml)\n"
+          "  --hardware-config PATH   hardware YAML (default configs/hardware.yaml)\n"
+          "  --real-config PATH       legacy alias for --hardware-config\n"
           "  --config-dir PATH        detector/tracker/controller config directory\n"
           "  --camera-source PATH     OpenCV source path/URL/video file\n"
           "  --camera-index N         OpenCV camera index when source is empty\n"
@@ -217,9 +221,10 @@ Options parseOptions(int argc, char** argv) {
       options.enable_fire = true;
     } else if (arg == "--display") {
       options.display = true;
-    } else if (arg == "--real-config") {
+    } else if (arg == "--hardware-config" || arg == "--real-config") {
       ++i;
-    } else if (arg.rfind("--real-config=", 0) == 0) {
+    } else if (arg.rfind("--hardware-config=", 0) == 0 ||
+               arg.rfind("--real-config=", 0) == 0) {
       continue;
     } else if (auto value = optionValue(argc, argv, i, arg, "--config-dir"); !value.empty()) {
       options.config_dir = value;
@@ -248,7 +253,7 @@ Options parseOptions(int argc, char** argv) {
 
   if (options.camera_info_path.empty()) {
     throw std::invalid_argument(
-        "camera_info is required; set real_vehicle.camera.camera_info or --camera-info");
+        "camera_info is required; set hardware.camera.camera_info or --camera-info");
   }
   if (options.serial_read_timeout_ms < 0) {
     throw std::invalid_argument("serial read timeout must be >= 0");
