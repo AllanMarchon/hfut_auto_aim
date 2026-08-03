@@ -15,10 +15,17 @@ find_package(OpenCV 4.5 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_library(LZ4_LIBRARY NAMES lz4 REQUIRED)
 
+if(UNIX)
+  option(HFUT_ENABLE_REAL_IO "Build POSIX real-vehicle serial IO adapters" ON)
+else()
+  option(HFUT_ENABLE_REAL_IO "Build POSIX real-vehicle serial IO adapters" OFF)
+endif()
+
 # ---------------------------------------------------------------------------
 # io: Webots file bridge plus the WSL2 Gestalt TCP client.
 # ---------------------------------------------------------------------------
-add_library(hfut_io STATIC
+set(HFUT_IO_SOURCES
+  io/camera/opencv_camera_source.cpp
   io/camera/webots_bridge_camera.cpp
   io/gestalt/gestalt_bridge_client.cpp
   io/gestalt/gestalt_idle_scanner.cpp
@@ -26,6 +33,15 @@ add_library(hfut_io STATIC
   io/gimbal/webots_bridge_gimbal.cpp
   io/plotter/plotter.cpp
 )
+
+if(HFUT_ENABLE_REAL_IO)
+  list(APPEND HFUT_IO_SOURCES
+    io/serial/uart_transport.cpp
+    io/serial/infantry32_serial.cpp
+  )
+endif()
+
+add_library(hfut_io STATIC ${HFUT_IO_SOURCES})
 target_include_directories(hfut_io PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -60,6 +76,11 @@ target_compile_definitions(bringup_sim PRIVATE
 # Phase B detector verification harness.
 add_executable(detector_test apps/detector_test.cpp)
 target_link_libraries(detector_test PRIVATE hfut_io hfut_detector ${OpenCV_LIBS})
+
+if(HFUT_ENABLE_REAL_IO)
+  add_executable(serial_transport_test apps/serial_transport_test.cpp)
+  target_link_libraries(serial_transport_test PRIVATE hfut_io)
+endif()
 
 # Offline real-camera video: detection -> PnP -> tracking -> prediction.
 add_executable(video_test apps/video_test.cpp)
@@ -124,4 +145,8 @@ if(BUILD_TESTING)
   add_executable(video_calibration_test tests/video_calibration_test.cpp)
   target_include_directories(video_calibration_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   add_test(NAME video_calibration COMMAND video_calibration_test)
+
+  add_executable(fixed_packet_test tests/fixed_packet_test.cpp)
+  target_include_directories(fixed_packet_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME fixed_packet COMMAND fixed_packet_test)
 endif()
