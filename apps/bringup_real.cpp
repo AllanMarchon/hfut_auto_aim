@@ -1,0 +1,624 @@
+// 真实车运行入口：
+// OpenCV 相机源 + infantry32 串口传输 + 现有 detector/PnP/
+// tracker/controller 链路。默认关闭开火输出。
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <csignal>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include <Eigen/Core>
+#include <Eigen/Geometry>
+#include <opencv2/core.hpp>
+#include <opencv2/highgui.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <std_msgs/msg/header.hpp>
+#include <yaml-cpp/yaml.h>
+
+#include "hfut_auto_aim/camera_frame.hpp"
+#include "hfut_auto_aim/gimbal_command.hpp"
+#include "hfut_auto_aim/video_calibration.hpp"
+#include "io/camera/opencv_camera_source.hpp"
+#include "io/serial/infantry32_serial.hpp"
+
+#include "config_loader.hpp"
+#include "armor_detector_nn/core/armor_detector_nn.hpp"
+#include "armor_detector_nn/core/armor_pose_estimator_adapter.hpp"
+#include "armor_detector_nn/core/pose_refine/pose_refiner.hpp"
+#include "armor_detector_nn/debug/debug_drawer.hpp"
+#include "pipeline.hpp"
+#include "rm_utils/logger/log.hpp"
+
+#include <rm_interfaces/msg/armors.hpp>
+
+namespace {
+
+std::atomic<bool> g_stop{false};
+void onSignal(int) { g_stop.store(true); }
+
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kDegToRad = kPi / 180.0;
+constexpr double kRadToDeg = 180.0 / kPi;
+
+struct Options {
+  std::string config_dir{"configs"};
+  std::string real_config{"configs/real_vehicle.yaml"};
+  std::string camera_source;
+  int camera_index{0};
+  int camera_width{0};
+  int camera_height{0};
+  double camera_fps{0.0};
+  std::string camera_info_path;
+  std::string calibration_mode{"strict"};
+  hfut::CameraToBarrelExtrinsics camera_to_barrel;
+
+  std::string serial_port{"/dev/ttyACM0"};
+  int serial_baudrate{115200};
+  bool command_angles_in_degrees{true};
+  bool feedback_angles_in_degrees{true};
+  int serial_read_timeout_ms{2};
+  int feedback_timeout_ms{100};
+  bool require_feedback{true};
+
+  std::string enemy_color{"red"};
+  double bullet_speed{23.0};
+  std::string controller_strategy;
+  bool dry_run{false};
+  bool enable_fire{false};
+  bool display{false};
+  int max_frames{-1};
+};
+
+std::string optionValue(int argc, char** argv, int& index,
+                        const std::string& arg, const std::string& name) {
+  const std::string prefix = name + "=";
+  if (arg.compare(0, prefix.size()) == 0) return arg.substr(prefix.size());
+  if (arg == name && index + 1 < argc) return argv[++index];
+  return {};
+}
+
+bool parseBool(const YAML::Node& node, bool fallback) {
+  return node ? node.as<bool>() : fallback;
+}
+
+int parseInt(const YAML::Node& node, int fallback) {
+  return node ? node.as<int>() : fallback;
+}
+
+double parseDouble(const YAML::Node& node, double fallback) {
+  return node ? node.as<double>() : fallback;
+}
+
+std::string parseString(const YAML::Node& node, const std::string& fallback) {
+  return node ? node.as<std::string>() : fallback;
+}
+
+Eigen::Vector3d readVector3(const YAML::Node& node,
+                            const Eigen::Vector3d& fallback,
+                            const std::string& name) {
+  if (!node) return fallback;
+  if (!node.IsSequence() || node.size() != 3) {
+    throw std::invalid_argument(name + " must be a three-element sequence");
+  }
+  Eigen::Vector3d value(node[0].as<double>(), node[1].as<double>(),
+                        node[2].as<double>());
+  if (!value.allFinite()) {
+    throw std::invalid_argument(name + " values must be finite");
+  }
+  return value;
+}
+
+void loadRealConfig(Options& options) {
+  const YAML::Node file_root = YAML::LoadFile(options.real_config);
+  const YAML::Node root = file_root["real_vehicle"] ? file_root["real_vehicle"]
+                                                    : file_root;
+
+  const YAML::Node camera = root["camera"];
+  if (camera) {
+    options.camera_source = parseString(camera["source"], options.camera_source);
+    options.camera_index = parseInt(camera["device_index"], options.camera_index);
+    options.camera_width = parseInt(camera["width"], options.camera_width);
+    options.camera_height = parseInt(camera["height"], options.camera_height);
+    options.camera_fps = parseDouble(camera["fps"], options.camera_fps);
+    options.camera_info_path =
+        parseString(camera["camera_info"], options.camera_info_path);
+    options.calibration_mode =
+        parseString(camera["calibration_mode"], options.calibration_mode);
+    const YAML::Node extrinsics = camera["camera_to_barrel"];
+    if (extrinsics) {
+      options.camera_to_barrel.xyz = readVector3(
+          extrinsics["xyz"], options.camera_to_barrel.xyz,
+          "camera.camera_to_barrel.xyz");
+      options.camera_to_barrel.rpy = readVector3(
+          extrinsics["rpy"], options.camera_to_barrel.rpy,
+          "camera.camera_to_barrel.rpy");
+    }
+  }
+
+  const YAML::Node serial = root["serial"];
+  if (serial) {
+    options.serial_port = parseString(serial["port"], options.serial_port);
+    options.serial_baudrate = parseInt(serial["baudrate"], options.serial_baudrate);
+    options.command_angles_in_degrees = parseBool(
+        serial["command_angles_in_degrees"], options.command_angles_in_degrees);
+    options.feedback_angles_in_degrees = parseBool(
+        serial["feedback_angles_in_degrees"], options.feedback_angles_in_degrees);
+    options.serial_read_timeout_ms =
+        parseInt(serial["read_timeout_ms"], options.serial_read_timeout_ms);
+    options.feedback_timeout_ms =
+        parseInt(serial["feedback_timeout_ms"], options.feedback_timeout_ms);
+    options.require_feedback =
+        parseBool(serial["require_feedback"], options.require_feedback);
+  }
+
+  const YAML::Node detector = root["detector"];
+  if (detector) {
+    options.enemy_color = parseString(detector["enemy_color"], options.enemy_color);
+  }
+
+  const YAML::Node controller = root["controller"];
+  if (controller) {
+    options.bullet_speed = parseDouble(controller["bullet_speed"], options.bullet_speed);
+    options.controller_strategy =
+        parseString(controller["strategy"], options.controller_strategy);
+  }
+
+  const YAML::Node safety = root["safety"];
+  if (safety) {
+    options.dry_run = parseBool(safety["dry_run"], options.dry_run);
+    options.enable_fire = parseBool(safety["enable_fire"], options.enable_fire);
+  }
+}
+
+Options parseOptions(int argc, char** argv) {
+  Options options;
+
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg(argv[i]);
+    if (auto value = optionValue(argc, argv, i, arg, "--real-config"); !value.empty()) {
+      options.real_config = value;
+    }
+  }
+
+  loadRealConfig(options);
+
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg(argv[i]);
+    if (arg == "--help" || arg == "-h") {
+      std::printf(
+          "Usage: bringup_real [options]\n"
+          "  --real-config PATH       real vehicle YAML (default configs/real_vehicle.yaml)\n"
+          "  --config-dir PATH        detector/tracker/controller config directory\n"
+          "  --camera-source PATH     OpenCV source path/URL/video file\n"
+          "  --camera-index N         OpenCV camera index when source is empty\n"
+          "  --camera-info PATH       ROS camera_info YAML, required\n"
+          "  --serial-port PATH       serial device path\n"
+          "  --baudrate N             serial baudrate\n"
+          "  --enemy-color COLOR      red | blue | white\n"
+          "  --bullet-speed MPS       controller bullet speed override\n"
+          "  --strategy NAME          controller strategy override\n"
+          "  --dry-run                do not open/send serial\n"
+          "  --enable-fire            allow fire_advice to reach serial packet\n"
+          "  --display                show detector overlay\n"
+          "  --max-frames N           stop after N processed frames\n");
+      std::exit(0);
+    } else if (arg == "--dry-run") {
+      options.dry_run = true;
+    } else if (arg == "--enable-fire") {
+      options.enable_fire = true;
+    } else if (arg == "--display") {
+      options.display = true;
+    } else if (arg == "--real-config") {
+      ++i;
+    } else if (arg.rfind("--real-config=", 0) == 0) {
+      continue;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--config-dir"); !value.empty()) {
+      options.config_dir = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--camera-source"); !value.empty()) {
+      options.camera_source = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--camera-index"); !value.empty()) {
+      options.camera_index = std::stoi(value);
+    } else if (auto value = optionValue(argc, argv, i, arg, "--camera-info"); !value.empty()) {
+      options.camera_info_path = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--serial-port"); !value.empty()) {
+      options.serial_port = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--baudrate"); !value.empty()) {
+      options.serial_baudrate = std::stoi(value);
+    } else if (auto value = optionValue(argc, argv, i, arg, "--enemy-color"); !value.empty()) {
+      options.enemy_color = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--bullet-speed"); !value.empty()) {
+      options.bullet_speed = std::stod(value);
+    } else if (auto value = optionValue(argc, argv, i, arg, "--strategy"); !value.empty()) {
+      options.controller_strategy = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--max-frames"); !value.empty()) {
+      options.max_frames = std::stoi(value);
+    } else {
+      throw std::invalid_argument("unknown or incomplete option: " + arg);
+    }
+  }
+
+  if (options.camera_info_path.empty()) {
+    throw std::invalid_argument(
+        "camera_info is required; set real_vehicle.camera.camera_info or --camera-info");
+  }
+  if (options.serial_read_timeout_ms < 0) {
+    throw std::invalid_argument("serial read timeout must be >= 0");
+  }
+  if (options.feedback_timeout_ms <= 0) {
+    throw std::invalid_argument("feedback timeout must be > 0");
+  }
+  return options;
+}
+
+hfut::video::CameraCalibration loadCalibration(const std::string& path) {
+  const YAML::Node root = YAML::LoadFile(path);
+  hfut::video::CameraCalibration calibration;
+  if (!root["image_width"] || !root["image_height"] ||
+      !root["camera_matrix"] || !root["camera_matrix"]["data"]) {
+    throw std::invalid_argument(
+        "camera_info YAML is missing image dimensions or camera_matrix.data");
+  }
+  calibration.width = root["image_width"].as<int>();
+  calibration.height = root["image_height"].as<int>();
+  const auto matrix = root["camera_matrix"]["data"];
+  if (!matrix.IsSequence() || matrix.size() != 9) {
+    throw std::invalid_argument("camera_matrix.data must contain 9 values");
+  }
+  for (size_t i = 0; i < 9; ++i) calibration.k[i] = matrix[i].as<double>();
+  const auto distortion = root["distortion_coefficients"];
+  if (distortion && distortion["data"]) {
+    calibration.d = distortion["data"].as<std::vector<double>>();
+  }
+  if (calibration.d.empty()) calibration.d.assign(5, 0.0);
+  return calibration;
+}
+
+hfut::CameraIntrinsics toIntrinsics(
+    const hfut::video::CameraCalibration& calibration) {
+  hfut::CameraIntrinsics intrinsics;
+  intrinsics.width = calibration.width;
+  intrinsics.height = calibration.height;
+  intrinsics.fx = calibration.k[0];
+  intrinsics.fy = calibration.k[4];
+  intrinsics.cx = calibration.k[2];
+  intrinsics.cy = calibration.k[5];
+  for (size_t i = 0; i < 5 && i < calibration.d.size(); ++i) {
+    intrinsics.distortion[i] = calibration.d[i];
+  }
+  return intrinsics;
+}
+
+sensor_msgs::msg::CameraInfo toCameraInfo(
+    const hfut::CameraIntrinsics& intrinsics) {
+  sensor_msgs::msg::CameraInfo info;
+  info.width = static_cast<uint32_t>(intrinsics.width);
+  info.height = static_cast<uint32_t>(intrinsics.height);
+  info.k = {intrinsics.fx, 0.0, intrinsics.cx,
+            0.0, intrinsics.fy, intrinsics.cy,
+            0.0, 0.0, 1.0};
+  info.d.assign(intrinsics.distortion, intrinsics.distortion + 5);
+  return info;
+}
+
+fyt::EnemyColor parseEnemyColor(const std::string& value) {
+  if (value == "red") return fyt::EnemyColor::RED;
+  if (value == "blue") return fyt::EnemyColor::BLUE;
+  if (value == "white") return fyt::EnemyColor::WHITE;
+  throw std::invalid_argument("enemy color must be red, blue, or white, got: " + value);
+}
+
+std_msgs::msg::Header makeHeader(double time_s) {
+  std_msgs::msg::Header header;
+  const auto time_ns = static_cast<int64_t>(std::llround(time_s * 1.0e9));
+  header.stamp.sec = static_cast<int32_t>(time_ns / 1000000000LL);
+  header.stamp.nanosec = static_cast<uint32_t>(time_ns % 1000000000LL);
+  header.frame_id = "camera_optical_frame";
+  return header;
+}
+
+rm_interfaces::msg::Armors buildValidArmors(
+    const std::vector<fyt::auto_aim::ArmorDetection>& detections,
+    const std::vector<fyt::auto_aim::PoseEstimate>& poses) {
+  rm_interfaces::msg::Armors message;
+  const size_t count = std::min(detections.size(), poses.size());
+  for (size_t i = 0; i < count; ++i) {
+    if (!poses[i].valid || !poses[i].translation.allFinite() ||
+        poses[i].translation.z() <= 0.0) {
+      continue;
+    }
+    const auto& detection = detections[i];
+    const auto& pose = poses[i];
+    rm_interfaces::msg::Armor armor;
+    armor.number = detection.publish_number;
+    armor.type = detection.publish_type;
+    armor.detection_confidence = detection.confidence;
+    armor.track_id = detection.track_id;
+    armor.has_image_geometry = true;
+    armor.bbox_xywh = {detection.bbox.x, detection.bbox.y,
+                       detection.bbox.width, detection.bbox.height};
+    for (size_t corner = 0; corner < 4; ++corner) {
+      armor.image_corners[corner].x = detection.keypoints[corner].x;
+      armor.image_corners[corner].y = detection.keypoints[corner].y;
+    }
+    armor.pose.position.x = pose.translation.x();
+    armor.pose.position.y = pose.translation.y();
+    armor.pose.position.z = pose.translation.z();
+    armor.pose.orientation.x = pose.rotation.x();
+    armor.pose.orientation.y = pose.rotation.y();
+    armor.pose.orientation.z = pose.rotation.z();
+    armor.pose.orientation.w = pose.rotation.w();
+    armor.pose_estimate_mode = static_cast<uint8_t>(pose.mode);
+    armor.pose_quality_score = static_cast<float>(pose.quality_score);
+    armor.reproj_error_raw = static_cast<float>(pose.reproj_error_raw);
+    armor.reproj_error_refined = static_cast<float>(pose.reproj_error_refined);
+    armor.pose_condition_number = static_cast<float>(pose.condition_number);
+    armor.pose_num_points = static_cast<uint16_t>(std::max(pose.num_points, 0));
+    armor.pose_num_inliers = static_cast<uint16_t>(std::max(pose.num_inliers, 0));
+    armor.pose_covariance_valid = pose.covariance_valid;
+    armor.ippe_yaw_ambiguity = static_cast<float>(pose.ippe_yaw_ambiguity);
+    if (pose.covariance_valid) {
+      for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+          armor.pose_covariance_xyz_yaw[row * 4 + col] =
+              pose.covariance_xyz_yaw(row, col);
+        }
+      }
+    }
+    message.armors.push_back(std::move(armor));
+  }
+  return message;
+}
+
+void applyFeedbackPose(hfut::CameraFrame& frame,
+                       const hfut::io::SerialFeedback& feedback,
+                       const hfut::CameraToBarrelExtrinsics& extrinsics) {
+  const Eigen::Matrix3d barrel_to_control =
+      (Eigen::AngleAxisd(feedback.yaw_rad, Eigen::Vector3d::UnitZ()) *
+       Eigen::AngleAxisd(-feedback.pitch_rad, Eigen::Vector3d::UnitY()) *
+       Eigen::AngleAxisd(feedback.roll_rad, Eigen::Vector3d::UnitX()))
+          .toRotationMatrix();
+  const Eigen::Matrix3d camera_to_barrel =
+      extrinsics.cameraOpticalToBarrelRotation();
+  frame.q_cam2world =
+      Eigen::Quaterniond(barrel_to_control * camera_to_barrel).normalized();
+  frame.t_cam2world = barrel_to_control * extrinsics.xyz;
+  frame.gimbal_yaw = feedback.yaw_rad;
+  frame.gimbal_pitch = feedback.pitch_rad;
+}
+
+hfut::GimbalCommand toRadiansCommand(const rm_interfaces::msg::GimbalCmd& cmd_deg) {
+  hfut::GimbalCommand out;
+  out.yaw = cmd_deg.yaw * kDegToRad;
+  out.pitch = cmd_deg.pitch * kDegToRad;
+  out.yaw_diff = cmd_deg.yaw_diff * kDegToRad;
+  out.pitch_diff = cmd_deg.pitch_diff * kDegToRad;
+  out.yaw_vel = cmd_deg.yaw_v * kDegToRad;
+  out.pitch_vel = cmd_deg.pitch_v * kDegToRad;
+  out.yaw_acc = cmd_deg.yaw_a * kDegToRad;
+  out.pitch_acc = cmd_deg.pitch_a * kDegToRad;
+  out.distance = cmd_deg.distance;
+  out.fire_advice = cmd_deg.fire_advice;
+  out.target_id = cmd_deg.target_id;
+  out.mode = static_cast<hfut::GimbalMode>(cmd_deg.mode);
+  return out;
+}
+
+int run(const Options& options) {
+  using namespace fyt::auto_aim;
+
+  const std::string detector_cfg = options.config_dir + "/detector.yaml";
+  const std::string tracker_cfg = options.config_dir + "/tracker.yaml";
+  const std::string controller_cfg = options.config_dir + "/controller.yaml";
+  const std::string master_cfg = options.config_dir + "/gimbal_pipeline.yaml";
+
+  const auto source_calibration = loadCalibration(options.camera_info_path);
+  const auto calibration_mode =
+      hfut::video::parseCalibrationMode(options.calibration_mode);
+
+  hfut::io::OpenCvCameraSourceConfig camera_config;
+  camera_config.source = options.camera_source;
+  camera_config.device_index = options.camera_index;
+  camera_config.width = options.camera_width;
+  camera_config.height = options.camera_height;
+  camera_config.fps = options.camera_fps;
+  camera_config.intrinsics = toIntrinsics(source_calibration);
+  hfut::io::OpenCvCameraSource camera(camera_config);
+  if (!camera.open()) {
+    throw std::runtime_error("camera open failed: " + camera.errorMessage());
+  }
+
+  hfut::io::Infantry32SerialConfig serial_config;
+  serial_config.port = options.serial_port;
+  serial_config.baudrate = options.serial_baudrate;
+  serial_config.command_angles_in_degrees = options.command_angles_in_degrees;
+  serial_config.feedback_angles_in_degrees = options.feedback_angles_in_degrees;
+  serial_config.read_timeout_ms = options.serial_read_timeout_ms;
+  serial_config.allow_fire = options.enable_fire;
+  hfut::io::Infantry32SerialTransport serial(serial_config);
+  if (!options.dry_run && !serial.open()) {
+    throw std::runtime_error("serial open failed: " + serial.errorMessage());
+  }
+
+  DetectorConfig detector_config =
+      hfut::detector::loadDetectorConfigFile(detector_cfg);
+  ArmorDetectorNN detector(detector_config);
+  detector.setTargetColor(parseEnemyColor(options.enemy_color));
+  if (!detector.initialize()) {
+    throw std::runtime_error("detector initialization failed");
+  }
+
+  ArmorPoseEstimatorAdapter pose_estimator(detector_config.pose);
+  if (detector_config.pose.refiner.mode == "single_yaw") {
+    pose_estimator.setRefiner(std::make_shared<SingleYawRefiner>(
+        detector_config.pose.single_yaw, detector_config.pose.gate));
+  }
+
+  hfut::pipeline::PipelineOverrides pipeline_overrides;
+  pipeline_overrides.bullet_speed = options.bullet_speed;
+  pipeline_overrides.controller_strategy = options.controller_strategy;
+  hfut::pipeline::Pipeline pipeline(
+      {tracker_cfg, controller_cfg, master_cfg},
+      "gimbal_pipeline", pipeline_overrides);
+
+  std::unique_ptr<DebugDrawer> drawer;
+  if (options.display) {
+    drawer = std::make_unique<DebugDrawer>();
+    cv::namedWindow("hfut bringup real", cv::WINDOW_NORMAL);
+    cv::resizeWindow("hfut bringup real", 960, 720);
+  }
+
+  if (options.camera_source.empty()) {
+    std::printf(
+        "[bringup_real] camera=index %d serial=%s@%d dry_run=%s fire=%s\n",
+        options.camera_index, options.serial_port.c_str(), options.serial_baudrate,
+        options.dry_run ? "true" : "false",
+        options.enable_fire ? "enabled" : "disabled");
+  } else {
+    std::printf(
+        "[bringup_real] camera=%s serial=%s@%d dry_run=%s fire=%s\n",
+        options.camera_source.c_str(), options.serial_port.c_str(),
+        options.serial_baudrate, options.dry_run ? "true" : "false",
+        options.enable_fire ? "enabled" : "disabled");
+  }
+  std::printf(
+      "[bringup_real] camera_info=%s calibration_mode=%s enemy=%s bullet=%.2f\n",
+      options.camera_info_path.c_str(),
+      hfut::video::calibrationModeName(calibration_mode),
+      options.enemy_color.c_str(), options.bullet_speed);
+
+  hfut::io::SerialFeedback latest_feedback;
+  bool have_feedback = options.dry_run || !options.require_feedback;
+  int processed = 0;
+  uint64_t frames = 0;
+  auto last_log = std::chrono::steady_clock::now();
+  auto last_feedback_wait_log = std::chrono::steady_clock::now();
+  auto last_feedback_time = std::chrono::steady_clock::now();
+
+  while (!g_stop.load() &&
+         (options.max_frames < 0 || processed < options.max_frames)) {
+    if (!options.dry_run) {
+      hfut::io::SerialFeedback feedback;
+      if (serial.readFeedback(feedback)) {
+        latest_feedback = feedback;
+        latest_feedback.bullet_speed = options.bullet_speed;
+        have_feedback = true;
+        last_feedback_time = std::chrono::steady_clock::now();
+      }
+    }
+
+    const auto feedback_age = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - last_feedback_time);
+    const bool feedback_ready =
+        options.dry_run || !options.require_feedback ||
+        (have_feedback && feedback_age.count() <= options.feedback_timeout_ms);
+    if (!feedback_ready) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_feedback_wait_log > std::chrono::seconds(1)) {
+        std::printf(
+            "[bringup_real] waiting for fresh serial feedback on %s "
+            "(last_age=%lldms)\n",
+            options.serial_port.c_str(),
+            static_cast<long long>(have_feedback ? feedback_age.count() : -1));
+        std::fflush(stdout);
+        last_feedback_wait_log = now;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      continue;
+    }
+
+    hfut::CameraFrame frame;
+    if (!camera.read(frame, std::chrono::milliseconds(200))) {
+      std::fprintf(stderr, "[bringup_real] camera read timeout: %s\n",
+                   camera.errorMessage().c_str());
+      continue;
+    }
+
+    const auto adapted_calibration = hfut::video::adaptCalibration(
+        source_calibration, frame.image.cols, frame.image.rows, calibration_mode);
+    frame.intrinsics = toIntrinsics(adapted_calibration);
+    applyFeedbackPose(frame, latest_feedback, options.camera_to_barrel);
+    pipeline.updateFov(
+        std::atan(static_cast<double>(frame.intrinsics.width) /
+                  (2.0 * frame.intrinsics.fx)),
+        std::atan(static_cast<double>(frame.intrinsics.height) /
+                  (2.0 * frame.intrinsics.fy)));
+
+    const auto processing_start = std::chrono::steady_clock::now();
+    auto detections = detector.detectBatch({frame.image}, {makeHeader(frame.sim_time_s)});
+    std::vector<ArmorDetection> dets;
+    if (!detections.empty()) dets = detections.front().detections;
+
+    const auto poses = pose_estimator.estimateBatch(
+        dets, toCameraInfo(frame.intrinsics), frame.R_cam2world());
+    const auto armors = buildValidArmors(dets, poses);
+    pipeline.updateTracking(armors, frame.R_cam2world(), frame.t_cam2world,
+                            frame.sim_time_s);
+
+    const double latency_s = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - processing_start).count();
+    auto command_deg = pipeline.computeCommand(
+        frame.gimbal_yaw, frame.gimbal_pitch, frame.sim_time_s + latency_s);
+    hfut::GimbalCommand command = toRadiansCommand(command_deg);
+    if (!options.enable_fire) command.fire_advice = false;
+
+    if (!options.dry_run) {
+      serial.sendCommand(command);
+    }
+
+    ++frames;
+    ++processed;
+
+    if (drawer) {
+      cv::Mat display = frame.image.clone();
+      drawer->drawDetections(display, dets, true);
+      cv::imshow("hfut bringup real", display);
+      const int key = cv::waitKey(1);
+      if (key == 27 || key == 'q') break;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_log > std::chrono::seconds(1)) {
+      const auto& debug = pipeline.lastDebug();
+      std::printf(
+          "[bringup_real] frames=%llu det=%zu poses=%zu tracked=%d mode=%d "
+          "yaw=%.2f pitch=%.2f fire=%d latency=%.1fms\n",
+          static_cast<unsigned long long>(frames), dets.size(), poses.size(),
+          debug.num_tracked, static_cast<int>(command.mode),
+          command.yaw * kRadToDeg, command.pitch * kRadToDeg,
+          command.fire_advice ? 1 : 0, latency_s * 1000.0);
+      std::fflush(stdout);
+      last_log = now;
+    }
+  }
+
+  if (options.display) cv::destroyAllWindows();
+  return processed > 0 ? 0 : 2;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  std::signal(SIGINT, onSignal);
+  std::signal(SIGTERM, onSignal);
+#ifdef SIGPIPE
+  std::signal(SIGPIPE, SIG_IGN);
+#endif
+  try { FYT_REGISTER_LOGGER("armor_detector", "/tmp/hfut_auto_aim_log", INFO); } catch (...) {}
+  try { FYT_REGISTER_LOGGER("armor_detector_nn", "/tmp/hfut_auto_aim_log", INFO); } catch (...) {}
+
+  try {
+    return run(parseOptions(argc, argv));
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "[bringup_real] fatal: %s\n", error.what());
+    return 1;
+  }
+}

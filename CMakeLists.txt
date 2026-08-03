@@ -3,7 +3,7 @@ project(hfut_auto_aim LANGUAGES CXX)
 
 include(CTest)
 
-# ROS-free port of the hfut_rm_auto_aim sim chain. Plain CMake, no ament.
+# hfut_rm_auto_aim 仿真链路的 ROS-free 移植版。使用纯 CMake，不依赖 ament。
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -22,7 +22,7 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# io: Webots file bridge plus the WSL2 Gestalt TCP client.
+# io：Webots 文件桥接，以及 WSL2 Gestalt TCP 客户端。
 # ---------------------------------------------------------------------------
 set(HFUT_IO_SOURCES
   io/camera/opencv_camera_source.cpp
@@ -51,38 +51,45 @@ target_include_directories(hfut_io PUBLIC ${EIGEN3_INCLUDE_DIR})
 target_link_libraries(hfut_io PUBLIC ${OpenCV_LIBS} ${LZ4_LIBRARY})
 
 # ---------------------------------------------------------------------------
-# Later phases append: hfut_detector (Phase B), hfut_pipeline (Phase C).
-# Kept behind options so Phase A builds standalone.
+# 后续阶段继续追加：hfut_detector（Phase B）、hfut_pipeline（Phase C）。
+# 保持分阶段组织，方便 Phase A 独立构建。
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Phase B: NN detector library (armor_detector_nn port).
+# Phase B：NN detector 库（armor_detector_nn 移植）。
 # ---------------------------------------------------------------------------
 add_subdirectory(tasks/auto_aim/detector)
 
 # ---------------------------------------------------------------------------
-# Phase C: tracker + selector + controller library (gimbal_pipeline port).
+# Phase C：tracker + selector + controller 库（gimbal_pipeline 移植）。
 # ---------------------------------------------------------------------------
 add_subdirectory(tasks/auto_aim/pipeline)
 
-# bringup_sim application — full chain: detector + pipeline + IO.
+# bringup_sim 应用：detector + pipeline + IO 全链路。
 add_executable(bringup_sim apps/bringup_sim.cpp)
 target_link_libraries(bringup_sim PRIVATE hfut_io hfut_detector hfut_pipeline ${OpenCV_LIBS})
-# Lets bringup_sim resolve package:// detector URLs through the ament_index
-# shim (same convention as the hfut_detector target).
+# 让 bringup_sim 通过 ament_index 兼容层解析 package:// detector 路径，
+# 与 hfut_detector 目标保持同一套约定。
 target_compile_definitions(bringup_sim PRIVATE
   HFUT_DETECTOR_ASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tasks/auto_aim/detector)
 
-# Phase B detector verification harness.
+# Phase B detector 验证程序。
 add_executable(detector_test apps/detector_test.cpp)
 target_link_libraries(detector_test PRIVATE hfut_io hfut_detector ${OpenCV_LIBS})
 
 if(HFUT_ENABLE_REAL_IO)
   add_executable(serial_transport_test apps/serial_transport_test.cpp)
   target_link_libraries(serial_transport_test PRIVATE hfut_io)
+
+  add_executable(bringup_real apps/bringup_real.cpp)
+  target_include_directories(bringup_real PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(bringup_real PRIVATE
+    hfut_io hfut_detector hfut_pipeline ${OpenCV_LIBS} yaml-cpp)
+  target_compile_definitions(bringup_real PRIVATE
+    HFUT_DETECTOR_ASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tasks/auto_aim/detector)
 endif()
 
-# Offline real-camera video: detection -> PnP -> tracking -> prediction.
+# 离线真实相机视频链路：detection -> PnP -> tracking -> prediction。
 add_executable(video_test apps/video_test.cpp)
 target_include_directories(video_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(video_test PRIVATE hfut_detector hfut_pipeline ${OpenCV_LIBS})

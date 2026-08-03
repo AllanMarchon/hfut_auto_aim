@@ -1,0 +1,39 @@
+# apps/bringup_real 的真实车启动默认配置。
+# 这里保持保守默认值：除非显式开启，否则不允许发送开火。
+real_vehicle:
+  camera:
+    # source 为空时通过 OpenCV 打开 device_index；非空时可以是视频文件、
+    # 流地址，或 OpenCV 后端支持的设备路径。
+    source: ""
+    device_index: 0
+    width: 1280
+    height: 720
+    fps: 120.0
+    camera_info: ""
+    calibration_mode: "strict"   # strict | scale | center_crop
+
+    # 相机 optical 坐标系相对枪管坐标系的外参。xyz 单位米，rpy 单位弧度，
+    # 约定与 configs/simulation.yaml 保持一致。
+    camera_to_barrel:
+      xyz: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+
+  serial:
+    port: "/dev/ttyACM0"
+    baudrate: 115200
+    command_angles_in_degrees: true
+    feedback_angles_in_degrees: true
+    read_timeout_ms: 2
+    feedback_timeout_ms: 100
+    require_feedback: true
+
+  detector:
+    enemy_color: "red"           # red | blue | white
+
+  controller:
+    bullet_speed: 23.0
+    strategy: ""                 # 留空表示使用 configs/controller.yaml
+
+  safety:
+    dry_run: false               # true 表示不打开串口、不发送串口数据
+    enable_fire: false           # false 会在串口发送前强制关闭 fire_advice
