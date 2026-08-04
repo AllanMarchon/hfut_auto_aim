@@ -12,6 +12,15 @@
 **/__pycache__/
 *.py[cod]
 
+# RL experiment outputs
+/runs/
+/wandb/
+/tools/rl/runs/
+*.pt
+*.pth
+*.ckpt
+*.pkl
+
 # Runtime diagnostics and crash artifacts
 *.log
 *.jsonl

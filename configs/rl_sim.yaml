@@ -1,0 +1,36 @@
+# RL simulator wrapper defaults.
+#
+# This file is intentionally independent from the C++ sim pipeline. The first
+# RL target is a residual policy over the existing auto-aim command, not an
+# end-to-end replacement.
+
+mode: replay              # replay | bridge
+bridge_dir: /tmp/hfut_auto_aim_webots
+diagnostics_file: tracking_diagnostics.jsonl
+truth_file: target_truth.jsonl
+score_file: score.txt
+action_file: rl_action.json
+
+episode:
+  max_steps: 1800         # 60 s at 30 Hz
+  frame_timeout_s: 2.0
+
+action:
+  # Keep the first policy deliberately small. The baseline command remains in
+  # control; RL can only trim the aim point and gate firing.
+  max_delta_yaw_rad: 0.0349066     # 2 deg
+  max_delta_pitch_rad: 0.0349066   # 2 deg
+  fire_gate_threshold: 0.5
+
+reward:
+  hit: 10.0
+  miss: -4.0
+  aim_error: -1.0
+  command_smoothness: -0.05
+  lost_target: -0.5
+
+training:
+  algorithm: ppo
+  total_timesteps: 200000
+  seed: 42
+  log_dir: tools/rl/runs
