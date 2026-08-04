@@ -7,7 +7,7 @@ hardware:
     source: ""
     device_index: 0
     width: 1280
-    height: 720
+    height: 1024
     fps: 120.0
     camera_info: "configs/camera_info.yaml"
     calibration_mode: "strict"   # strict | scale | center_crop
