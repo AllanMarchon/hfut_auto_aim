@@ -9,11 +9,11 @@
 # （ROS 固定轴约定）。视觉/直接模式都按激活传输路径选择对应配置。
 camera_to_barrel:
   webots:
-    # Matches rm_gimbal_sim_visual.urdf.xacro and dark_camera_world.wbt.
+    # 与 rm_gimbal_sim_visual.urdf.xacro 和 dark_camera_world.wbt 对齐。
     xyz: [0.12514, 0.0, 0.0505]
     rpy: [0.0, 0.0, 0.0]
   gestalt:
-    # armLength=0 is the HACHISEN muzzle-view camera.
+    # armLength=0 表示 HACHISEN 枪口视角相机。
     xyz: [0.1, 0.05, 0.0505]
     rpy: [0.0, 0.0, 0.0]
 
@@ -27,50 +27,47 @@ controller:
     gestalt: 24.35
 
 bridge:
-  # Directory holding camera_frame.bin / gimbal_command.bin. Empty => use
-  # $WEBOTS_ROS_FREE_BRIDGE_DIR or /tmp/hfut_auto_aim_webots.
+  # 保存 camera_frame.bin / gimbal_command.bin 的目录。留空则使用
+  # $WEBOTS_ROS_FREE_BRIDGE_DIR，仍为空时使用 /tmp/hfut_auto_aim_webots。
   dir: ""
 
   webots:
-    # PnP-only keypoint correction for the webots render: the NN keypoints sit
-    # ~3% outside the true plate corners on the dark mesh, which makes PnP
-    # solve ~3% too close. Shrink keypoints toward their center to compensate
-    # (1.0 = disabled). Applied to vision frames only.
+    # Webots 渲染专用的 PnP 关键点修正：暗色 mesh 上神经网络关键点约在
+    # 真实装甲角点外侧 3%，会让 PnP 解算距离约近 3%。将关键点向中心收缩
+    # 用于补偿；1.0 表示关闭。仅作用于 vision 帧。
     keypoint_scale: 0.9635
 
   gestalt:
-    # Empty host => $GESTALT_BRIDGE_HOST or 127.0.0.1. In WSL2 NAT mode use
-    # the Windows host address reported by the default route.
+    # host 留空则使用 $GESTALT_BRIDGE_HOST，仍为空时使用 127.0.0.1。
+    # WSL2 NAT 模式下使用默认路由显示的 Windows 主机地址。
     host: ""
     port: 47000
     player_id: 0
 
-    # The prepared HACHISEN belongs to the red team, so Gestalt enemies are
-    # blue. This setting is applied only when bridge.path is "gestalt";
-    # Webots keeps the detector's red-enemy default.
+    # 当前准备的 HACHISEN 属于红方，因此 Gestalt 敌方为蓝方。
+    # 仅当 bridge.path 为 "gestalt" 时应用；Webots 保持检测器默认红方敌人。
     enemy_color: "blue"
 
-    # Gestalt renders an ideal 1280x720 pinhole image at horizontal FOV 25 deg.
-    # Intrinsics are still computed from every frame's actual FOV. The rendered
-    # armor quad needs the same PnP-only correction used by the reference bridge.
+    # Gestalt 渲染 1280x720、水平视场 25 度的理想针孔图像。
+    # 内参仍按每帧实际 FOV 计算；渲染出的装甲四边形需要和参考桥接一致的
+    # PnP 专用缩放修正。
     sim_quad_scale: 1.192
 
-    # The pipeline output filter derives velocity with its configured 250 Hz
-    # sample rate, while Gestalt commands follow the variable render/inference
-    # frame rate (60 Hz cap by default in the Windows proxy).
-    # Normal aiming therefore sends angle-only commands like the reference
-    # bridge. The idle scanner still sends its own explicit velocity feedforward.
+    # pipeline 输出滤波器按配置的 250 Hz 采样率估计速度，而 Gestalt 命令跟随
+    # 可变的渲染/推理帧率（Windows 代理默认上限 60 Hz）。
+    # 因此正常自瞄只发送角度命令，行为与参考桥接一致；空闲扫描仍会发送
+    # 自己显式计算的速度前馈。
     forward_auto_aim_velocity: false
 
-    # Gestalt-only search motion. It replaces only no_valid_measurement output;
-    # TRACKING and TEMP_LOST commands always retain control. A raw detection
-    # freezes the scan at feedback pose while the tracker acquires the target.
+    # Gestalt 专用搜索运动。只替换 no_valid_measurement 输出；
+    # TRACKING 和 TEMP_LOST 状态的命令始终保留控制权。出现原始检测后，
+    # 扫描会冻结在反馈姿态，等待跟踪器获取目标。
     idle_scan:
       enabled: true
-      # Start only after auto aim has produced no target for this duration.
+      # 自瞄连续这么久没有目标后才启动扫描。
       activation_delay_s: 0.5
       yaw_rate_deg_s: 120.0
       pitch_rate_deg_s: 30.0
       pitch_limit_deg: 10.0
-      # Cap real-time integration so a stalled frame cannot cause a large jump.
+      # 限制实时积分步长，防止卡顿帧导致大幅跳变。
       max_step_s: 0.20
