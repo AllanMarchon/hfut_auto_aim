@@ -56,6 +56,14 @@ Inspect wrapper state without training:
 python3 tools/rl/hfut_env.py --config configs/rl_sim.yaml --steps 5
 ```
 
+Summarize one copied Webots/Gestalt replay:
+
+```bash
+python3 tools/rl/replay_analyzer.py \
+  --bridge-dir /tmp/hfut_auto_aim_webots \
+  --config configs/rl_sim.yaml
+```
+
 Evaluate a zero-action policy:
 
 ```bash

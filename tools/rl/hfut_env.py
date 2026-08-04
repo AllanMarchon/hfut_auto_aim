@@ -50,7 +50,7 @@ class ScoreStats:
 
 
 def load_config(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open("r", encoding="utf-8-sig") as handle:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
         raise ValueError(f"config must be a mapping: {path}")
@@ -93,13 +93,13 @@ def parse_score_text(text: str) -> ScoreStats:
 def read_score(path: Path) -> ScoreStats:
     if not path.exists():
         return ScoreStats()
-    return parse_score_text(path.read_text(encoding="utf-8", errors="replace"))
+    return parse_score_text(path.read_text(encoding="utf-8-sig", errors="replace"))
 
 
 def iter_jsonl(path: Path) -> Iterable[dict[str, Any]]:
     if not path.exists():
         return
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
+    with path.open("r", encoding="utf-8-sig", errors="replace") as handle:
         for line in handle:
             line = line.strip()
             if not line:
