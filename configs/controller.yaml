@@ -3,6 +3,30 @@
 #
 # 控制策略选择（strategy / ballistic_mode）在总控 gimbal_pipeline.yaml。
 # 弹速按传输路径区分，位于 simulation.yaml 的 controller.bullet_speed。
+#
+# 常调区（实车/离线调参优先看这里）：
+#   controller.delay.prediction_extra_s / control_latency_s / trigger_to_muzzle_s
+#       提前量、系统延迟和触发到出膛延迟；跟随慢/提前过头先看这里。
+#   controller.solver.shooting_range_width / shooting_range_height
+#       开火窗口；越大越容易开火，越小越保守。
+#   controller.solver.facing_* / selection_method / switch_movement_margin
+#       选板、朝向门和换板抖动。
+#   controller.output_filter.*
+#       GimbalCmd 输出保护链；角度跳变、抖动、过快输出先看这里。
+#   controller.idle_hold_s
+#       丢目标后是否保持最后瞄准方向。
+#
+# 进阶区（常调区解决不了再改）：
+#   controller.aim_planner.*
+#       自瞄轨迹规划器，影响平滑过渡与开火关断。
+#   controller.fire.probability.*
+#       命中概率模型；跟踪稳定后再逐步打开。
+#   controller.mpc.*
+#       MPC 策略参数；改 N/dt/Q/R/S 前先确认控制策略正在使用 mpc。
+#   controller.state_machine.*
+#       状态机策略参数；仅 controller.strategy=state_machine 时重点看。
+#   controller.solver.radial_dynamic / virtual_pose / adaptive_delay
+#       高速旋转和动态延迟的特殊策略，默认不作为第一轮调参入口。
 # =============================================================================
 gimbal_pipeline:
   ros__parameters:

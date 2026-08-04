@@ -1,9 +1,9 @@
 # =============================================================================
-# detector.yaml — NN 与传统灯条检测器、位姿估计
+# detector.yaml — 神经网络与传统灯条检测器、位姿估计
 #
 # 检测链选择的总控开关在 gimbal_pipeline.yaml 的 global.detector_impl
 # （"nn" | "traditional" | "auto"）。package:// 路径经 ament_index_cpp
-# 兼容 shim 解析到检测器资产目录。
+# 兼容层解析到检测器资产目录。
 # =============================================================================
 detector:
   # impl 已移至总控 gimbal_pipeline.yaml global.detector_impl
@@ -83,6 +83,8 @@ detector:
       max_yaw_delta_deg: 35.0
       require_finite: true
 
+  # 检测器内部 2D 关联器，只负责同一块装甲在图像中的短时去重/延续；
+  # 不是 tracker.yaml 里的 3D 整车跟踪器。
   tracker:
     strategy: "internal_iou"
     iou_threshold: 0.20
@@ -93,13 +95,12 @@ detector:
   runtime:
     color_filter_source: "model"
 
-# --- Traditional light-bar detector (armor_detector port, ROS-free) ---
-# Used when detector.impl is "traditional", or as the fallback chain when
-# detector.impl is "auto" and the NN backend fails to initialize. Pose
-# estimation reuses the shared `detector.pose` adapter settings above.
-# Keypoints come out of the light-bar geometry + PCA corner refinement, so
-# the gestalt keypoint upscale (bridge.gestalt.sim_quad_scale) is NOT applied
-# to this chain.
+# --- 传统灯条检测器（移植自 armor_detector，无 ROS 依赖） ---
+# 当 detector.impl 为 "traditional" 时使用；当 detector.impl 为 "auto" 且
+# 神经网络后端初始化失败时，也作为回退链路使用。位姿估计复用上方
+# `detector.pose` 的统一适配参数。
+# 该链路的角点来自灯条几何和 PCA 精化，因此不会套用
+# bridge.gestalt.sim_quad_scale 的 Gestalt 关键点缩放。
 
   # NN 关键点角点精化（sp_vision 式混合）：在每块检测板的局部 ROI 内重跑
   # 传统灯条拟合，几何校验通过才替换关键点；失败保留 NN 关键点，光照/模糊/
@@ -128,11 +129,11 @@ detector:
     max_pair_center_shift_px: 45.0
 
 detector_traditional:
-  # Enemy armor color: "red" | "blue". Empty => infer from the transport path
-  # (webots => red, gestalt => bridge.gestalt.enemy_color).
+  # 敌方装甲颜色："red" | "blue"。留空则按传输路径推断
+  # （webots => red，gestalt => bridge.gestalt.enemy_color）。
   enemy_color: ""
-  # Sim plate lights are dimmer than real overexposed LEDs (frame gray peak
-  # ~143); 160 suits real-camera images, the webots sim needs ~100.
+  # 仿真装甲灯条比真实过曝 LED 更暗（帧灰度峰值约 143）；
+  # 160 适合真实相机图像，webots 仿真通常需要约 100。
   binary_thres: 90
   light:
     min_ratio: 0.08

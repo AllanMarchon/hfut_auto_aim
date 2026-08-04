@@ -1,13 +1,35 @@
 # =============================================================================
-# tracker.yaml — 跟踪/滤波/结构/输出平滑 + ros-free 跟踪防抖覆盖
+# tracker.yaml — 跟踪/滤波/结构/输出平滑 + 无 ROS 跟踪防抖覆盖
 #
 # 跟踪器实现与后端选择在总控 gimbal_pipeline.yaml（tracker.implementation、
-# norm4_v3.backend_config）。ros-free 规范段名 vehicle_tracker（norm4_v3 为
+# norm4_v3.backend_config）。无 ROS 规范段名 vehicle_tracker（norm4_v3 为
 # 遗留别名，参数层自动回退）。
 #
 # 文件结构：
 #   gimbal_pipeline.ros__parameters   跟踪主参数（ROS 风格，参数层读取）
-#   tracking                          ros-free 跟踪防抖覆盖（bringup 直接读取）
+#   tracking                          无 ROS 跟踪防抖覆盖（bringup 直接读取）
+#
+# 常调区（实车/离线调参优先看这里，只改这些通常就够）：
+#   tracker.tracking_thres / tracker.lost_thres
+#       建轨速度、丢失保持时间。
+#   tracking.observation_noise_scale
+#       观测噪声权重；轨迹漂/门控拒止多时优先看。
+#   tracking.max_temp_lost_prediction_s / temp_lost_coast_*
+#       目标短时漏检后的继续瞄准时间。
+#   smoother.*
+#       输出位置、yaw、速度平滑；抖动和滞后都先看这里。
+#   tracking.motion_guard.*
+#       防止 PnP 抖动或换板导致整车速度/角速度发散。
+#
+# 进阶区（确认常调区解决不了，再改）：
+#   motion.* / spin.*
+#       运动模型与旋转过程噪声，影响全局跟踪风格。
+#   norm4_v3.ukf_v1 / norm4_v3.inekf / inekf_runtime
+#       跟踪后端内部参数；改动前最好保留验证记录。
+#   slow_structure / hypothesis_selector / warmup
+#       车体结构学习、假设选择和建轨预热。
+#   outpost.*
+#       前哨站专用链路，普通车调参通常不用动。
 #
 # 2026-07-26 清理：删除 ROS 仓移植遗留的死配置（entropy/binder/norm4_v2/
 # external_targets/panel_mismatch/outpost v2 等零消费段），保留项均有运行
@@ -61,7 +83,8 @@ gimbal_pipeline:
     # 通用 Tracker 生命周期参数
     # =========================
     tracker:
-      implementation: "norm4_v2" # 非 outpost 目标；"vehicle" 为规范名，"norm4"/"norm4_v2" 为遗留别名自动映射
+      # 跟踪器实现不要在这里切换；统一在 gimbal_pipeline.yaml 的
+      # tracker.implementation 修改。这里仅保留生命周期/门控等调参项。
       tracking_thres: 2          # 连续命中多少帧进入TRACKING
       reject_reset_streak_frames: 6  # 连续门控拒止帧数：到顶且当帧假设过NIS门则用当前观测重新初始化（12→6：预测器发散时更快用观测自愈，避免"歪预测器持续拒准观测"）
       lost_thres: 20             # 约0.67s无观测后才进入LOST，短时漏检保持预测跟随
@@ -83,7 +106,7 @@ gimbal_pipeline:
       mad_window: 10                      # MAD滚动窗口
       mad_k: 3.0                          # MAD阈值倍数
 
-    # 整车（标准4装甲）跟踪器配置。ros-free 规范段名为 vehicle_tracker（本段名作为遗留别名兼容）
+    # 整车（标准4装甲）跟踪器配置。无 ROS 规范段名为 vehicle_tracker（本段名作为遗留别名兼容）
     norm4_v3:
       ukf_v1:
         enabled: true
@@ -119,25 +142,23 @@ gimbal_pipeline:
           # 避免把移动时的 PnP 深度偏差经结构协方差耦合进中心 z/vz。
           structural_gain_r: 0.0
           structural_gain_dza: 0.0
-        # Structure is observable from dual panels, but a full-gain correction
-        # lets one noisy edge-on pair move r1/r2 by 5-8cm in one frame. That
-        # trips posterior_sanity and drops an otherwise valid motion update.
-        # Use a bounded learning gain; single-panel structure remains frozen.
+        # 双板时结构可观，但全增益修正会让一次有噪声的侧边双板观测在单帧内
+        # 拉动 r1/r2 5-8cm，触发 posterior_sanity 并丢弃本来有效的运动更新。
+        # 因此使用有界学习增益；单板结构仍保持冻结。
         dual_update:
           structural_gain_r: 0.25
           # dza 走上面的稳健双板高度证据，避免一次高视角双板批量更新翻转符号。
           structural_gain_dza: 0.0
         posterior_sanity:
-          # Close-range depth reversals can require a ~0.27m relaxed
-          # reacquisition correction. Match the existing reconstruction cap;
-          # NIS/yaw/structure gates still reject incompatible hypotheses.
+          # 近距离纵深反转可能需要约 0.27m 的宽松重捕获修正。这里与现有
+          # 重建上限对齐；NIS/yaw/结构门控仍会拒绝不兼容假设。
           max_center_jump: 0.30
           max_yaw_jump: 0.80
           min_r: 0.05
           max_r: 0.50
           max_r_jump: 0.05
-          # The first observed panel defines an arbitrary phase. A negative
-          # dza with swapped r1/r2 is the same layout shifted by 90 degrees.
+          # 首个观测到的面板会定义任意相位；dza 取负且交换 r1/r2 等价于
+          # 同一布局整体旋转 90 度。
           min_dza: -0.15
           max_dza: 0.15
           max_dza_jump: 0.03
@@ -281,10 +302,9 @@ gimbal_pipeline:
       yaw_vel_min_cutoff: 1.0
       yaw_vel_beta: 3.0
       yaw_vel_d_cutoff: 3.0
-      # Below 0.5rad/s the flight-horizon tangential displacement is at most
-      # about 1.5cm for a 0.2m radius, while static PnP yaw jitter otherwise
-      # produces short 0.1-0.48rad/s phantom-spin bursts. Keep the internal
-      # filter state for association, but publish zero to prediction/control.
+      # 低于 0.5rad/s 时，0.2m 半径在飞行时域内的切向位移最多约 1.5cm；
+      # 静态 PnP yaw 抖动却可能产生 0.1-0.48rad/s 的短时假旋转。
+      # 内部滤波状态保留给关联使用，但对预测/控制发布为 0。
       yaw_vel_deadband: 0.5
       # RM 参数：initial_step大=收敛快但波动大，gamma大=后期更新更慢
       rm_initial_step: 0.5
@@ -369,24 +389,23 @@ gimbal_pipeline:
         phase_audit_confirm_frames: 2
 
 # =============================================================================
-# ros-free 跟踪防抖覆盖（bringup_sim 直接读取，不经参数层）
+# 无 ROS 跟踪防抖覆盖（bringup_sim 直接读取，不经参数层）
 # =============================================================================
 tracking:
-  # Per-input-mode observation weight. armor_pose injects 0.02m/0.05rad truth
-  # noise -> 0.35 matches; vision PnP at ~2m measures ~0.09m/12deg (plus a
-  # systematic depth bias), so the gate needs a much looser R or every frame
-  # gets NIS-rejected and the tracker churns TRACKING<->TEMP_LOST.
+  # 按输入模式设置观测噪声权重。armor_pose 注入 0.02m/0.05rad 真值噪声，
+  # 0.35 比较匹配；vision PnP 在约 2m 处观测噪声约 0.09m/12deg，并带有
+  # 系统性深度偏差，因此门控需要更宽松的 R，否则每帧都会被 NIS 拒绝，
+  # 跟踪状态会在 TRACKING 与 TEMP_LOST 间反复抖动。
   observation_noise_scale:
     vision: 1.5
     armor_pose: 0.35
 
-  # Keep the tracker alive internally for reacquisition, but stop publishing and
-  # steering from a TEMP_LOST prediction once the last observation is this old.
+  # 内部保留跟踪器用于重捕获；但最后一次观测超过该时长后，不再发布和
+  # 跟随 TEMP_LOST 预测。
   max_temp_lost_prediction_s: 0.15
-  # Adaptive dead-reckoning: a target observed moving faster than
-  # temp_lost_coast_min_speed_mps may coast on the (velocity-decayed) prediction
-  # for up to temp_lost_coast_max_s, so a traversing target does not escape the
-  # FOV while the gimbal would otherwise freeze after 0.15s.
+  # 自适应航位推算：若目标最后观测速度超过 temp_lost_coast_min_speed_mps，
+  # 则允许在速度衰减后的预测上最多保持 temp_lost_coast_max_s，避免横移目标
+  # 在云台 0.15s 后冻结时直接跑出视场。
   temp_lost_coast_max_s: 0.5
   temp_lost_coast_min_speed_mps: 0.3
 
@@ -396,42 +415,37 @@ tracking:
   # 归并到该轨迹。0 = 关闭（多车近距离混战场景可调小或关闭）。
   id_association_max_distance_m: 0.6
 
-  # Whole-vehicle attitude (roll/pitch) estimation from plate orientations.
-  # mount_pitch_deg is the physical plate mount angle (15deg); the de-tilt
-  # SIGN is self-calibrated per frame (the more vertical of the two
-  # candidates wins), so the value is platform-agnostic — no per-renderer
-  # sign tuning needed. ema_alpha is the smoothing gain; the readout is a
-  # slow signal (slope/brake rocking), not a per-frame pose.
+  # 根据装甲板姿态估计整车姿态（roll/pitch）。mount_pitch_deg 是装甲板
+  # 物理安装角（15deg）；去倾斜方向每帧自校准（两个候选中更竖直者胜出），
+  # 因此该值与平台无关，不需要按渲染器单独调符号。ema_alpha 是平滑增益；
+  # 输出是慢信号（坡度/刹车点头），不是逐帧精确位姿。
   attitude:
     mount_pitch_deg: 15.0
     ema_alpha: 0.02
-    # Apply the estimated layout attitude to the plate geometry (visualization
-    # AND prediction): with a trusted attitude, center_pose carries the real
-    # roll/pitch and the full-SE(3) projection draws/predicts plates on the
-    # tilted installation plane instead of assuming it is ground-parallel.
+    # 将估计出的布局姿态用于装甲板几何（可视化和预测都会受影响）：
+    # 姿态可信时，center_pose 携带真实 roll/pitch，full-SE(3) 投影会在倾斜
+    # 安装平面上绘制/预测装甲板，而不是假设装甲板平行地面。
     apply_to_geometry: true
 
   motion_guard:
     enabled: true
-    # Suppress sub-0.15m/s velocity estimates caused by stationary PnP jitter.
+    # 抑制静止 PnP 抖动导致的 0.15m/s 以下速度估计。
     stationary_speed_deadband_mps: 0.15
-    # Physical guards prevent a plate switch/dropout from creating a runaway
-    # whole-vehicle translation state. Gestalt 实测目标爆发速度可超 3m/s，
+    # 物理保护用于防止换板/漏检制造失控的整车平移状态。Gestalt 实测目标爆发速度可超 3m/s，
     # 限幅过低会压住速度估计导致高速目标跟丢；5.0 已高于正常机动上限。
     max_linear_speed_mps: 5.0
     max_linear_acceleration_mps2: 12.0
-    # During rejected/missing observations, decay translation quickly while
-    # retaining yaw rate so rotation-only motion does not become straight-line drift.
+    # 观测被拒绝或缺失时，快速衰减平移速度，同时保留 yaw 角速度，
+    # 避免纯旋转运动被误转化成直线漂移。
     # 0.12s 对突发提速过于激进（拒止帧恰好出现在机动瞬间时会把跟随所需的速度
     # 衰减掉），0.30s 兼顾惯性外推可信度与真实机动跟随。
     temp_lost_velocity_half_life_s: 0.30
-    # Covariance rebuild level for states the guard pins to zero. Keeps the
-    # filter able to leave the pin once real motion reappears.
+    # 保护器把状态钉到 0 后使用的协方差重建尺度，保证真实运动重新出现时
+    # 滤波器可以脱离钉死状态。
     velocity_reset_std_mps: 0.5
     acceleration_reset_std_mps2: 2.0
-    # Whole-vehicle yaw-rate guard: clamps implausible spin estimates and
-    # deadbands stationary-target yaw jitter. Yaw rate is never decayed on
-    # missing frames so a spinning target keeps its rotational prediction.
+    # 整车 yaw 角速度保护：限制不合理旋转估计，并对静止目标 yaw 抖动做死区。
+    # 缺帧时不衰减 yaw 角速度，因此旋转目标仍能保持旋转预测。
     max_yaw_rate_rad_s: 15.0
     yaw_rate_deadband_rad_s: 0.05
     yaw_rate_reset_std_rad_s: 0.5
