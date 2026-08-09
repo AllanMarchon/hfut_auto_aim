@@ -21,9 +21,6 @@ if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIB)
     "如果要跑完整自瞄，请安装 ONNX Runtime，或通过 -DONNXRUNTIME_ROOT=/path/to/onnxruntime 指定路径。")
 endif()
 
-# 内置的 rm_utils logger，已经去掉 ROS 依赖。
-file(GLOB RM_UTILS_SRC "${THIRD_PARTY}/rm_utils/src/logger/*.cpp")
-
 # 这里只编译 onnxruntime 后端，暂不引入 openvino/tensorrt 源码。
 set(DETECTOR_SRC
   src/core/armor_detector_nn.cpp
@@ -50,7 +47,7 @@ set(DETECTOR_SRC
   config_loader.cpp
 )
 
-add_library(hfut_detector STATIC ${DETECTOR_SRC} ${RM_UTILS_SRC})
+add_library(hfut_detector STATIC ${DETECTOR_SRC})
 
 target_compile_definitions(hfut_detector PUBLIC ARMOR_DETECTOR_NN_HAS_ONNX=1)
 # 提供给 ament_index_cpp 兼容层，用于解析 package:// 模型和标签路径。
@@ -67,6 +64,7 @@ target_include_directories(hfut_detector PUBLIC
 target_include_directories(hfut_detector BEFORE PUBLIC "${COMPAT}")
 target_include_directories(hfut_detector SYSTEM PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
 
-target_link_libraries(hfut_detector PUBLIC ${OpenCV_LIBS} yaml-cpp fmt)
+target_link_libraries(hfut_detector PUBLIC
+  hfut_rm_utils_logger ${OpenCV_LIBS} yaml-cpp fmt)
 target_link_libraries(hfut_detector PRIVATE ${ONNXRUNTIME_LIB})
 target_link_directories(hfut_detector PUBLIC "${ONNXRUNTIME_ROOT}/lib")

@@ -15,6 +15,14 @@ find_package(OpenCV 4.5 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_library(LZ4_LIBRARY NAMES lz4 REQUIRED)
 
+set(HFUT_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+file(GLOB HFUT_RM_UTILS_LOGGER_SOURCES CONFIGURE_DEPENDS
+  "${HFUT_THIRD_PARTY_DIR}/rm_utils/src/logger/*.cpp")
+add_library(hfut_rm_utils_logger STATIC ${HFUT_RM_UTILS_LOGGER_SOURCES})
+target_include_directories(hfut_rm_utils_logger PUBLIC
+  "${HFUT_THIRD_PARTY_DIR}/rm_utils/include")
+target_link_libraries(hfut_rm_utils_logger PUBLIC fmt)
+
 if(UNIX)
   option(HFUT_ENABLE_REAL_IO "Build POSIX real-vehicle serial IO adapters" ON)
 else()

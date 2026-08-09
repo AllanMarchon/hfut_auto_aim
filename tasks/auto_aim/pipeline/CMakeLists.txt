@@ -44,5 +44,6 @@ target_include_directories(hfut_pipeline PUBLIC
 target_include_directories(hfut_pipeline BEFORE PUBLIC "${COMPAT}")
 target_include_directories(hfut_pipeline SYSTEM PRIVATE "${QPOASES_INCLUDE_DIR}")
 
-target_link_libraries(hfut_pipeline PUBLIC ${OpenCV_LIBS} fmt yaml-cpp)
+target_link_libraries(hfut_pipeline PUBLIC
+  hfut_rm_utils_logger ${OpenCV_LIBS} fmt yaml-cpp)
 target_link_libraries(hfut_pipeline PRIVATE ${QPOASES_LIB})
