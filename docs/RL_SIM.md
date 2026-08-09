@@ -15,7 +15,8 @@ baseline difficulty matrix.
 
 ## What still needs Linux/Webots
 
-- Build and run `bringup_sim`.
+- Build and run `bringup_sim_armor_pose` for the first detector-free loop.
+- Build and run the full `bringup_sim` only after ONNX Runtime is installed.
 - Run the Webots difficulty matrix.
 - Train against a live simulator.
 - Validate that an RL residual action does not degrade the baseline.
@@ -38,13 +39,11 @@ old simulator behavior.
 
 ## Linux bring-up sequence
 
-1. Build and test the main project.
+1. Build the armor-pose simulator target with detector disabled.
 2. Run the `armor_pose` difficulty matrix for `predicted` and `mpc`.
 3. Save those reports as the baseline.
 4. Run `tools/rl/eval_policy.py` with the zero-action policy.
-5. Add the C++ residual hook only after replay observation/reward code is
-   stable.
-6. Train PPO/SAC only after zero-action performance matches the baseline.
+5. Train PPO/SAC only after zero-action performance matches the baseline.
 
 ## Commands
 
@@ -74,14 +73,38 @@ Evaluate a zero-action policy:
 python3 tools/rl/eval_policy.py --config configs/rl_sim.yaml --steps 1800
 ```
 
-Run `bringup_sim` with the optional C++ residual hook enabled:
+Configure and build the detector-free armor-pose simulator path:
 
 ```bash
-./scripts/run.sh --input-mode=armor_pose --strategy=predicted --diagnostics --rl-action
+./scripts/build_armor_pose_sim.sh
 ```
 
-With `--rl-action` and no explicit path, `bringup_sim` reads `rl_action.json`
-from the active bridge directory. Missing action files are treated as no-op.
+Equivalent manual CMake commands:
+
+```bash
+rm -rf build
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DHFUT_ENABLE_DETECTOR=OFF \
+  -DHFUT_ENABLE_PIPELINE=ON
+cmake --build build --parallel 2
+```
+
+Run the armor-pose simulator loop with diagnostics and the optional C++
+residual hook enabled:
+
+```bash
+./scripts/run_armor_pose_sim.sh --strategy=predicted --diagnostics --rl-action
+```
+
+With `--rl-action` and no explicit path, `bringup_sim_armor_pose` reads
+`rl_action.json` from the active bridge directory. Missing action files are
+treated as no-op.
+
+The full vision-mode `bringup_sim` still requires ONNX Runtime. If the machine
+does not have ONNX Runtime under `/opt/onnxruntime-gpu`, either install it or
+configure CMake with `-DONNXRUNTIME_ROOT=/path/to/onnxruntime` before enabling
+`HFUT_ENABLE_DETECTOR=ON`.
 
 Train later, after live sim support is connected:
 

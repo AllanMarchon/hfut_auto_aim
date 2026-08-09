@@ -168,6 +168,14 @@ if(HFUT_ENABLE_DETECTOR AND HFUT_ENABLE_PIPELINE)
     HFUT_DETECTOR_ASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tasks/auto_aim/detector)
 endif()
 
+if(HFUT_ENABLE_PIPELINE)
+  # Detector-free armor_pose simulator entry. This keeps the Webots/RL closed
+  # loop buildable on machines without ONNX Runtime.
+  add_executable(bringup_sim_armor_pose apps/bringup_sim_armor_pose.cpp)
+  target_link_libraries(bringup_sim_armor_pose PRIVATE
+    hfut_io hfut_pipeline ${OpenCV_LIBS} yaml-cpp)
+endif()
+
 if(HFUT_ENABLE_DETECTOR)
   # Phase B detector 验证程序。
   add_executable(detector_test apps/detector_test.cpp)
