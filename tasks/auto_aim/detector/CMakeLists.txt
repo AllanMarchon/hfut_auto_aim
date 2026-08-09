@@ -1,8 +1,6 @@
-# armor_detector_nn — ROS-free port. Builds the NN detection + pose-estimation
-# library (onnxruntime backend only). ROS types are satisfied by header shims
-# under third_party/compat (rclcpp::Time, std_msgs::Header,
-# sensor_msgs::CameraInfo, ament_index_cpp, tf2 LinearMath) so the algorithm
-# sources compile unmodified.
+# armor_detector_nn 的 ROS-free 移植版：构建神经网络检测和位姿估计库。
+# 目前只启用 onnxruntime 后端。ROS 类型通过 third_party/compat 下的头文件
+# 兼容层提供，尽量保持算法源码不做侵入式改动。
 
 find_package(OpenCV 4.5 REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -11,19 +9,22 @@ find_package(yaml-cpp REQUIRED)
 set(THIRD_PARTY "${CMAKE_SOURCE_DIR}/third_party")
 set(COMPAT "${THIRD_PARTY}/compat")
 
-# onnxruntime-gpu (installed binary, not a CMake package).
+# onnxruntime-gpu 是预编译安装包，不是标准 CMake package。
 set(ONNXRUNTIME_ROOT "/opt/onnxruntime-gpu" CACHE PATH "onnxruntime-gpu root")
 find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
   PATHS "${ONNXRUNTIME_ROOT}/include" PATH_SUFFIXES onnxruntime onnxruntime/core/session)
 find_library(ONNXRUNTIME_LIB onnxruntime PATHS "${ONNXRUNTIME_ROOT}/lib")
 if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIB)
-  message(FATAL_ERROR "onnxruntime-gpu not found under ${ONNXRUNTIME_ROOT}")
+  message(FATAL_ERROR
+    "在 ${ONNXRUNTIME_ROOT} 下没有找到 onnxruntime-gpu。"
+    "如果只是做串口/IO 冒烟测试，请配置 -DHFUT_ENABLE_DETECTOR=OFF。"
+    "如果要跑完整自瞄，请安装 ONNX Runtime，或通过 -DONNXRUNTIME_ROOT=/path/to/onnxruntime 指定路径。")
 endif()
 
-# rm_utils logger (vendored, ROS-free).
+# 内置的 rm_utils logger，已经去掉 ROS 依赖。
 file(GLOB RM_UTILS_SRC "${THIRD_PARTY}/rm_utils/src/logger/*.cpp")
 
-# onnxruntime backend only; openvino/tensorrt sources are intentionally excluded.
+# 这里只编译 onnxruntime 后端，暂不引入 openvino/tensorrt 源码。
 set(DETECTOR_SRC
   src/core/armor_detector_nn.cpp
   src/core/armor_pose_estimator_adapter.cpp
@@ -52,7 +53,7 @@ set(DETECTOR_SRC
 add_library(hfut_detector STATIC ${DETECTOR_SRC} ${RM_UTILS_SRC})
 
 target_compile_definitions(hfut_detector PUBLIC ARMOR_DETECTOR_NN_HAS_ONNX=1)
-# Asset dir for the ament_index_cpp shim (resolves package:// model/label paths).
+# 提供给 ament_index_cpp 兼容层，用于解析 package:// 模型和标签路径。
 target_compile_definitions(hfut_detector PRIVATE
   HFUT_DETECTOR_ASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -62,7 +63,7 @@ target_include_directories(hfut_detector PUBLIC
   "${THIRD_PARTY}/rm_utils/include"
   ${EIGEN3_INCLUDE_DIR}
 )
-# compat shims FIRST so <rclcpp/...> etc. resolve here, never to /opt/ros.
+# 兼容层必须放在前面，避免 <rclcpp/...> 等头文件解析到 /opt/ros。
 target_include_directories(hfut_detector BEFORE PUBLIC "${COMPAT}")
 target_include_directories(hfut_detector SYSTEM PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
 

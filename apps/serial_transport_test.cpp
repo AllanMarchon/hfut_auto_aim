@@ -5,37 +5,44 @@
 #include <thread>
 
 #include "hfut_auto_aim/gimbal_command.hpp"
-#include "io/serial/infantry32_serial.hpp"
+#include "io/serial/infantry_serial.hpp"
 
 namespace {
 constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
 
 void printUsage(const char* argv0) {
   std::fprintf(stderr,
-               "Usage: %s [port] [baudrate]\n"
-               "Example: %s /dev/ttyACM0 115200\n",
+               "Usage: %s [port] [baudrate] [protocol]\n"
+               "Protocol: infantry | infantry_16 | infantry_32\n"
+               "Example: %s /dev/ttyACM0 115200 infantry\n",
                argv0, argv0);
 }
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc > 3 || (argc > 1 && std::string(argv[1]) == "--help")) {
+  if (argc > 4 || (argc > 1 && std::string(argv[1]) == "--help")) {
     printUsage(argv[0]);
-    return argc > 3 ? 1 : 0;
+    return argc > 4 ? 1 : 0;
   }
 
-  hfut::io::Infantry32SerialConfig config;
+  hfut::io::InfantrySerialConfig config;
   if (argc >= 2) config.port = argv[1];
   if (argc >= 3) config.baudrate = std::atoi(argv[2]);
+  if (argc >= 4 &&
+      !hfut::io::parseInfantryPacketLayout(argv[3], config.layout)) {
+    std::fprintf(stderr, "unsupported protocol: %s\n", argv[3]);
+    return 1;
+  }
   config.allow_fire = false;
 
-  hfut::io::Infantry32SerialTransport serial(config);
+  hfut::io::InfantrySerialTransport serial(config);
   if (!serial.open()) {
     std::fprintf(stderr, "serial open failed: %s\n", serial.errorMessage().c_str());
     return 1;
   }
 
-  std::printf("serial opened: %s @ %d\n", config.port.c_str(), config.baudrate);
+  std::printf("serial opened: %s @ %d protocol=%s\n", config.port.c_str(),
+              config.baudrate, hfut::io::infantryPacketLayoutName(config.layout));
   while (true) {
     hfut::io::SerialFeedback feedback;
     if (serial.readFeedback(feedback)) {

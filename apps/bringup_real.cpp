@@ -27,8 +27,15 @@
 #include "hfut_auto_aim/camera_frame.hpp"
 #include "hfut_auto_aim/gimbal_command.hpp"
 #include "hfut_auto_aim/video_calibration.hpp"
+#include "io/camera/camera_source.hpp"
+#ifdef HFUT_HAS_HIK_CAMERA
+#include "io/camera/hik_camera_source.hpp"
+#endif
+#ifdef HFUT_HAS_MINDVISION_CAMERA
+#include "io/camera/mindvision_camera_source.hpp"
+#endif
 #include "io/camera/opencv_camera_source.hpp"
-#include "io/serial/infantry32_serial.hpp"
+#include "io/serial/infantry_serial.hpp"
 
 #include "config_loader.hpp"
 #include "armor_detector_nn/core/armor_detector_nn.hpp"
@@ -52,17 +59,26 @@ constexpr double kRadToDeg = 180.0 / kPi;
 struct Options {
   std::string config_dir{"configs"};
   std::string hardware_config{"configs/hardware.yaml"};
+  std::string camera_backend{"opencv"};
   std::string camera_source;
+  std::string camera_sn;
   int camera_index{0};
   int camera_width{0};
   int camera_height{0};
   double camera_fps{0.0};
+  double camera_exposure_time_us{0.0};
+  double camera_gain{0.0};
+  int camera_analog_gain{-1};
+  int camera_frame_speed{-1};
+  bool camera_flip_image{false};
   std::string camera_info_path;
   std::string calibration_mode{"strict"};
   hfut::CameraToBarrelExtrinsics camera_to_barrel;
 
   std::string serial_port{"/dev/ttyACM0"};
   int serial_baudrate{115200};
+  std::string serial_protocol{"infantry"};
+  std::string infantry32_tail_fields{"acceleration"};
   bool command_angles_in_degrees{true};
   bool feedback_angles_in_degrees{true};
   int serial_read_timeout_ms{2};
@@ -125,11 +141,22 @@ void loadHardwareConfig(Options& options) {
 
   const YAML::Node camera = root["camera"];
   if (camera) {
+    options.camera_backend = parseString(camera["backend"], options.camera_backend);
     options.camera_source = parseString(camera["source"], options.camera_source);
+    options.camera_sn = parseString(camera["camera_sn"], options.camera_sn);
     options.camera_index = parseInt(camera["device_index"], options.camera_index);
     options.camera_width = parseInt(camera["width"], options.camera_width);
     options.camera_height = parseInt(camera["height"], options.camera_height);
     options.camera_fps = parseDouble(camera["fps"], options.camera_fps);
+    options.camera_exposure_time_us =
+        parseDouble(camera["exposure_time_us"], options.camera_exposure_time_us);
+    options.camera_gain = parseDouble(camera["gain"], options.camera_gain);
+    options.camera_analog_gain =
+        parseInt(camera["analog_gain"], options.camera_analog_gain);
+    options.camera_frame_speed =
+        parseInt(camera["frame_speed"], options.camera_frame_speed);
+    options.camera_flip_image =
+        parseBool(camera["flip_image"], options.camera_flip_image);
     options.camera_info_path =
         parseString(camera["camera_info"], options.camera_info_path);
     options.calibration_mode =
@@ -149,6 +176,9 @@ void loadHardwareConfig(Options& options) {
   if (serial) {
     options.serial_port = parseString(serial["port"], options.serial_port);
     options.serial_baudrate = parseInt(serial["baudrate"], options.serial_baudrate);
+    options.serial_protocol = parseString(serial["protocol"], options.serial_protocol);
+    options.infantry32_tail_fields = parseString(
+        serial["infantry32_tail_fields"], options.infantry32_tail_fields);
     options.command_angles_in_degrees = parseBool(
         serial["command_angles_in_degrees"], options.command_angles_in_degrees);
     options.feedback_angles_in_degrees = parseBool(
@@ -202,11 +232,18 @@ Options parseOptions(int argc, char** argv) {
           "  --hardware-config PATH   hardware YAML (default configs/hardware.yaml)\n"
           "  --real-config PATH       legacy alias for --hardware-config\n"
           "  --config-dir PATH        detector/tracker/controller config directory\n"
+          "  --camera-backend NAME    opencv | hik | mindvision\n"
           "  --camera-source PATH     OpenCV source path/URL/video file\n"
+          "  --camera-sn SN           industrial camera serial number\n"
           "  --camera-index N         OpenCV camera index when source is empty\n"
           "  --camera-info PATH       ROS camera_info YAML, required\n"
+          "  --exposure-time-us US    industrial camera exposure override\n"
+          "  --gain VALUE             Hik/OpenCV gain override\n"
+          "  --flip-image             flip industrial camera image 180 degrees\n"
           "  --serial-port PATH       serial device path\n"
           "  --baudrate N             serial baudrate\n"
+          "  --serial-protocol NAME   infantry | infantry_16 | infantry_32\n"
+          "  --infantry32-tail-fields acceleration | duplicate_velocity\n"
           "  --enemy-color COLOR      red | blue | white\n"
           "  --bullet-speed MPS       controller bullet speed override\n"
           "  --strategy NAME          controller strategy override\n"
@@ -221,6 +258,8 @@ Options parseOptions(int argc, char** argv) {
       options.enable_fire = true;
     } else if (arg == "--display") {
       options.display = true;
+    } else if (arg == "--flip-image") {
+      options.camera_flip_image = true;
     } else if (arg == "--hardware-config" || arg == "--real-config") {
       ++i;
     } else if (arg.rfind("--hardware-config=", 0) == 0 ||
@@ -228,16 +267,28 @@ Options parseOptions(int argc, char** argv) {
       continue;
     } else if (auto value = optionValue(argc, argv, i, arg, "--config-dir"); !value.empty()) {
       options.config_dir = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--camera-backend"); !value.empty()) {
+      options.camera_backend = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--camera-source"); !value.empty()) {
       options.camera_source = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--camera-sn"); !value.empty()) {
+      options.camera_sn = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--camera-index"); !value.empty()) {
       options.camera_index = std::stoi(value);
     } else if (auto value = optionValue(argc, argv, i, arg, "--camera-info"); !value.empty()) {
       options.camera_info_path = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--exposure-time-us"); !value.empty()) {
+      options.camera_exposure_time_us = std::stod(value);
+    } else if (auto value = optionValue(argc, argv, i, arg, "--gain"); !value.empty()) {
+      options.camera_gain = std::stod(value);
     } else if (auto value = optionValue(argc, argv, i, arg, "--serial-port"); !value.empty()) {
       options.serial_port = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--baudrate"); !value.empty()) {
       options.serial_baudrate = std::stoi(value);
+    } else if (auto value = optionValue(argc, argv, i, arg, "--serial-protocol"); !value.empty()) {
+      options.serial_protocol = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--infantry32-tail-fields"); !value.empty()) {
+      options.infantry32_tail_fields = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--enemy-color"); !value.empty()) {
       options.enemy_color = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--bullet-speed"); !value.empty()) {
@@ -255,11 +306,29 @@ Options parseOptions(int argc, char** argv) {
     throw std::invalid_argument(
         "camera_info is required; set hardware.camera.camera_info or --camera-info");
   }
+  if (options.camera_backend != "opencv" && options.camera_backend != "hik" &&
+      options.camera_backend != "mindvision") {
+    throw std::invalid_argument(
+        "camera backend must be opencv, hik, or mindvision, got: " +
+        options.camera_backend);
+  }
   if (options.serial_read_timeout_ms < 0) {
     throw std::invalid_argument("serial read timeout must be >= 0");
   }
   if (options.feedback_timeout_ms <= 0) {
     throw std::invalid_argument("feedback timeout must be > 0");
+  }
+  hfut::io::InfantryPacketLayout layout;
+  if (!hfut::io::parseInfantryPacketLayout(options.serial_protocol, layout)) {
+    throw std::invalid_argument(
+        "serial protocol must be infantry, infantry_16, or infantry_32, got: " +
+        options.serial_protocol);
+  }
+  hfut::io::Infantry32TailFields fields;
+  if (!hfut::io::parseInfantry32TailFields(options.infantry32_tail_fields, fields)) {
+    throw std::invalid_argument(
+        "infantry32_tail_fields must be acceleration or duplicate_velocity, got: " +
+        options.infantry32_tail_fields);
   }
   return options;
 }
@@ -319,6 +388,81 @@ fyt::EnemyColor parseEnemyColor(const std::string& value) {
   if (value == "blue") return fyt::EnemyColor::BLUE;
   if (value == "white") return fyt::EnemyColor::WHITE;
   throw std::invalid_argument("enemy color must be red, blue, or white, got: " + value);
+}
+
+std::unique_ptr<hfut::io::CameraSource> createCameraSource(
+    const Options& options, const hfut::CameraIntrinsics& intrinsics) {
+  if (options.camera_backend == "opencv") {
+    hfut::io::OpenCvCameraSourceConfig config;
+    config.source = options.camera_source;
+    config.device_index = options.camera_index;
+    config.width = options.camera_width;
+    config.height = options.camera_height;
+    config.fps = options.camera_fps;
+    config.gain = options.camera_gain;
+    config.set_gain = options.camera_gain > 0.0;
+    config.intrinsics = intrinsics;
+    return std::make_unique<hfut::io::OpenCvCameraSource>(config);
+  }
+
+  if (options.camera_backend == "hik") {
+#ifdef HFUT_HAS_HIK_CAMERA
+    hfut::io::HikCameraSourceConfig config;
+    config.camera_sn = options.camera_sn;
+    config.width = options.camera_width;
+    config.height = options.camera_height;
+    config.fps = options.camera_fps;
+    config.exposure_time_us = options.camera_exposure_time_us;
+    config.gain = options.camera_gain;
+    config.flip_image = options.camera_flip_image;
+    config.intrinsics = intrinsics;
+    return std::make_unique<hfut::io::HikCameraSource>(config);
+#else
+    throw std::runtime_error(
+        "camera.backend=hik requires rebuilding with HFUT_ENABLE_HIK_CAMERA=ON");
+#endif
+  }
+
+  if (options.camera_backend == "mindvision") {
+#ifdef HFUT_HAS_MINDVISION_CAMERA
+    hfut::io::MindvisionCameraSourceConfig config;
+    config.camera_sn = options.camera_sn;
+    config.width = options.camera_width;
+    config.height = options.camera_height;
+    config.fps = options.camera_fps;
+    config.exposure_time_us = options.camera_exposure_time_us;
+    config.analog_gain = options.camera_analog_gain;
+    config.frame_speed = options.camera_frame_speed;
+    config.flip_image = options.camera_flip_image;
+    config.intrinsics = intrinsics;
+    return std::make_unique<hfut::io::MindvisionCameraSource>(config);
+#else
+    throw std::runtime_error(
+        "camera.backend=mindvision requires rebuilding with "
+        "HFUT_ENABLE_MINDVISION_CAMERA=ON");
+#endif
+  }
+
+  throw std::invalid_argument("unsupported camera backend: " + options.camera_backend);
+}
+
+hfut::io::InfantrySerialConfig makeSerialConfig(const Options& options) {
+  hfut::io::InfantrySerialConfig config;
+  config.port = options.serial_port;
+  config.baudrate = options.serial_baudrate;
+  if (!hfut::io::parseInfantryPacketLayout(options.serial_protocol, config.layout)) {
+    throw std::invalid_argument("unsupported serial protocol: " + options.serial_protocol);
+  }
+  if (!hfut::io::parseInfantry32TailFields(
+          options.infantry32_tail_fields, config.tail_fields)) {
+    throw std::invalid_argument(
+        "unsupported infantry32_tail_fields: " + options.infantry32_tail_fields);
+  }
+  config.command_angles_in_degrees = options.command_angles_in_degrees;
+  config.feedback_angles_in_degrees = options.feedback_angles_in_degrees;
+  config.read_timeout_ms = options.serial_read_timeout_ms;
+  config.allow_fire = options.enable_fire;
+  return config;
 }
 
 std_msgs::msg::Header makeHeader(double time_s) {
@@ -429,26 +573,13 @@ int run(const Options& options) {
   const auto calibration_mode =
       hfut::video::parseCalibrationMode(options.calibration_mode);
 
-  hfut::io::OpenCvCameraSourceConfig camera_config;
-  camera_config.source = options.camera_source;
-  camera_config.device_index = options.camera_index;
-  camera_config.width = options.camera_width;
-  camera_config.height = options.camera_height;
-  camera_config.fps = options.camera_fps;
-  camera_config.intrinsics = toIntrinsics(source_calibration);
-  hfut::io::OpenCvCameraSource camera(camera_config);
-  if (!camera.open()) {
-    throw std::runtime_error("camera open failed: " + camera.errorMessage());
+  auto camera = createCameraSource(options, toIntrinsics(source_calibration));
+  if (!camera->open()) {
+    throw std::runtime_error("camera open failed: " + camera->errorMessage());
   }
 
-  hfut::io::Infantry32SerialConfig serial_config;
-  serial_config.port = options.serial_port;
-  serial_config.baudrate = options.serial_baudrate;
-  serial_config.command_angles_in_degrees = options.command_angles_in_degrees;
-  serial_config.feedback_angles_in_degrees = options.feedback_angles_in_degrees;
-  serial_config.read_timeout_ms = options.serial_read_timeout_ms;
-  serial_config.allow_fire = options.enable_fire;
-  hfut::io::Infantry32SerialTransport serial(serial_config);
+  const auto serial_config = makeSerialConfig(options);
+  hfut::io::InfantrySerialTransport serial(serial_config);
   if (!options.dry_run && !serial.open()) {
     throw std::runtime_error("serial open failed: " + serial.errorMessage());
   }
@@ -481,18 +612,27 @@ int run(const Options& options) {
     cv::resizeWindow("hfut bringup real", 960, 720);
   }
 
-  if (options.camera_source.empty()) {
+  if (options.camera_backend == "opencv" && options.camera_source.empty()) {
     std::printf(
-        "[bringup_real] camera=index %d serial=%s@%d dry_run=%s fire=%s\n",
-        options.camera_index, options.serial_port.c_str(), options.serial_baudrate,
+        "[bringup_real] camera=%s:index %d serial=%s:%s@%d dry_run=%s fire=%s\n",
+        options.camera_backend.c_str(), options.camera_index,
+        hfut::io::infantryPacketLayoutName(serial_config.layout),
+        options.serial_port.c_str(), options.serial_baudrate,
         options.dry_run ? "true" : "false",
         options.enable_fire ? "enabled" : "disabled");
   } else {
     std::printf(
-        "[bringup_real] camera=%s serial=%s@%d dry_run=%s fire=%s\n",
-        options.camera_source.c_str(), options.serial_port.c_str(),
-        options.serial_baudrate, options.dry_run ? "true" : "false",
+        "[bringup_real] camera=%s:%s serial=%s:%s@%d dry_run=%s fire=%s\n",
+        options.camera_backend.c_str(),
+        (options.camera_backend == "opencv" ? options.camera_source : options.camera_sn).c_str(),
+        hfut::io::infantryPacketLayoutName(serial_config.layout),
+        options.serial_port.c_str(), options.serial_baudrate,
+        options.dry_run ? "true" : "false",
         options.enable_fire ? "enabled" : "disabled");
+  }
+  if (serial_config.layout == hfut::io::InfantryPacketLayout::kInfantry32) {
+    std::printf("[bringup_real] infantry32_tail_fields=%s\n",
+                hfut::io::infantry32TailFieldsName(serial_config.tail_fields));
   }
   std::printf(
       "[bringup_real] camera_info=%s calibration_mode=%s enemy=%s bullet=%.2f\n",
@@ -541,9 +681,9 @@ int run(const Options& options) {
     }
 
     hfut::CameraFrame frame;
-    if (!camera.read(frame, std::chrono::milliseconds(200))) {
+    if (!camera->read(frame, std::chrono::milliseconds(200))) {
       std::fprintf(stderr, "[bringup_real] camera read timeout: %s\n",
-                   camera.errorMessage().c_str());
+                   camera->errorMessage().c_str());
       continue;
     }
 

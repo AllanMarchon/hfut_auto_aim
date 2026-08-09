@@ -2,6 +2,11 @@
 # 上车调试时优先看这个文件；除非显式开启，否则默认不允许发送开火。
 hardware:
   camera:
+    # backend: opencv=普通摄像头/视频文件 | hik=海康 MVS | mindvision=迈德威视
+    # 工业相机需要在 CMake 打开对应开关后才能使用。
+    backend: "opencv"
+    camera_sn: ""                # 留空使用检测到的第一台工业相机；多相机时建议填序列号
+
     # source 为空时通过 OpenCV 打开 device_index；非空时可以是视频文件、
     # 流地址，或 OpenCV 后端支持的设备路径。
     source: ""
@@ -9,6 +14,11 @@ hardware:
     width: 1280
     height: 1024
     fps: 120.0
+    exposure_time_us: 2500.0      # 海康/迈德威视曝光时间，单位微秒
+    gain: 16.0                    # 海康增益；OpenCV 后端仅在值大于 0 时尝试设置
+    analog_gain: 8                # 迈德威视模拟增益
+    frame_speed: 1                # 迈德威视帧速模式：0=Low, 1=Normal, 2=High, 3=Super
+    flip_image: true              # 旧实车海康配置为 true；画面倒置时调这个
     camera_info: "configs/camera_info.yaml"
     calibration_mode: "strict"   # strict=严格匹配 | scale=缩放内参 | center_crop=中心裁剪
 
@@ -21,6 +31,8 @@ hardware:
   serial:
     port: "/dev/ttyACM0"
     baudrate: 115200
+    protocol: "infantry"          # infantry=24字节旧实车协议 | infantry_16 | infantry_32
+    infantry32_tail_fields: "acceleration"  # acceleration=发加速度 | duplicate_velocity=兼容旧32字节写法
     command_angles_in_degrees: true
     feedback_angles_in_degrees: true
     read_timeout_ms: 2

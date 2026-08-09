@@ -189,9 +189,20 @@ def validate_hardware(report: Report, repo_root: Path, configs: dict[str, Any]) 
         report.error("hardware.camera 缺失或不是对象")
         return
 
+    require_choice(report, camera.get("backend"), "hardware.camera.backend", {"opencv", "hik", "mindvision"})
+    if not isinstance(camera.get("camera_sn", ""), str):
+        report.error("hardware.camera.camera_sn 必须是字符串")
     require_number(report, camera.get("width"), "hardware.camera.width", positive=True)
     require_number(report, camera.get("height"), "hardware.camera.height", positive=True)
     require_number(report, camera.get("fps"), "hardware.camera.fps", positive=True)
+    require_number(report, camera.get("exposure_time_us"), "hardware.camera.exposure_time_us", positive=True)
+    require_number(report, camera.get("gain"), "hardware.camera.gain")
+    require_number(report, camera.get("analog_gain"), "hardware.camera.analog_gain")
+    require_number(report, camera.get("frame_speed"), "hardware.camera.frame_speed")
+    frame_speed = camera.get("frame_speed")
+    if is_finite_number(frame_speed) and int(frame_speed) not in {0, 1, 2, 3}:
+        report.warn("hardware.camera.frame_speed 通常应为 0/1/2/3")
+    require_bool(report, camera.get("flip_image"), "hardware.camera.flip_image")
     require_choice(
         report,
         camera.get("calibration_mode"),
@@ -236,6 +247,18 @@ def validate_hardware(report: Report, repo_root: Path, configs: dict[str, Any]) 
         if not isinstance(serial.get("port"), str) or not serial.get("port"):
             report.error("hardware.serial.port 不能为空")
         require_number(report, serial.get("baudrate"), "hardware.serial.baudrate", positive=True)
+        require_choice(
+            report,
+            serial.get("protocol"),
+            "hardware.serial.protocol",
+            {"infantry", "infantry_16", "infantry_24", "infantry_32", "16", "24", "32"},
+        )
+        require_choice(
+            report,
+            serial.get("infantry32_tail_fields"),
+            "hardware.serial.infantry32_tail_fields",
+            {"acceleration", "accel", "duplicate_velocity", "velocity"},
+        )
         require_bool(report, serial.get("command_angles_in_degrees"), "hardware.serial.command_angles_in_degrees")
         require_bool(report, serial.get("feedback_angles_in_degrees"), "hardware.serial.feedback_angles_in_degrees")
         require_number(report, serial.get("read_timeout_ms"), "hardware.serial.read_timeout_ms")

@@ -34,14 +34,14 @@ class OpenCvCameraSource final : public CameraSource {
   explicit OpenCvCameraSource(OpenCvCameraSourceConfig config = {});
   ~OpenCvCameraSource() override;
 
-  bool open();
-  void close();
-  bool isOpen() const;
+  bool open() override;
+  void close() override;
+  bool isOpen() const override;
   bool read(CameraFrame& frame,
             std::chrono::milliseconds timeout =
                 std::chrono::milliseconds(200)) override;
 
-  const std::string& errorMessage() const { return error_message_; }
+  const std::string& errorMessage() const override { return error_message_; }
 
  private:
   void applyCaptureOptions();
