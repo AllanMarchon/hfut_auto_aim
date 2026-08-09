@@ -20,7 +20,7 @@ action:
   # control; RL can only trim the aim point and gate firing.
   max_delta_yaw_rad: 0.0349066     # 2 deg
   max_delta_pitch_rad: 0.0349066   # 2 deg
-  fire_gate_threshold: 0.5
+  fire_gate_threshold: 0.0         # zero-action keeps baseline fire enabled
 
 reward:
   hit: 10.0

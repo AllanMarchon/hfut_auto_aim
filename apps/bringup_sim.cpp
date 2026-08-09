@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -32,6 +33,7 @@
 #include "io/gestalt/gestalt_idle_scanner.hpp"
 #include "io/gestalt/gestalt_latest_frame_receiver.hpp"
 #include "io/gestalt/gestalt_protocol.hpp"
+#include "io/bridge_protocol.hpp"
 #include "io/gimbal/webots_bridge_gimbal.hpp"
 #include "io/plotter/plotter.hpp"
 
@@ -368,6 +370,97 @@ int findLockedDetection(
   }
   return best_index;
 }
+
+struct RlActionConfig {
+  bool enabled{false};
+  std::string path;
+  std::string configured_file{"rl_action.json"};
+  double max_delta_yaw_rad{2.0 * kDegToRad};
+  double max_delta_pitch_rad{2.0 * kDegToRad};
+};
+
+struct RlActionSample {
+  bool present{false};
+  bool valid{false};
+  uint64_t seq{0};
+  double delta_yaw_rad{0.0};
+  double delta_pitch_rad{0.0};
+  bool fire_gate{true};
+  std::string error;
+};
+
+std::string resolveBridgeDirForRl(const std::string& bridge_dir) {
+  if (!bridge_dir.empty()) return bridge_dir;
+  const char* env = std::getenv("WEBOTS_ROS_FREE_BRIDGE_DIR");
+  if (env != nullptr && env[0] != '\0') return env;
+  return hfut::bridge::kDefaultBridgeDir;
+}
+
+bool isAbsolutePath(const std::string& path) {
+  if (path.empty()) return false;
+  if (path.front() == '/') return true;
+  return path.size() > 2 && std::isalpha(static_cast<unsigned char>(path[0])) &&
+         path[1] == ':';
+}
+
+std::string joinPath(std::string dir, const std::string& file) {
+  if (dir.empty()) return file;
+  while (!dir.empty() && (dir.back() == '/' || dir.back() == '\\')) dir.pop_back();
+  return dir + "/" + file;
+}
+
+std::string resolveRlActionPath(
+    const std::string& bridge_dir,
+    const RlActionConfig& config) {
+  const std::string file = config.path.empty() ? config.configured_file : config.path;
+  if (isAbsolutePath(file)) return file;
+  return joinPath(resolveBridgeDirForRl(bridge_dir), file);
+}
+
+double finiteOrDefault(double value, double fallback) {
+  return std::isfinite(value) ? value : fallback;
+}
+
+double clampAbs(double value, double max_abs) {
+  if (!std::isfinite(value)) return 0.0;
+  return std::clamp(value, -std::abs(max_abs), std::abs(max_abs));
+}
+
+bool readFireGate(const YAML::Node& node) {
+  if (!node) return true;
+  try {
+    return node.as<bool>();
+  } catch (const YAML::Exception&) {
+  }
+  try {
+    return node.as<double>() > 0.5;
+  } catch (const YAML::Exception&) {
+  }
+  return true;
+}
+
+RlActionSample readRlActionFile(const RlActionConfig& config) {
+  RlActionSample sample;
+  std::ifstream probe(config.path);
+  if (!probe.good()) return sample;
+  sample.present = true;
+  probe.close();
+  try {
+    const YAML::Node root = YAML::LoadFile(config.path);
+    sample.seq = root["seq"] ? root["seq"].as<uint64_t>() : 0ULL;
+    sample.delta_yaw_rad = clampAbs(
+        finiteOrDefault(root["delta_yaw_rad"] ? root["delta_yaw_rad"].as<double>() : 0.0, 0.0),
+        config.max_delta_yaw_rad);
+    sample.delta_pitch_rad = clampAbs(
+        finiteOrDefault(root["delta_pitch_rad"] ? root["delta_pitch_rad"].as<double>() : 0.0, 0.0),
+        config.max_delta_pitch_rad);
+    sample.fire_gate = readFireGate(root["fire_gate"]);
+    sample.valid = true;
+  } catch (const std::exception& error) {
+    sample.error = error.what();
+  }
+  return sample;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -385,6 +478,7 @@ int main(int argc, char** argv) {
   std::string controller_strategy_override;
   std::string config_dir = "configs";
   std::string diagnostics_path;
+  RlActionConfig rl_action_config;
   int gestalt_read_fd = -1;
   int gestalt_write_fd = -1;
   const char* snapshot_env = std::getenv("HFUT_DEBUG_SNAPSHOT");
@@ -412,6 +506,17 @@ int main(int argc, char** argv) {
       bridge_path_override = a.substr(std::string("--bridge-path=").size());
     } else if (a.rfind("--config-dir=", 0) == 0) {
       config_dir = a.substr(std::string("--config-dir=").size());
+    } else if (a == "--rl-action") {
+      rl_action_config.enabled = true;
+    } else if (a.rfind("--rl-action=", 0) == 0) {
+      rl_action_config.enabled = true;
+      rl_action_config.path = a.substr(std::string("--rl-action=").size());
+    } else if (a.rfind("--rl-action-max-yaw=", 0) == 0) {
+      rl_action_config.max_delta_yaw_rad =
+          std::stod(a.substr(std::string("--rl-action-max-yaw=").size()));
+    } else if (a.rfind("--rl-action-max-pitch=", 0) == 0) {
+      rl_action_config.max_delta_pitch_rad =
+          std::stod(a.substr(std::string("--rl-action-max-pitch=").size()));
     } else if (a.rfind("--gestalt-read-fd=", 0) == 0) {
       gestalt_read_fd = std::stoi(a.substr(std::string("--gestalt-read-fd=").size()));
     } else if (a.rfind("--gestalt-write-fd=", 0) == 0) {
@@ -432,6 +537,7 @@ int main(int argc, char** argv) {
   const std::string tracker_cfg = config_dir + "/tracker.yaml";
   const std::string controller_cfg = config_dir + "/controller.yaml";
   const std::string detector_cfg = config_dir + "/detector.yaml";
+  const std::string rl_cfg = config_dir + "/rl_sim.yaml";
 
   hfut::io::BridgeInputMode input_mode = hfut::io::BridgeInputMode::vision;
   BridgePath bridge_path = BridgePath::webots;
@@ -478,6 +584,23 @@ int main(int argc, char** argv) {
     const YAML::Node sim_root = YAML::LoadFile(simulation_cfg);
     const YAML::Node tracker_root = YAML::LoadFile(tracker_cfg);
     const YAML::Node detector_root = YAML::LoadFile(detector_cfg);
+    {
+      std::ifstream rl_config_probe(rl_cfg);
+      if (rl_config_probe.good()) {
+        rl_config_probe.close();
+        const YAML::Node rl_root = YAML::LoadFile(rl_cfg);
+        if (rl_root["action_file"] && rl_action_config.path.empty()) {
+          rl_action_config.configured_file = rl_root["action_file"].as<std::string>();
+        }
+        const YAML::Node action = rl_root["action"];
+        if (action && action["max_delta_yaw_rad"]) {
+          rl_action_config.max_delta_yaw_rad = action["max_delta_yaw_rad"].as<double>();
+        }
+        if (action && action["max_delta_pitch_rad"]) {
+          rl_action_config.max_delta_pitch_rad = action["max_delta_pitch_rad"].as<double>();
+        }
+      }
+    }
 
     // 全局模式开关（总控）
     const YAML::Node global = master_root["global"];
@@ -734,6 +857,9 @@ int main(int argc, char** argv) {
     }
     const YAML::Node bridge = sim_root["bridge"];
     bridge_dir = bridge && bridge["dir"] ? bridge["dir"].as<std::string>() : "";
+    if (rl_action_config.enabled) {
+      rl_action_config.path = resolveRlActionPath(bridge_dir, rl_action_config);
+    }
     const YAML::Node webots = bridge ? bridge["webots"] : YAML::Node{};
     if (webots && webots["keypoint_scale"]) {
       webots_keypoint_scale = webots["keypoint_scale"].as<double>();
@@ -960,6 +1086,13 @@ int main(int argc, char** argv) {
   }
   std::printf("[bringup_sim] input mode: %s\n",
               input_mode == hfut::io::BridgeInputMode::armor_pose ? "armor_pose" : "vision");
+  if (rl_action_config.enabled) {
+    std::printf(
+        "[bringup_sim] rl residual: action=%s limit(yaw=%.3fdeg pitch=%.3fdeg)\n",
+        rl_action_config.path.c_str(),
+        rl_action_config.max_delta_yaw_rad * kRadToDeg,
+        rl_action_config.max_delta_pitch_rad * kRadToDeg);
+  }
   if (input_mode == hfut::io::BridgeInputMode::vision) {
     std::printf(
         "[bringup_sim] detector: impl=%s active=%s enemy=%s\n",
@@ -1123,6 +1256,17 @@ int main(int argc, char** argv) {
         idle_scan_was_moving = idle_scan_is_moving;
       }
     }
+    RlActionSample rl_action;
+    if (rl_action_config.enabled) {
+      rl_action = readRlActionFile(rl_action_config);
+      if (rl_action.valid) {
+        out.yaw += rl_action.delta_yaw_rad;
+        out.pitch += rl_action.delta_pitch_rad;
+        out.yaw_diff += rl_action.delta_yaw_rad;
+        out.pitch_diff += rl_action.delta_pitch_rad;
+        out.fire_advice = out.fire_advice && rl_action.fire_gate;
+      }
+    }
     const double command_yaw_deg = out.yaw * kRadToDeg;
     const double command_pitch_deg = out.pitch * kRadToDeg;
     const double command_yaw_diff_deg = out.yaw_diff * kRadToDeg;
@@ -1150,6 +1294,16 @@ int main(int argc, char** argv) {
                   << ",\"gestalt_idle_scan_moving\":"
                   << ((gestalt_idle_scanner && gestalt_idle_scanner->scanning())
                           ? "true" : "false")
+                  << ",\"rl_action\":{\"enabled\":"
+                  << (rl_action_config.enabled ? "true" : "false")
+                  << ",\"present\":" << (rl_action.present ? "true" : "false")
+                  << ",\"valid\":" << (rl_action.valid ? "true" : "false")
+                  << ",\"seq\":" << rl_action.seq
+                  << ",\"delta_yaw_rad\":" << rl_action.delta_yaw_rad
+                  << ",\"delta_pitch_rad\":" << rl_action.delta_pitch_rad
+                  << ",\"fire_gate\":" << (rl_action.fire_gate ? 1 : 0)
+                  << ",\"error\":\"" << escapeJsonString(rl_action.error)
+                  << "\"}"
                   << ",\"tracked_count\":" << dbg.num_tracked
                   << ",\"selected_id\":\"" << dbg.selected_id << "\""
                   << ",\"track_state\":" << dbg.selected_track_state

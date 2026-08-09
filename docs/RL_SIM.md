@@ -32,6 +32,10 @@ small residual over the existing command:
 The baseline auto-aim remains responsible for detection, PnP, tracking,
 prediction, and ballistic compensation.
 
+A zero-action policy must preserve the baseline command: zero yaw/pitch residual
+and fire gate open. This lets us prove the wrapper itself is not changing the
+old simulator behavior.
+
 ## Linux bring-up sequence
 
 1. Build and test the main project.
@@ -69,6 +73,15 @@ Evaluate a zero-action policy:
 ```bash
 python3 tools/rl/eval_policy.py --config configs/rl_sim.yaml --steps 1800
 ```
+
+Run `bringup_sim` with the optional C++ residual hook enabled:
+
+```bash
+./scripts/run.sh --input-mode=armor_pose --strategy=predicted --diagnostics --rl-action
+```
+
+With `--rl-action` and no explicit path, `bringup_sim` reads `rl_action.json`
+from the active bridge directory. Missing action files are treated as no-op.
 
 Train later, after live sim support is connected:
 

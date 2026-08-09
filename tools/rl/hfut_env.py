@@ -236,7 +236,7 @@ class HfutAutoAimEnv(gym.Env if gym else object):
         self.frame_timeout_s = float(episode_cfg.get("frame_timeout_s", 2.0))
         self.max_delta_yaw = float(action_cfg.get("max_delta_yaw_rad", 0.0349066))
         self.max_delta_pitch = float(action_cfg.get("max_delta_pitch_rad", 0.0349066))
-        self.fire_gate_threshold = float(action_cfg.get("fire_gate_threshold", 0.5))
+        self.fire_gate_threshold = float(action_cfg.get("fire_gate_threshold", 0.0))
 
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(ACTION_SIZE,), dtype=np.float32)
         self.observation_space = spaces.Box(
