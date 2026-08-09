@@ -22,6 +22,15 @@ else()
 endif()
 option(HFUT_ENABLE_DETECTOR "Build detector library and detector-dependent apps" ON)
 option(HFUT_ENABLE_PIPELINE "Build tracker/controller pipeline and pipeline-dependent apps" ON)
+option(HFUT_ENABLE_HIK_CAMERA "Build Hikvision MVS camera source" OFF)
+option(HFUT_ENABLE_MINDVISION_CAMERA "Build MindVision camera source" OFF)
+
+set(HFUT_HIK_SDK_DIR "/opt/MVS" CACHE PATH "Hikvision MVS SDK root")
+set(HFUT_HIK_INCLUDE_DIR "" CACHE PATH "Hikvision SDK include directory override")
+set(HFUT_HIK_LIBRARY "" CACHE FILEPATH "Hikvision libMvCameraControl.so override")
+set(HFUT_MINDVISION_SDK_DIR "" CACHE PATH "MindVision SDK root")
+set(HFUT_MINDVISION_INCLUDE_DIR "" CACHE PATH "MindVision SDK include directory override")
+set(HFUT_MINDVISION_LIBRARY "" CACHE FILEPATH "MindVision libMVSDK.so override")
 
 # ---------------------------------------------------------------------------
 # io：Webots 文件桥接，以及 WSL2 Gestalt TCP 客户端。
@@ -39,8 +48,17 @@ set(HFUT_IO_SOURCES
 if(HFUT_ENABLE_REAL_IO)
   list(APPEND HFUT_IO_SOURCES
     io/serial/uart_transport.cpp
+    io/serial/infantry_serial.cpp
     io/serial/infantry32_serial.cpp
   )
+endif()
+
+if(HFUT_ENABLE_HIK_CAMERA)
+  list(APPEND HFUT_IO_SOURCES io/camera/hik_camera_source.cpp)
+endif()
+
+if(HFUT_ENABLE_MINDVISION_CAMERA)
+  list(APPEND HFUT_IO_SOURCES io/camera/mindvision_camera_source.cpp)
 endif()
 
 add_library(hfut_io STATIC ${HFUT_IO_SOURCES})
@@ -51,6 +69,71 @@ target_include_directories(hfut_io PUBLIC
 )
 target_include_directories(hfut_io PUBLIC ${EIGEN3_INCLUDE_DIR})
 target_link_libraries(hfut_io PUBLIC ${OpenCV_LIBS} ${LZ4_LIBRARY})
+
+if(HFUT_ENABLE_HIK_CAMERA)
+  if(NOT HFUT_HIK_INCLUDE_DIR)
+    find_path(HFUT_HIK_INCLUDE_DIR
+      NAMES MvCameraControl.h PixelType.h
+      PATHS
+        ${HFUT_HIK_SDK_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hik/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hik/include/ros2_hik_camera/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hik/hiksdk/include
+      NO_DEFAULT_PATH)
+  endif()
+  if(NOT HFUT_HIK_LIBRARY)
+    find_library(HFUT_HIK_LIBRARY
+      NAMES MvCameraControl
+      PATHS
+        ${HFUT_HIK_SDK_DIR}/lib/64
+        ${HFUT_HIK_SDK_DIR}/lib/aarch64
+        ${HFUT_HIK_SDK_DIR}/lib
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hik/lib
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hik/hiksdk/lib/64
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hik/hiksdk/lib/aarch64
+      NO_DEFAULT_PATH)
+  endif()
+  if(NOT HFUT_HIK_INCLUDE_DIR OR NOT HFUT_HIK_LIBRARY)
+    message(FATAL_ERROR
+      "HFUT_ENABLE_HIK_CAMERA=ON but Hikvision SDK was not found. "
+      "Set HFUT_HIK_SDK_DIR, HFUT_HIK_INCLUDE_DIR, or HFUT_HIK_LIBRARY.")
+  endif()
+  target_compile_definitions(hfut_io PUBLIC HFUT_HAS_HIK_CAMERA=1)
+  target_include_directories(hfut_io PUBLIC ${HFUT_HIK_INCLUDE_DIR})
+  target_link_libraries(hfut_io PUBLIC ${HFUT_HIK_LIBRARY})
+endif()
+
+if(HFUT_ENABLE_MINDVISION_CAMERA)
+  if(NOT HFUT_MINDVISION_INCLUDE_DIR)
+    find_path(HFUT_MINDVISION_INCLUDE_DIR
+      NAMES CameraApi.h CameraDefine.h CameraStatus.h
+      PATHS
+        ${HFUT_MINDVISION_SDK_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mindvision/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mindvision/mvsdk/include
+      NO_DEFAULT_PATH)
+  endif()
+  if(NOT HFUT_MINDVISION_LIBRARY)
+    find_library(HFUT_MINDVISION_LIBRARY
+      NAMES MVSDK
+      PATHS
+        ${HFUT_MINDVISION_SDK_DIR}/lib/amd64
+        ${HFUT_MINDVISION_SDK_DIR}/lib/arm64
+        ${HFUT_MINDVISION_SDK_DIR}/lib
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mindvision/lib
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mindvision/mvsdk/lib/amd64
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mindvision/mvsdk/lib/arm64
+      NO_DEFAULT_PATH)
+  endif()
+  if(NOT HFUT_MINDVISION_INCLUDE_DIR OR NOT HFUT_MINDVISION_LIBRARY)
+    message(FATAL_ERROR
+      "HFUT_ENABLE_MINDVISION_CAMERA=ON but MindVision SDK was not found. "
+      "Set HFUT_MINDVISION_SDK_DIR, HFUT_MINDVISION_INCLUDE_DIR, or HFUT_MINDVISION_LIBRARY.")
+  endif()
+  target_compile_definitions(hfut_io PUBLIC HFUT_HAS_MINDVISION_CAMERA=1)
+  target_include_directories(hfut_io PUBLIC ${HFUT_MINDVISION_INCLUDE_DIR})
+  target_link_libraries(hfut_io PUBLIC ${HFUT_MINDVISION_LIBRARY})
+endif()
 
 # ---------------------------------------------------------------------------
 # 后续阶段继续追加：hfut_detector（Phase B）、hfut_pipeline（Phase C）。

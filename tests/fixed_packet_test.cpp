@@ -74,5 +74,32 @@ int main() {
     return fail("parsed packet payload was not preserved", 8);
   }
 
+  hfut::io::FixedPacket24 packet24;
+  const float pitch_v = 3.5F;
+  const float yaw_v = -4.5F;
+  if (!packet24.load(mode, 1) || !packet24.load(roll, 2) ||
+      !packet24.load(pitch, 6) || !packet24.load(yaw, 10) ||
+      !packet24.load(pitch_v, 14) || !packet24.load(yaw_v, 18)) {
+    return fail("24-byte infantry payload offsets were rejected", 9);
+  }
+  packet24.setCrc();
+  if (!packet24.valid()) {
+    return fail("24-byte infantry packet did not validate after CRC", 10);
+  }
+
+  std::deque<std::uint8_t> rx24;
+  for (std::size_t i = 0; i < packet24.size(); ++i) {
+    rx24.push_back(packet24.data()[i]);
+  }
+  hfut::io::FixedPacket24 parsed24;
+  if (!hfut::io::FixedPacket24::takeFromBuffer(rx24, parsed24)) {
+    return fail("24-byte infantry packet was not extracted", 11);
+  }
+  float decoded_yaw_v = 0.0F;
+  parsed24.unload(decoded_yaw_v, 18);
+  if (!near(decoded_yaw_v, yaw_v)) {
+    return fail("24-byte infantry payload was not preserved", 12);
+  }
+
   return 0;
 }

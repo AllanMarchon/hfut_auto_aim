@@ -14,7 +14,7 @@
 
 ## 实车调试顺序
 
-1. 在 `hardware.yaml` 里确认 `camera.camera_info`、`serial.port`、`controller.bullet_speed`。
+1. 在 `hardware.yaml` 里确认 `camera.backend`、`camera.camera_info`、`serial.port`、`serial.protocol`、`controller.bullet_speed`。
 2. 把真实相机标定结果写入 `camera_info.yaml`。
 3. 先保持 `hardware.yaml` 的 `safety.enable_fire: false`。
 4. 修改配置后先运行 `python scripts/validate_configs.py`。
@@ -40,6 +40,8 @@ python scripts/validate_configs.py --strict
 - `detector.yaml` 里的 tracker 是检测器内部的 2D 跟踪，不是 `tracker.yaml` 的 3D 目标跟踪。
 - 普通车跟踪器实现只在 `gimbal_pipeline.yaml` 的 `tracker.implementation` 切换，`tracker.yaml` 只调具体滤波/结构参数。
 - `hardware.yaml` 的 `controller.bullet_speed` 是实车弹速覆盖值。
+- `hardware.yaml` 的 `camera.backend` 决定实车相机来源：`opencv` 不需要工业相机 SDK；`hik` / `mindvision` 需要编译时打开对应 CMake 开关。
+- `hardware.yaml` 的 `serial.protocol` 默认用旧实车 `infantry` 24 字节协议；如果电控确认使用 32 字节，再切到 `infantry_32`。
 - `simulation.yaml` 的 `controller.bullet_speed` 只服务仿真，不用于实车入口。
 - `tracker.yaml` 和 `controller.yaml` 顶部有“常调区 / 进阶区”索引；先按常调区改，不要一上来动后端内部参数。
 
@@ -47,6 +49,8 @@ python scripts/validate_configs.py --strict
 
 | 症状 | 优先看哪里 |
 |---|---|
+| 相机打不开或选错相机 | `hardware.yaml`：`camera.backend`、`camera.camera_sn`、SDK 编译开关 |
+| 串口有数据但解析不到反馈 | `hardware.yaml`：`serial.protocol`、`serial.port`、`serial.baudrate` |
 | 画面识别不到装甲 | `detector.yaml`：敌方颜色、置信度、传统灯条阈值、模型路径 |
 | PnP 距离或姿态明显错 | `camera_info.yaml`、`detector.yaml` 的 `pose` |
 | 目标丢失或轨迹漂 | `tracker.yaml`：生命周期、观测噪声、运动模型、门控 |

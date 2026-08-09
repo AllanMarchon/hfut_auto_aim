@@ -107,6 +107,8 @@ class FixedPacket {
   std::array<std::uint8_t, Capacity> buffer_{};
 };
 
+using FixedPacket16 = FixedPacket<16>;
+using FixedPacket24 = FixedPacket<24>;
 using FixedPacket32 = FixedPacket<32>;
 
 }  // namespace hfut::io
