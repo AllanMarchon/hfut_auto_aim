@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import statistics
 from bisect import bisect_left
 from collections import Counter
@@ -16,6 +17,15 @@ from hfut_env import ScoreStats, finite, get_nested, iter_jsonl, read_score
 
 
 K_DAMAGE_PER_HIT = 20.0
+
+
+def expand_path(value: str | Path) -> Path:
+    return Path(os.path.expandvars(str(value))).expanduser()
+
+
+def default_bridge_dir() -> Path:
+    env_dir = os.environ.get("WEBOTS_ROS_FREE_BRIDGE_DIR", "")
+    return expand_path(env_dir) if env_dir else Path.home() / "hfut_auto_aim_webots"
 
 
 def is_vector3(value: Any) -> bool:
@@ -270,7 +280,7 @@ def load_reward_config(config_path: Path | None) -> dict[str, float]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Analyze one RL simulator replay episode.")
-    parser.add_argument("--bridge-dir", default="/tmp/hfut_auto_aim_webots")
+    parser.add_argument("--bridge-dir", default=str(default_bridge_dir()))
     parser.add_argument("--diagnostics", default="")
     parser.add_argument("--truth", default="")
     parser.add_argument("--score", default="")
@@ -278,7 +288,7 @@ def main() -> int:
     parser.add_argument("--output", default="")
     args = parser.parse_args()
 
-    bridge_dir = Path(args.bridge_dir)
+    bridge_dir = expand_path(args.bridge_dir)
     diagnostics_path = Path(args.diagnostics) if args.diagnostics else bridge_dir / "tracking_diagnostics.jsonl"
     truth_path = Path(args.truth) if args.truth else bridge_dir / "target_truth.jsonl"
     score_path = Path(args.score) if args.score else bridge_dir / "score.txt"

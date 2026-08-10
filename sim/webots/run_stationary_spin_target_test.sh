@@ -180,7 +180,9 @@ run_webots() {
     webots_bin="${WEBOTS_HOME}/webots"
   fi
 
-  export WEBOTS_ROS_FREE_BRIDGE_DIR="${WEBOTS_ROS_FREE_BRIDGE_DIR:-/tmp/hfut_auto_aim_webots}"
+  local default_bridge_dir
+  default_bridge_dir="${HOME}/hfut_auto_aim_webots"
+  export WEBOTS_ROS_FREE_BRIDGE_DIR="${WEBOTS_ROS_FREE_BRIDGE_DIR:-${default_bridge_dir}}"
   mkdir -p "${WEBOTS_ROS_FREE_BRIDGE_DIR}"
   rm -f \
     "${WEBOTS_ROS_FREE_BRIDGE_DIR}/armor_pose_frame.bin" \

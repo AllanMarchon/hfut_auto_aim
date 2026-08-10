@@ -5,7 +5,7 @@
 # end-to-end replacement.
 
 mode: replay              # replay | bridge
-bridge_dir: /tmp/hfut_auto_aim_webots
+bridge_dir: ~/hfut_auto_aim_webots
 diagnostics_file: tracking_diagnostics.jsonl
 truth_file: target_truth.jsonl
 score_file: score.txt

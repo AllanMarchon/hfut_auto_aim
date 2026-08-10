@@ -64,7 +64,7 @@ Summarize one copied Webots/Gestalt replay:
 
 ```bash
 python3 tools/rl/replay_analyzer.py \
-  --bridge-dir /tmp/hfut_auto_aim_webots \
+  --bridge-dir ~/hfut_auto_aim_webots \
   --config configs/rl_sim.yaml
 ```
 
@@ -116,11 +116,15 @@ The moving target variant uses the same world and file bridge:
 Expected bridge files after both processes start:
 
 ```text
-/tmp/hfut_auto_aim_webots/armor_pose_frame.bin
-/tmp/hfut_auto_aim_webots/gimbal_command.bin
-/tmp/hfut_auto_aim_webots/tracking_diagnostics.jsonl
-/tmp/hfut_auto_aim_webots/target_truth.jsonl
+~/hfut_auto_aim_webots/armor_pose_frame.bin
+~/hfut_auto_aim_webots/gimbal_command.bin
+~/hfut_auto_aim_webots/tracking_diagnostics.jsonl
+~/hfut_auto_aim_webots/target_truth.jsonl
 ```
+
+The scripts default to `~/hfut_auto_aim_webots` instead of `/tmp` because the
+snap Webots package can run controllers in a separate `/tmp` namespace. If you
+override `WEBOTS_ROS_FREE_BRIDGE_DIR`, set the same value in both terminals.
 
 With `--rl-action` and no explicit path, `bringup_sim_armor_pose` reads
 `rl_action.json` from the active bridge directory. Missing action files are

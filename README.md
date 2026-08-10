@@ -238,11 +238,14 @@ cd /root/hfut_auto_aim
 ./scripts/run.sh --debug
 ```
 
-默认桥目录为 `/tmp/hfut_auto_aim_webots`。使用自定义目录时，两端必须设置相同值：
+脚本默认桥目录为 `~/hfut_auto_aim_webots`。使用自定义目录时，两端必须设置相同值：
 
 ```bash
-export WEBOTS_ROS_FREE_BRIDGE_DIR=/tmp/my_auto_aim_run
+export WEBOTS_ROS_FREE_BRIDGE_DIR=~/my_auto_aim_run
 ```
+
+snap 版 Webots 可能把 controller 放进独立 `/tmp` 命名空间，所以不要把
+ROS-free 文件桥默认放在 `/tmp` 下。
 
 程序启动后会等待新帧；按 `Ctrl+C` 停止，调试窗口中也可按 `q` 退出。
 
@@ -385,7 +388,7 @@ WEBOTS_AUTO_AIM_OUTPUT_MODE=armor_pose
 ./scripts/run.sh --detector=traditional
 ```
 
-`bridge.dir` 为空时使用 `WEBOTS_ROS_FREE_BRIDGE_DIR`，环境变量也为空时回退到 `/tmp/hfut_auto_aim_webots`。
+`bridge.dir` 为空时使用 `WEBOTS_ROS_FREE_BRIDGE_DIR`。启动脚本会把该环境变量默认设为 `~/hfut_auto_aim_webots`；直接运行二进制且环境变量也为空时，底层库才会回退到 `/tmp/hfut_auto_aim_webots`。
 
 默认模型为：
 
@@ -463,7 +466,7 @@ Webots 同时在桥目录生成 `target_truth.jsonl`。结束采集后汇总：
 
 ```bash
 ./tools/diagnose_tracking.py \
-  --bridge-dir /tmp/hfut_auto_aim_webots \
+  --bridge-dir ~/hfut_auto_aim_webots \
   --output /tmp/diagnostics_summary.json
 ```
 

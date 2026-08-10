@@ -24,7 +24,8 @@ fi
 
 # onnxruntime-gpu is a loose binary install, not on the default loader path.
 export LD_LIBRARY_PATH="${ONNXRUNTIME_ROOT:-/opt/onnxruntime-gpu}/lib:${LD_LIBRARY_PATH:-}"
-export WEBOTS_ROS_FREE_BRIDGE_DIR="${WEBOTS_ROS_FREE_BRIDGE_DIR:-/tmp/hfut_auto_aim_webots}"
+DEFAULT_BRIDGE_DIR="${HOME}/hfut_auto_aim_webots"
+export WEBOTS_ROS_FREE_BRIDGE_DIR="${WEBOTS_ROS_FREE_BRIDGE_DIR:-${DEFAULT_BRIDGE_DIR}}"
 
 # Default config set = <repo>/configs; a later --config-dir in "$@" wins.
 exec "${BIN}" "--config-dir=${PROJECT_DIR}/configs" "$@"

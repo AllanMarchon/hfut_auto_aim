@@ -57,6 +57,16 @@ def load_config(path: Path) -> dict[str, Any]:
     return data
 
 
+def expand_path(value: Any, fallback: str | Path) -> Path:
+    raw = str(value or fallback)
+    return Path(os.path.expandvars(raw)).expanduser()
+
+
+def default_bridge_dir() -> Path:
+    env_dir = os.environ.get("WEBOTS_ROS_FREE_BRIDGE_DIR", "")
+    return expand_path(env_dir, Path.home() / "hfut_auto_aim_webots")
+
+
 def parse_score_text(text: str) -> ScoreStats:
     values: dict[str, str] = {}
     for token in text.replace("\n", " ").split():
@@ -224,7 +234,7 @@ class HfutAutoAimEnv(gym.Env if gym else object):
         self.config_path = Path(config_path)
         self.config = load_config(self.config_path)
         self.mode = str(self.config.get("mode", "replay"))
-        self.bridge_dir = Path(str(self.config.get("bridge_dir", "/tmp/hfut_auto_aim_webots")))
+        self.bridge_dir = expand_path(self.config.get("bridge_dir", ""), default_bridge_dir())
         self.diagnostics_path = self._bridge_file("diagnostics_file")
         self.truth_path = self._bridge_file("truth_file")
         self.score_path = self._bridge_file("score_file")

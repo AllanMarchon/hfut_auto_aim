@@ -5,8 +5,18 @@ import argparse
 import itertools
 import json
 import math
+import os
 import statistics
 from pathlib import Path
+
+
+def expand_path(value: str | Path) -> Path:
+    return Path(os.path.expandvars(str(value))).expanduser()
+
+
+def default_bridge_dir() -> Path:
+    env_dir = os.environ.get("WEBOTS_ROS_FREE_BRIDGE_DIR", "")
+    return expand_path(env_dir) if env_dir else Path.home() / "hfut_auto_aim_webots"
 
 
 def load_jsonl(path: Path) -> dict[int, dict]:
@@ -1242,12 +1252,12 @@ def summarize(truth: dict[int, dict], tracking: dict[int, dict]) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--bridge-dir", default="/tmp/hfut_auto_aim_webots")
+    parser.add_argument("--bridge-dir", default=str(default_bridge_dir()))
     parser.add_argument("--truth", default="")
     parser.add_argument("--tracking", default="")
     parser.add_argument("--output", default="")
     arguments = parser.parse_args()
-    bridge_directory = Path(arguments.bridge_dir)
+    bridge_directory = expand_path(arguments.bridge_dir)
     truth_path = Path(arguments.truth) if arguments.truth else bridge_directory / "target_truth.jsonl"
     tracking_path = (
         Path(arguments.tracking)

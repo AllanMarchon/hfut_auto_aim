@@ -10,7 +10,11 @@ if [ ! -x "${BIN}" ]; then
   exit 1
 fi
 
-export WEBOTS_ROS_FREE_BRIDGE_DIR="${WEBOTS_ROS_FREE_BRIDGE_DIR:-/tmp/hfut_auto_aim_webots}"
+DEFAULT_BRIDGE_DIR="${HOME}/hfut_auto_aim_webots"
+export WEBOTS_ROS_FREE_BRIDGE_DIR="${WEBOTS_ROS_FREE_BRIDGE_DIR:-${DEFAULT_BRIDGE_DIR}}"
 mkdir -p "${WEBOTS_ROS_FREE_BRIDGE_DIR}"
 
-exec "${BIN}" "--config-dir=${PROJECT_DIR}/configs" "$@"
+exec "${BIN}" \
+  "--config-dir=${PROJECT_DIR}/configs" \
+  "--bridge-dir=${WEBOTS_ROS_FREE_BRIDGE_DIR}" \
+  "$@"
