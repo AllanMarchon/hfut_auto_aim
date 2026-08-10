@@ -102,13 +102,15 @@ Launch the Webots side in another terminal first. On a headless NUC this script
 automatically uses `xvfb-run` when `DISPLAY` is empty:
 
 ```bash
-./scripts/run_webots_armor_pose_sim.sh stationary --batch --mode=fast --no-rendering
+./scripts/run_webots_armor_pose_sim.sh stationary \
+  --batch --mode=fast --no-rendering --stdout --stderr
 ```
 
 The moving target variant uses the same world and file bridge:
 
 ```bash
-./scripts/run_webots_armor_pose_sim.sh moving --batch --mode=fast --no-rendering
+./scripts/run_webots_armor_pose_sim.sh moving \
+  --batch --mode=fast --no-rendering --stdout --stderr
 ```
 
 Expected bridge files after both processes start:

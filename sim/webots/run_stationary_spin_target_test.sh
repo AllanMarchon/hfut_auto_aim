@@ -204,13 +204,15 @@ run_webots() {
     local auth_file="${HFUT_WEBOTS_XAUTHORITY:-${HOME}/snap/webots/common/Xauthority}"
     mkdir -p "$(dirname "${auth_file}")"
     rm -f "${auth_file}"
+    echo "Launching Webots with Xvfb: ${webots_bin} $* ${WORLD_FILE}"
     exec xvfb-run -a \
       -f "${auth_file}" \
       -s "${HFUT_WEBOTS_XVFB_SCREEN:--screen 0 1280x720x24}" \
-      env QT_X11_NO_MITSHM=1 "${webots_bin}" "${WORLD_FILE}" "$@"
+      env QT_X11_NO_MITSHM=1 "${webots_bin}" "$@" "${WORLD_FILE}"
   fi
 
-  exec "${webots_bin}" "${WORLD_FILE}" "$@"
+  echo "Launching Webots: ${webots_bin} $* ${WORLD_FILE}"
+  exec "${webots_bin}" "$@" "${WORLD_FILE}"
 }
 
 compute_camera_look_at
