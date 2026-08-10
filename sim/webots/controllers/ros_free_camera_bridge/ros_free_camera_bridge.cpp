@@ -406,12 +406,14 @@ bool writeArmorPoseFrame(
 
 void appendTruth(
     std::ofstream &truth,
+    uint64_t seq,
     double simTime,
     const Vec3 &shooterWorld,
     const Vec3 &targetWorld,
     const std::vector<ArmorSample> &armors) {
   truth << std::fixed << std::setprecision(6)
-        << "{\"sim_time_s\":" << simTime
+        << "{\"seq\":" << seq
+        << ",\"sim_time_s\":" << simTime
         << ",\"shooter_position\":[" << shooterWorld.x << ',' << shooterWorld.y << ',' << shooterWorld.z << ']'
         << ",\"target_position\":[" << targetWorld.x << ',' << targetWorld.y << ',' << targetWorld.z << ']'
         << ",\"armors\":[";
@@ -527,7 +529,7 @@ int main() {
         std::cerr << "failed to write " << armorPosePath << std::endl;
       }
       if (truth) {
-        appendTruth(truth, robot.getTime(), shooterWorld, targetWorld, armors);
+        appendTruth(truth, frameSeq, robot.getTime(), shooterWorld, targetWorld, armors);
         if ((frameSeq & 0x0fU) == 0) truth.flush();
       }
 

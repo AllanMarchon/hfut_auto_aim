@@ -28,7 +28,9 @@ def load_jsonl(path: Path) -> dict[int, dict]:
                 continue
             try:
                 record = json.loads(line)
-                records[int(record["seq"])] = record
+                sequence = int(record.get("seq", line_number))
+                record.setdefault("seq", sequence)
+                records[sequence] = record
             except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
                 if line_number == len(lines) and not line.endswith("\n"):
                     continue
