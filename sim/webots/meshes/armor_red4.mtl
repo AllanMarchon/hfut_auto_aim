@@ -1,0 +1,19 @@
+# OBJ Material Export by Luxion KeyShot
+
+newmtl RM2019裁判系统支撑架AH02:color:52:52:52
+Kd 0.203922 0.203922 0.203922
+
+newmtl RM2019裁判系统装甲模块AM02:black_spray_paint:15:15:15
+Kd 0.0588235 0.0588235 0.0588235
+
+newmtl RM2019裁判系统装甲模块AM02:color:255:255:255
+Kd 1 1 1
+
+newmtl RM2019裁判系统装甲模块AM02:color:255:35:0
+Kd 1 0.18 0.02
+Ks 0 0 0
+Ns 8
+Ke 0.65 0.10 0.01
+
+newmtl RM2019裁判系统装甲模块AM02:color:52:52:52
+Kd 0.203922 0.203922 0.203922

@@ -28,6 +28,12 @@
 /core
 /core.*
 
+# Webots simulator generated files
+/sim/webots/worlds/dark_camera_world.wbt
+/sim/webots/controllers/*/build/
+/sim/webots/controllers/target_spinner/target_spinner
+/sim/webots/controllers/ros_free_camera_bridge/ros_free_camera_bridge
+
 # Local editor and OS metadata
 .idea/
 .DS_Store

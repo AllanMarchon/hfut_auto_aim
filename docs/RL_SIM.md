@@ -40,10 +40,11 @@ old simulator behavior.
 ## Linux bring-up sequence
 
 1. Build the armor-pose simulator target with detector disabled.
-2. Run the `armor_pose` difficulty matrix for `predicted` and `mpc`.
-3. Save those reports as the baseline.
-4. Run `tools/rl/eval_policy.py` with the zero-action policy.
-5. Train PPO/SAC only after zero-action performance matches the baseline.
+2. Launch the ROS-free Webots side so it writes `armor_pose_frame.bin`.
+3. Launch `bringup_sim_armor_pose` so it writes `gimbal_command.bin`.
+4. Save those reports as the baseline.
+5. Run `tools/rl/eval_policy.py` with the zero-action policy.
+6. Train PPO/SAC only after zero-action performance matches the baseline.
 
 ## Commands
 
@@ -95,6 +96,28 @@ residual hook enabled:
 
 ```bash
 ./scripts/run_armor_pose_sim.sh --strategy=predicted --diagnostics --rl-action
+```
+
+Launch the Webots side in another terminal first. On a headless NUC this script
+automatically uses `xvfb-run` when `DISPLAY` is empty:
+
+```bash
+./scripts/run_webots_armor_pose_sim.sh stationary --batch --mode=fast --no-rendering
+```
+
+The moving target variant uses the same world and file bridge:
+
+```bash
+./scripts/run_webots_armor_pose_sim.sh moving --batch --mode=fast --no-rendering
+```
+
+Expected bridge files after both processes start:
+
+```text
+/tmp/hfut_auto_aim_webots/armor_pose_frame.bin
+/tmp/hfut_auto_aim_webots/gimbal_command.bin
+/tmp/hfut_auto_aim_webots/tracking_diagnostics.jsonl
+/tmp/hfut_auto_aim_webots/target_truth.jsonl
 ```
 
 With `--rl-action` and no explicit path, `bringup_sim_armor_pose` reads

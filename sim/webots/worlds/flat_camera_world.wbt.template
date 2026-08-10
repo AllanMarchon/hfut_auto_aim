@@ -1,0 +1,251 @@
+#VRML_SIM R2025a utf8
+
+WorldInfo {
+  basicTimeStep @WEBOTS_BASIC_TIME_STEP@
+  optimalThreadCount @WEBOTS_OPTIMAL_THREAD_COUNT@
+  coordinateSystem "ENU"
+}
+Viewpoint {
+  orientation 0.376105 0.825404 0.421346 1.73972
+  position -2.8 -2.2 1.45
+}
+Background {
+  skyColor [
+    @WEBOTS_SKY_COLOR@
+  ]
+}
+DirectionalLight {
+  ambientIntensity @WEBOTS_LIGHT_AMBIENT_INTENSITY@
+  intensity @WEBOTS_LIGHT_INTENSITY@
+  direction @WEBOTS_LIGHT_DIRECTION@
+  castShadows FALSE
+}
+DEF GRAY_GROUND Solid {
+  translation 0 0 @WEBOTS_GROUND_Z@
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor @WEBOTS_GROUND_COLOR@
+        roughness @WEBOTS_GROUND_ROUGHNESS@
+        metalness 0
+      }
+      geometry Box {
+        size @WEBOTS_GROUND_SIZE_X@ @WEBOTS_GROUND_SIZE_Y@ @WEBOTS_GROUND_THICKNESS@
+      }
+      castShadows FALSE
+    }
+  ]
+  name "gray_ground"
+  boundingObject Box {
+    size @WEBOTS_GROUND_SIZE_X@ @WEBOTS_GROUND_SIZE_Y@ @WEBOTS_GROUND_THICKNESS@
+  }
+  locked TRUE
+}
+# The RM_ARMOR_ROBOT root frame is the base_link frame.
+DEF RM_ARMOR_ROBOT Robot {
+  translation @WEBOTS_ARMOR_TARGET_X@ @WEBOTS_ARMOR_TARGET_Y@ @WEBOTS_ARMOR_TARGET_Z@
+  rotation 0 0 1 @WEBOTS_ARMOR_TARGET_YAW@
+  controller "target_spinner"
+  supervisor TRUE
+  children [
+    Transform {
+      translation 0 0 0.055
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.10 0.12 0.13
+            roughness 0.65
+            metalness 0
+          }
+          geometry Box {
+            size 0.32 0.24 0.08
+          }
+          castShadows FALSE
+        }
+      ]
+    }
+    DEF FRONT_ARMOR Solid {
+      translation 0.2 0 0
+      rotation 0 0 1 -1.57079632679
+      children [
+        Transform {
+          rotation 1 0 0 @WEBOTS_ARMOR_PITCH@
+          children [
+            Transform {
+              rotation @WEBOTS_ARMOR_MESH_ROTATION@
+              children [
+                Transform {
+                  translation @WEBOTS_ARMOR_MESH_OFFSET@
+                  scale @WEBOTS_ARMOR_MESH_SCALE@
+                  children [
+                    CadShape {
+                      url [
+                        "@WEBOTS_ARMOR_BODY_MESH_URL@"
+                      ]
+                      ccw @WEBOTS_ARMOR_MESH_CCW@
+                      castShadows FALSE
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+      name "front_armor"
+      boundingObject Box {
+        size @WEBOTS_ARMOR_BOUNDING_SIZE@
+      }
+    }
+    DEF REAR_ARMOR Solid {
+      translation -0.2 0 0
+      rotation 0 0 1 1.57079632679
+      children [
+        Transform {
+          rotation 1 0 0 @WEBOTS_ARMOR_PITCH@
+          children [
+            Transform {
+              rotation @WEBOTS_ARMOR_MESH_ROTATION@
+              children [
+                Transform {
+                  translation @WEBOTS_ARMOR_MESH_OFFSET@
+                  scale @WEBOTS_ARMOR_MESH_SCALE@
+                  children [
+                    CadShape {
+                      url [
+                        "@WEBOTS_ARMOR_BODY_MESH_URL@"
+                      ]
+                      ccw @WEBOTS_ARMOR_MESH_CCW@
+                      castShadows FALSE
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+      name "rear_armor"
+      boundingObject Box {
+        size @WEBOTS_ARMOR_BOUNDING_SIZE@
+      }
+    }
+    DEF LEFT_ARMOR Solid {
+      translation 0 0.17 0.04
+      rotation 0 0 1 0
+      children [
+        Transform {
+          rotation 1 0 0 @WEBOTS_ARMOR_PITCH@
+          children [
+            Transform {
+              rotation @WEBOTS_ARMOR_MESH_ROTATION@
+              children [
+                Transform {
+                  translation @WEBOTS_ARMOR_MESH_OFFSET@
+                  scale @WEBOTS_ARMOR_MESH_SCALE@
+                  children [
+                    CadShape {
+                      url [
+                        "@WEBOTS_ARMOR_BODY_MESH_URL@"
+                      ]
+                      ccw @WEBOTS_ARMOR_MESH_CCW@
+                      castShadows FALSE
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+      name "left_armor"
+      boundingObject Box {
+        size @WEBOTS_ARMOR_BOUNDING_SIZE@
+      }
+    }
+    DEF RIGHT_ARMOR Solid {
+      translation 0 -0.17 0.04
+      rotation 0 0 1 3.14159265359
+      children [
+        Transform {
+          rotation 1 0 0 @WEBOTS_ARMOR_PITCH@
+          children [
+            Transform {
+              rotation @WEBOTS_ARMOR_MESH_ROTATION@
+              children [
+                Transform {
+                  translation @WEBOTS_ARMOR_MESH_OFFSET@
+                  scale @WEBOTS_ARMOR_MESH_SCALE@
+                  children [
+                    CadShape {
+                      url [
+                        "@WEBOTS_ARMOR_BODY_MESH_URL@"
+                      ]
+                      ccw @WEBOTS_ARMOR_MESH_CCW@
+                      castShadows FALSE
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+      name "right_armor"
+      boundingObject Box {
+        size @WEBOTS_ARMOR_BOUNDING_SIZE@
+      }
+    }
+  ]
+  name "rm_armor_robot"
+  boundingObject Transform {
+    translation 0 0 0.04
+    children [
+      Box {
+        size 0.48 0.42 0.18
+      }
+    ]
+  }
+  locked TRUE
+}
+DEF SIM_CAMERA_ROBOT Robot {
+  translation @WEBOTS_CAMERA_X@ @WEBOTS_CAMERA_Y@ @WEBOTS_CAMERA_Z@
+  rotation @WEBOTS_CAMERA_ROTATION@
+  supervisor TRUE
+  children [
+    DEF SIM_CAMERA_PITCH Transform {
+      rotation 0 1 0 @WEBOTS_CAMERA_TILT@
+      children [
+        Transform {
+          rotation 1 0 0 @WEBOTS_CAMERA_X_ROTATION@
+          children [
+            Shape {
+              appearance PBRAppearance {
+                baseColor @WEBOTS_CAMERA_BODY_COLOR@
+                roughness 0.7
+                metalness 0
+              }
+              geometry Box {
+                size @WEBOTS_CAMERA_BODY_SIZE@
+              }
+              castShadows FALSE
+            }
+            Camera {
+              name "@WEBOTS_CAMERA_NAME@"
+              rotation 0 0 1 @WEBOTS_CAMERA_ROLL@
+              fieldOfView @WEBOTS_CAMERA_FOV@
+              width @WEBOTS_CAMERA_WIDTH@
+              height @WEBOTS_CAMERA_HEIGHT@
+              near @WEBOTS_CAMERA_NEAR@
+              far @WEBOTS_CAMERA_FAR@
+              antiAliasing @WEBOTS_CAMERA_ANTI_ALIASING@
+              motionBlur @WEBOTS_CAMERA_MOTION_BLUR@
+            }
+          ]
+        }
+      ]
+    }
+  ]
+  name "sim_camera"
+  controller "ros_free_camera_bridge"
+}
