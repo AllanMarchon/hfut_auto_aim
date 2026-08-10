@@ -129,12 +129,12 @@ The watcher prints compact groups like:
 [ERR] yaw=0.114deg pitch=0.031deg target_err=2.7cm
 [TIME] proc=1.1ms flight=133.7ms pred=184.9ms
 [RL] enabled=1 valid=0 dyaw=0.000deg dpitch=0.000deg gate=1
-[SCORE] score=n/a
+[SCORE] shots=42 hits=38 miss=4 hit=90.5% dps=126.7
 ```
 
-`SCORE` is `n/a` until a ROS-free score controller writes `score.txt`; the
-other fields already come from `tracking_diagnostics.jsonl` and
-`target_truth.jsonl`.
+`SCORE` comes from the ROS-free score path in `ros_free_camera_bridge`: it reads
+`gimbal_command.bin`, applies `fire_advice`/fire-rate gating, simulates ballistic
+intersections with the current armor planes, and writes `score.txt`.
 
 Expected bridge files after both processes start:
 
@@ -143,6 +143,8 @@ Expected bridge files after both processes start:
 ~/hfut_auto_aim_webots/gimbal_command.bin
 ~/hfut_auto_aim_webots/tracking_diagnostics.jsonl
 ~/hfut_auto_aim_webots/target_truth.jsonl
+~/hfut_auto_aim_webots/score.txt
+~/hfut_auto_aim_webots/score_events.jsonl
 ```
 
 The scripts default to `~/hfut_auto_aim_webots` instead of `/tmp` because the

@@ -494,6 +494,8 @@ ROS2 工作空间（hfut_rm_auto_aim_ws）功能迁移盘点见
 | `camera_frame.bin` | 仿真 -> 自瞄 | 216 B header + 原始像素 |
 | `armor_pose_frame.bin` | 仿真 -> 自瞄 | 184 B header + N x 128 B 装甲板记录（协议 v3） |
 | `gimbal_command.bin` | 自瞄 -> 仿真 | 112 B 固定命令包 |
+| `score.txt` | 仿真 -> RL/观察器 | `shots/hits/misses/hit_rate/dps` 文本统计 |
+| `score_events.jsonl` | 仿真 -> 调试 | 每次 fired/hit/miss 事件 |
 
 写入方先生成 `.tmp` 文件，再通过原子重命名替换正式文件；读取方使用递增的 `seq` 判断新数据。协议约定：
 

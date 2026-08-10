@@ -189,6 +189,9 @@ run_webots() {
     "${WEBOTS_ROS_FREE_BRIDGE_DIR}/armor_pose_frame.bin.tmp" \
     "${WEBOTS_ROS_FREE_BRIDGE_DIR}/gimbal_command.bin" \
     "${WEBOTS_ROS_FREE_BRIDGE_DIR}/gimbal_command.bin.tmp" \
+    "${WEBOTS_ROS_FREE_BRIDGE_DIR}/score.txt" \
+    "${WEBOTS_ROS_FREE_BRIDGE_DIR}/score.txt.tmp" \
+    "${WEBOTS_ROS_FREE_BRIDGE_DIR}/score_events.jsonl" \
     "${WEBOTS_ROS_FREE_BRIDGE_DIR}/target_truth.jsonl" \
     "${WEBOTS_ROS_FREE_BRIDGE_DIR}/tracking_diagnostics.jsonl"
 

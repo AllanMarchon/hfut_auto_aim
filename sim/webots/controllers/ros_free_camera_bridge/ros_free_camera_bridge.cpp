@@ -11,10 +11,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -23,6 +25,11 @@
 #include "io/bridge_protocol.hpp"
 
 namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kDegToRad = kPi / 180.0;
+constexpr double kArmorFacingMaxAngleRad = 75.0 * kDegToRad;
+constexpr double kDamagePerHit = 20.0;
 
 struct Vec3 {
   double x{0.0};
@@ -50,6 +57,49 @@ struct ArmorSample {
   Vec3 height_axis_world;
   double radial_yaw{0.0};
   Quaternion surface_q;
+};
+
+struct ArmorPlane {
+  std::string name;
+  Vec3 center;
+  Vec3 normal;
+  Vec3 width_axis;
+  Vec3 height_axis;
+  double half_width{0.0};
+  double half_height{0.0};
+};
+
+struct PendingShot {
+  double fire_time{0.0};
+};
+
+struct ActiveProjectile {
+  uint64_t shot_id{0};
+  double launch_time{0.0};
+  Vec3 origin;
+  Vec3 velocity;
+  Vec3 previous_position;
+};
+
+struct ScoreStats {
+  uint64_t shots{0};
+  uint64_t hits{0};
+  uint64_t misses{0};
+  double start_time{0.0};
+
+  double elapsed(double now) const {
+    return std::max(0.0, now - start_time);
+  }
+
+  double hitRate() const {
+    const uint64_t resolved = hits + misses;
+    return resolved > 0 ? static_cast<double>(hits) / static_cast<double>(resolved) : 0.0;
+  }
+
+  double dps(double now) const {
+    const double dt = elapsed(now);
+    return dt > 0.0 ? static_cast<double>(hits) * kDamagePerHit / dt : 0.0;
+  }
 };
 
 double getEnvDouble(const char *name, double defaultValue) {
@@ -260,10 +310,64 @@ Vec3 matrixVectorProduct(const double *orientation, const Vec3 &local) {
       orientation[6] * local.x + orientation[7] * local.y + orientation[8] * local.z};
 }
 
+Vec3 projectilePosition(const Vec3 &origin, const Vec3 &velocity, const Vec3 &gravity, double t) {
+  return origin + velocity * t + gravity * (0.5 * t * t);
+}
+
 Vec3 nodePosition(webots::Node *node) {
   const double *position = node ? node->getPosition() : nullptr;
   if (position == nullptr) throw std::runtime_error("cannot read node position");
   return {position[0], position[1], position[2]};
+}
+
+Vec3 nodeLocalDirection(webots::Node *node, const Vec3 &localDirection) {
+  const double *orientation = node ? node->getOrientation() : nullptr;
+  if (orientation == nullptr) throw std::runtime_error("cannot read node orientation");
+  return normalized(matrixVectorProduct(orientation, localDirection));
+}
+
+ArmorPlane armorPlaneFromSample(const ArmorSample &sample, double halfWidth, double halfHeight) {
+  ArmorPlane armor;
+  armor.name = sample.name;
+  armor.center = sample.center_world;
+  armor.normal = sample.normal_world;
+  armor.width_axis = sample.width_axis_world;
+  armor.height_axis = sample.height_axis_world;
+  armor.half_width = halfWidth;
+  armor.half_height = halfHeight;
+  return armor;
+}
+
+ArmorPlane orientArmorTowardCamera(ArmorPlane armor, const Vec3 &cameraPosition) {
+  if (dot(armor.normal, cameraPosition - armor.center) < 0.0) {
+    armor.normal = armor.normal * -1.0;
+    armor.height_axis = armor.height_axis * -1.0;
+  }
+  return armor;
+}
+
+bool armorFacesCamera(const ArmorPlane &armor, const Vec3 &cameraPosition) {
+  const Vec3 toCamera = normalized(cameraPosition - armor.center);
+  const double cosAngle = dot(armor.normal, toCamera);
+  return cosAngle >= std::cos(kArmorFacingMaxAngleRad);
+}
+
+bool segmentIntersectsArmor(const Vec3 &previous, const Vec3 &current, const ArmorPlane &armor, double &fraction) {
+  const double d0 = dot(previous - armor.center, armor.normal);
+  const double d1 = dot(current - armor.center, armor.normal);
+  if (d0 <= 0.0 || d1 > 0.0) return false;
+
+  const double denom = d0 - d1;
+  if (std::abs(denom) <= 1e-12) return false;
+
+  fraction = d0 / denom;
+  if (fraction < 0.0 || fraction > 1.0) return false;
+
+  const Vec3 point = previous + (current - previous) * fraction;
+  const Vec3 rel = point - armor.center;
+  const double u = dot(rel, armor.width_axis);
+  const double v = dot(rel, armor.height_axis);
+  return std::abs(u) <= armor.half_width && std::abs(v) <= armor.half_height;
 }
 
 ArmorSample readArmor(
@@ -404,6 +508,56 @@ bool writeArmorPoseFrame(
   return std::rename(tmpPath.c_str(), path.c_str()) == 0;
 }
 
+std::string makeScoreMessage(
+    const ScoreStats &stats,
+    double now,
+    bool fired,
+    bool fireAdvice,
+    double cooldownRemaining,
+    size_t activeProjectiles,
+    size_t pendingShots) {
+  std::ostringstream stream;
+  stream << std::fixed << std::setprecision(3)
+         << "shots=" << stats.shots
+         << " hits=" << stats.hits
+         << " misses=" << stats.misses
+         << " hit_rate=" << stats.hitRate()
+         << " dps=" << stats.dps(now)
+         << " elapsed=" << stats.elapsed(now)
+         << " fire_advice=" << (fireAdvice ? 1 : 0)
+         << " fired=" << (fired ? 1 : 0)
+         << " cooldown_remaining=" << cooldownRemaining
+         << " active=" << activeProjectiles
+         << " pending=" << pendingShots;
+  return stream.str();
+}
+
+bool writeTextAtomic(const std::string &path, const std::string &text) {
+  const std::string tmpPath = path + ".tmp";
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+  std::ofstream output(tmpPath, std::ios::out | std::ios::trunc);
+  if (!output) return false;
+  output << text << '\n';
+  output.close();
+  return output.good() && std::rename(tmpPath.c_str(), path.c_str()) == 0;
+}
+
+void appendScoreEvent(std::ofstream &events, double now, uint64_t shotId, const std::string &event,
+                      const std::string &armor, double flightTime, const ScoreStats &stats) {
+  if (!events) return;
+  events << std::fixed << std::setprecision(6)
+         << "{\"sim_time_s\":" << now
+         << ",\"shot\":" << shotId
+         << ",\"event\":\"" << event << "\"";
+  if (!armor.empty()) events << ",\"armor\":\"" << armor << "\"";
+  if (std::isfinite(flightTime)) events << ",\"flight_time_s\":" << flightTime;
+  events << ",\"shots\":" << stats.shots
+         << ",\"hits\":" << stats.hits
+         << ",\"misses\":" << stats.misses
+         << ",\"hit_rate\":" << stats.hitRate()
+         << "}\n";
+}
+
 void appendTruth(
     std::ofstream &truth,
     uint64_t seq,
@@ -443,6 +597,24 @@ int main() {
     const double armorPitch = getEnvDouble("WEBOTS_ARMOR_PITCH", 0.2617993877991494);
     const std::string armorNumber = getEnvString("WEBOTS_ARMOR_NUMBER", "4");
     const bool writeTruth = getEnvBool("WEBOTS_WRITE_TARGET_TRUTH", true);
+    const bool scoreEnabled = getEnvBool("WEBOTS_SCORE_ENABLED", true);
+    const double fireDelay = std::max(0.0, getEnvDouble("WEBOTS_FIRE_DELAY_MS", 0.0) / 1000.0);
+    const double fireRateHz = std::max(0.0, getEnvDouble("WEBOTS_FIRE_RATE_HZ", 20.0));
+    const double fireInterval = fireRateHz > 0.0 ? 1.0 / fireRateHz : 0.0;
+    const double bulletSpeed = std::max(0.0, getEnvDouble("WEBOTS_BULLET_SPEED", 22.5));
+    const double gravityMagnitude = std::max(0.0, getEnvDouble("WEBOTS_SCORE_GRAVITY", 9.80665));
+    const double maxFlightTime = std::max(0.01, getEnvDouble("WEBOTS_SCORE_MAX_FLIGHT_TIME", 2.0));
+    const int scorePublishPeriodMs = std::max(1, getEnvInt("WEBOTS_SCORE_PUBLISH_PERIOD_MS", 200));
+    const double scoreArmorWidth = std::max(0.001, getEnvDouble("WEBOTS_SCORE_ARMOR_WIDTH", 0.135));
+    const double scoreArmorHeight = std::max(0.001, getEnvDouble("WEBOTS_SCORE_ARMOR_HEIGHT", 0.135));
+    const Vec3 shooterOffset{
+        getEnvDouble("WEBOTS_SCORE_SHOOTER_OFFSET_X", 0.0),
+        getEnvDouble("WEBOTS_SCORE_SHOOTER_OFFSET_Y", 0.0),
+        getEnvDouble("WEBOTS_SCORE_SHOOTER_OFFSET_Z", 0.0)};
+    const Vec3 shooterLocalForward{
+        getEnvDouble("WEBOTS_SCORE_SHOOTER_FORWARD_X", 1.0),
+        getEnvDouble("WEBOTS_SCORE_SHOOTER_FORWARD_Y", 0.0),
+        getEnvDouble("WEBOTS_SCORE_SHOOTER_FORWARD_Z", 0.0)};
 
     webots::Camera *camera = robot.getCamera(cameraName);
     if (camera == nullptr) throw std::runtime_error("Webots camera device not found: " + cameraName);
@@ -477,6 +649,8 @@ int main() {
     const std::string armorPosePath = joinPath(bridgeDir, hfut::bridge::kArmorPoseFrameFile);
     const std::string commandPath = joinPath(bridgeDir, hfut::bridge::kCommandFile);
     const std::string truthPath = joinPath(bridgeDir, "target_truth.jsonl");
+    const std::string scorePath = joinPath(bridgeDir, "score.txt");
+    const std::string scoreEventsPath = joinPath(bridgeDir, "score_events.jsonl");
     std::filesystem::create_directories(bridgeDir);
 
     std::ofstream truth;
@@ -485,18 +659,46 @@ int main() {
       if (!truth) throw std::runtime_error("failed to open target truth file: " + truthPath);
     }
 
+    std::ofstream scoreEvents;
+    if (scoreEnabled) {
+      scoreEvents.open(scoreEventsPath, std::ios::out | std::ios::trunc);
+      if (!scoreEvents) throw std::runtime_error("failed to open score events file: " + scoreEventsPath);
+    }
+
     std::cout << "ros_free_camera_bridge bridge_dir=" << bridgeDir
               << " armor_pose=" << armorPosePath
-              << " command=" << commandPath << std::endl;
+              << " command=" << commandPath
+              << " score=" << scorePath << std::endl;
+    if (scoreEnabled) {
+      std::cout << "ros_free_score enabled fire_rate=" << fireRateHz
+                << "Hz bullet_speed=" << bulletSpeed
+                << "m/s armor=" << scoreArmorWidth << "x" << scoreArmorHeight
+                << "m" << std::endl;
+    }
 
     uint64_t frameSeq = 0;
     uint64_t lastCommandSeq = 0;
+    hfut::bridge::CommandPacket latestCommand{};
+    bool latestCommandValid = false;
+    ScoreStats scoreStats;
+    scoreStats.start_time = robot.getTime();
+    std::deque<PendingShot> pendingShots;
+    std::vector<ActiveProjectile> activeProjectiles;
+    double nextFireReadyTime = 0.0;
+    double previousScoreTime = scoreStats.start_time;
+    double lastScoreWriteTime = -std::numeric_limits<double>::infinity();
+    bool previousFireGate = false;
+    std::string latestScoreText = makeScoreMessage(scoreStats, robot.getTime(), false, false, 0.0, 0, 0);
+    const Vec3 gravity{0.0, 0.0, -gravityMagnitude};
+    if (scoreEnabled) writeTextAtomic(scorePath, latestScoreText);
     auto lastLog = std::chrono::steady_clock::now();
     while (robot.step(timestep) != -1) {
       hfut::bridge::CommandPacket command{};
       if (readCommandFile(commandPath, lastCommandSeq, command)) {
         const bool normalMode = command.mode == static_cast<int8_t>(hfut::bridge::GimbalMode::normal_measurement);
         const bool unknownMode = command.mode == static_cast<int8_t>(hfut::bridge::GimbalMode::unknown);
+        latestCommand = command;
+        latestCommandValid = normalMode || unknownMode;
         if (normalMode || unknownMode) {
           desiredYaw = normalizeAngle(command.yaw);
           desiredPitch = command.pitch;
@@ -533,13 +735,113 @@ int main() {
         if ((frameSeq & 0x0fU) == 0) truth.flush();
       }
 
+      if (scoreEnabled) {
+        const double simTime = robot.getTime();
+        const bool fireGate = latestCommandValid && latestCommand.fire_advice != 0;
+        bool firedThisTick = false;
+        if (fireGate && nextFireReadyTime <= simTime + 1e-9) {
+          double decisionTime = simTime;
+          if (fireInterval > 0.0 && previousFireGate && nextFireReadyTime > previousScoreTime + 1e-9) {
+            decisionTime = nextFireReadyTime;
+          }
+          pendingShots.push_back({decisionTime + fireDelay});
+          nextFireReadyTime = fireInterval > 0.0 ? decisionTime + fireInterval : simTime + dt;
+          firedThisTick = true;
+        }
+        const double cooldownRemaining = std::max(0.0, nextFireReadyTime - simTime);
+
+        const double *cameraPitchOrientation = cameraPitchNode->getOrientation();
+        if (cameraPitchOrientation == nullptr) throw std::runtime_error("cannot read SIM_CAMERA_PITCH orientation");
+        const Vec3 cameraPosition = nodePosition(cameraPitchNode);
+
+        while (!pendingShots.empty() && pendingShots.front().fire_time <= simTime) {
+          const PendingShot shot = pendingShots.front();
+          pendingShots.pop_front();
+          const Vec3 origin = cameraPosition + matrixVectorProduct(cameraPitchOrientation, shooterOffset);
+          const Vec3 direction = nodeLocalDirection(cameraPitchNode, shooterLocalForward);
+          ++scoreStats.shots;
+          ActiveProjectile projectile;
+          projectile.shot_id = scoreStats.shots;
+          projectile.launch_time = shot.fire_time;
+          projectile.origin = origin;
+          projectile.velocity = direction * bulletSpeed;
+          projectile.previous_position = origin;
+          activeProjectiles.push_back(projectile);
+          appendScoreEvent(scoreEvents, simTime, projectile.shot_id, "fired", "", 0.0, scoreStats);
+        }
+
+        std::vector<ArmorPlane> hittableArmors;
+        hittableArmors.reserve(armors.size());
+        for (const auto &armor : armors) {
+          ArmorPlane plane = orientArmorTowardCamera(
+              armorPlaneFromSample(armor, scoreArmorWidth * 0.5, scoreArmorHeight * 0.5),
+              cameraPosition);
+          if (armorFacesCamera(plane, cameraPosition)) hittableArmors.push_back(plane);
+        }
+
+        bool resolvedThisTick = false;
+        auto projectileIt = activeProjectiles.begin();
+        while (projectileIt != activeProjectiles.end()) {
+          const double flightTime = simTime - projectileIt->launch_time;
+          if (flightTime > maxFlightTime) {
+            ++scoreStats.misses;
+            appendScoreEvent(scoreEvents, simTime, projectileIt->shot_id, "miss", "", flightTime, scoreStats);
+            projectileIt = activeProjectiles.erase(projectileIt);
+            resolvedThisTick = true;
+            continue;
+          }
+
+          const Vec3 currentPosition = projectilePosition(
+              projectileIt->origin, projectileIt->velocity, gravity, std::max(0.0, flightTime));
+          bool hit = false;
+          std::string hitArmor;
+          double hitFraction = 0.0;
+          for (const auto &armor : hittableArmors) {
+            double fraction = 0.0;
+            if (segmentIntersectsArmor(projectileIt->previous_position, currentPosition, armor, fraction)) {
+              hit = true;
+              hitArmor = armor.name;
+              hitFraction = fraction;
+              break;
+            }
+          }
+
+          if (hit) {
+            ++scoreStats.hits;
+            const double hitFlightTime = std::max(0.0, flightTime - dt + dt * hitFraction);
+            appendScoreEvent(scoreEvents, simTime, projectileIt->shot_id, "hit", hitArmor, hitFlightTime, scoreStats);
+            projectileIt = activeProjectiles.erase(projectileIt);
+            resolvedThisTick = true;
+            continue;
+          }
+
+          projectileIt->previous_position = currentPosition;
+          ++projectileIt;
+        }
+
+        if (scoreEvents && (firedThisTick || resolvedThisTick)) scoreEvents.flush();
+        if (firedThisTick || resolvedThisTick || simTime - lastScoreWriteTime >= scorePublishPeriodMs / 1000.0) {
+          latestScoreText = makeScoreMessage(
+              scoreStats, simTime, firedThisTick, fireGate, cooldownRemaining,
+              activeProjectiles.size(), pendingShots.size());
+          if (!writeTextAtomic(scorePath, latestScoreText)) {
+            std::cerr << "failed to write " << scorePath << std::endl;
+          }
+          lastScoreWriteTime = simTime;
+        }
+        previousScoreTime = simTime;
+        previousFireGate = fireGate;
+      }
+
       const auto now = std::chrono::steady_clock::now();
       if (now - lastLog >= std::chrono::seconds(2)) {
         std::cout << "ros_free_camera_bridge seq=" << frameSeq
                   << " t=" << robot.getTime()
                   << " yaw=" << yaw
                   << " pitch=" << pitch
-                  << " cmd_seq=" << lastCommandSeq << std::endl;
+                  << " cmd_seq=" << lastCommandSeq;
+        if (scoreEnabled) std::cout << " " << latestScoreText;
+        std::cout << std::endl;
         lastLog = now;
       }
     }
