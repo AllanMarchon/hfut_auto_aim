@@ -529,6 +529,7 @@ Gestalt pipe/TCP 使用 32 B envelope 分帧；上行是 148 B 帧元数据加 r
 | `third_party/compat/` | 让移植算法脱离 ROS2 编译的消息和 API 兼容层 |
 | `scripts/` | 构建、运行和诊断脚本 |
 | `tools/diagnose_tracking.py` | 仿真真值与算法输出对齐统计 |
+| `tools/sim/live_status.py` | ROS-free Webots 仿真实时状态观察器 |
 
 ## 常见问题
 

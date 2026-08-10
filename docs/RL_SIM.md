@@ -113,6 +113,29 @@ The moving target variant uses the same world and file bridge:
   --batch --mode=fast --no-rendering --stdout --stderr
 ```
 
+Watch the live bridge status in a third terminal while Webots and auto-aim are
+running:
+
+```bash
+./scripts/watch_sim_status.sh
+```
+
+The watcher prints compact groups like:
+
+```text
+[SIM] t=12.48s seq=780 fps=62.5 wall=62.4 truth_lag=0.0ms
+[TRACK] state=TRACKING(1) mode=NORMAL target=4 tracked=1 armors=4 track_win=100%
+[AIM] yaw=0.06deg pitch=-3.05deg dist=3.01m fire=1 fire_win=96%
+[ERR] yaw=0.114deg pitch=0.031deg target_err=2.7cm
+[TIME] proc=1.1ms flight=133.7ms pred=184.9ms
+[RL] enabled=1 valid=0 dyaw=0.000deg dpitch=0.000deg gate=1
+[SCORE] score=n/a
+```
+
+`SCORE` is `n/a` until a ROS-free score controller writes `score.txt`; the
+other fields already come from `tracking_diagnostics.jsonl` and
+`target_truth.jsonl`.
+
 Expected bridge files after both processes start:
 
 ```text
