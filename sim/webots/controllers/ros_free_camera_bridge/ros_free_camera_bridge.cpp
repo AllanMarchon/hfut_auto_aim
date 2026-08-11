@@ -730,7 +730,7 @@ int main() {
     const double maxFlightTime = std::max(0.01, getEnvDouble("WEBOTS_SCORE_MAX_FLIGHT_TIME", 2.0));
     const int scorePublishPeriodMs = std::max(1, getEnvInt("WEBOTS_SCORE_PUBLISH_PERIOD_MS", 200));
     const double scoreArmorWidth = std::max(0.001, getEnvDouble("WEBOTS_SCORE_ARMOR_WIDTH", 0.135));
-    const double scoreArmorHeight = std::max(0.001, getEnvDouble("WEBOTS_SCORE_ARMOR_HEIGHT", 0.135));
+    const double scoreArmorHeight = std::max(0.001, getEnvDouble("WEBOTS_SCORE_ARMOR_HEIGHT", 0.055));
     const Vec3 shooterOffset{
         getEnvDouble("WEBOTS_SCORE_SHOOTER_OFFSET_X", 0.0),
         getEnvDouble("WEBOTS_SCORE_SHOOTER_OFFSET_Y", 0.0),
@@ -754,12 +754,15 @@ int main() {
     }
 
     webots::Node *targetRoot = robot.getFromDef("RM_ARMOR_ROBOT");
+    // Keep the wire order aligned with the norm4 tracker/control model:
+    // index 0/2 are lower plates, index 1/3 are upper plates, and angular
+    // order is front -> left -> rear -> right.
     std::array<webots::Node *, 4> armorNodes = {
         robot.getFromDef("FRONT_ARMOR"),
-        robot.getFromDef("REAR_ARMOR"),
         robot.getFromDef("LEFT_ARMOR"),
+        robot.getFromDef("REAR_ARMOR"),
         robot.getFromDef("RIGHT_ARMOR")};
-    const std::array<std::string, 4> armorNames = {"front", "rear", "left", "right"};
+    const std::array<std::string, 4> armorNames = {"front", "left", "rear", "right"};
     if (targetRoot == nullptr) throw std::runtime_error("missing RM_ARMOR_ROBOT");
 
     webots::Field *rootChildren = nullptr;

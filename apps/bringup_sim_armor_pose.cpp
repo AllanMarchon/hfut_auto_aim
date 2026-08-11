@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -150,6 +151,39 @@ bool readFireGate(const YAML::Node& node) {
   } catch (const YAML::Exception&) {
   }
   return true;
+}
+
+const char* simArmorName(int index) {
+  switch (index) {
+    case 0: return "front";
+    case 1: return "left";
+    case 2: return "rear";
+    case 3: return "right";
+    default: return "unknown";
+  }
+}
+
+const char* simArmorLayer(int index) {
+  if (index < 0) return "unknown";
+  return (index % 2 == 0) ? "lower" : "upper";
+}
+
+void writeVector3Json(std::ostream& out, const Eigen::Vector3d& value) {
+  out << '[' << value.x() << ',' << value.y() << ',' << value.z() << ']';
+}
+
+void writeArmorPositionsJson(std::ostream& out, const std::vector<Eigen::Vector3d>& positions) {
+  out << '[';
+  for (size_t index = 0; index < positions.size(); ++index) {
+    if (index > 0) out << ',';
+    out << "{\"index\":" << index
+        << ",\"name\":\"" << simArmorName(static_cast<int>(index)) << "\""
+        << ",\"layer\":\"" << simArmorLayer(static_cast<int>(index)) << "\""
+        << ",\"position\":";
+    writeVector3Json(out, positions[index]);
+    out << '}';
+  }
+  out << ']';
 }
 
 RlActionSample readRlActionFile(const RlActionConfig& config) {
@@ -310,7 +344,10 @@ void writeDiagnostics(
   for (size_t index = 0; index < frame.direct_armors.size(); ++index) {
     if (index > 0) diagnostics << ',';
     const auto& direct = frame.direct_armors[index];
-    diagnostics << "{\"number\":\"" << escapeJsonString(direct.number)
+    diagnostics << "{\"index\":" << index
+                << ",\"semantic_name\":\"" << simArmorName(static_cast<int>(index)) << "\""
+                << ",\"layer\":\"" << simArmorLayer(static_cast<int>(index)) << "\""
+                << ",\"number\":\"" << escapeJsonString(direct.number)
                 << "\",\"type\":\"" << escapeJsonString(direct.type)
                 << "\",\"confidence\":" << direct.confidence
                 << ",\"position\":[" << direct.position_control.x() << ','
@@ -341,19 +378,31 @@ void writeDiagnostics(
               << (dbg.control_target.tracks_center ? "true" : "false")
               << ",\"virtual_target\":"
               << (dbg.control_target.is_virtual_target ? "true" : "false")
+              << ",\"selected_index\":" << dbg.control_target.selected_index
+              << ",\"real_selected_index\":" << dbg.control_target.real_selected_index
+              << ",\"selected_name\":\""
+              << simArmorName(dbg.control_target.real_selected_index >= 0
+                   ? dbg.control_target.real_selected_index : dbg.control_target.selected_index)
+              << "\""
+              << ",\"selected_layer\":\""
+              << simArmorLayer(dbg.control_target.real_selected_index >= 0
+                   ? dbg.control_target.real_selected_index : dbg.control_target.selected_index)
+              << "\""
               << ",\"prediction_time_s\":" << dbg.control_target.prediction_time_s
               << ",\"yaw_velocity_rad_s\":" << dbg.control_target.yaw_velocity
-              << ",\"current_center\":[" << dbg.control_target.current_center.x() << ','
-              << dbg.control_target.current_center.y() << ','
-              << dbg.control_target.current_center.z() << ']'
-              << ",\"predicted_center\":[" << dbg.control_target.predicted_center.x() << ','
-              << dbg.control_target.predicted_center.y() << ','
-              << dbg.control_target.predicted_center.z() << ']'
-              << ",\"control_target_position\":["
-              << dbg.control_target.control_target_position.x() << ','
-              << dbg.control_target.control_target_position.y() << ','
-              << dbg.control_target.control_target_position.z() << ']'
-              << "}"
+              << ",\"current_center\":";
+  writeVector3Json(diagnostics, dbg.control_target.current_center);
+  diagnostics << ",\"predicted_center\":";
+  writeVector3Json(diagnostics, dbg.control_target.predicted_center);
+  diagnostics << ",\"current_selected_armor\":";
+  writeVector3Json(diagnostics, dbg.control_target.current_selected_armor);
+  diagnostics << ",\"control_target_position\":";
+  writeVector3Json(diagnostics, dbg.control_target.control_target_position);
+  diagnostics << ",\"current_armor_positions\":";
+  writeArmorPositionsJson(diagnostics, dbg.control_target.current_armor_positions);
+  diagnostics << ",\"predicted_armor_positions\":";
+  writeArmorPositionsJson(diagnostics, dbg.control_target.predicted_armor_positions);
+  diagnostics << "}"
               << ",\"delay\":{\"prediction_s\":"
               << dbg.delay_audit.total_prediction_time_s
               << ",\"flight_time_s\":" << dbg.delay_audit.flight_time_s

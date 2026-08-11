@@ -10,7 +10,7 @@ import os
 import statistics
 import sys
 import time
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +111,70 @@ def parse_score(path: Path) -> dict[str, float | int | None]:
     return score
 
 
+def armor_name_by_index(index: int) -> str:
+    return {
+        0: "front",
+        1: "left",
+        2: "rear",
+        3: "right",
+    }.get(index, "unknown")
+
+
+def armor_layer_by_index(index: int) -> str:
+    if index < 0:
+        return "unknown"
+    return "lower" if index % 2 == 0 else "upper"
+
+
+def parse_score_events(path: Path) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "fired_events": 0,
+        "hit_events": 0,
+        "miss_events": 0,
+        "hits_by_armor": {},
+        "lower_hits": 0,
+        "upper_hits": 0,
+        "last_hit_armor": None,
+        "last_event": None,
+    }
+    if not path.exists() or path.stat().st_size <= 0:
+        return summary
+
+    hits_by_armor: Counter[str] = Counter()
+    try:
+        with path.open("r", encoding="utf-8-sig", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                event = str(record.get("event", ""))
+                summary["last_event"] = event or None
+                if event == "fired":
+                    summary["fired_events"] += 1
+                elif event == "miss":
+                    summary["miss_events"] += 1
+                elif event == "hit":
+                    armor = str(record.get("armor", "unknown") or "unknown")
+                    hits_by_armor[armor] += 1
+                    summary["hit_events"] += 1
+                    summary["last_hit_armor"] = armor
+                    if armor in {"front", "rear"}:
+                        summary["lower_hits"] += 1
+                    elif armor in {"left", "right"}:
+                        summary["upper_hits"] += 1
+    except OSError:
+        return summary
+
+    summary["hits_by_armor"] = dict(hits_by_armor)
+    return summary
+
+
 def nearest_by_time(records: list[dict[str, Any]], target_time: float) -> dict[str, Any] | None:
     if not records:
         return None
@@ -188,6 +252,7 @@ def make_status(
     diagnostic: dict[str, Any],
     truth_records: list[dict[str, Any]],
     score: dict[str, float | int | None],
+    score_events: dict[str, Any],
     rolling: RollingStats,
     previous: dict[str, float] | None,
 ) -> tuple[dict[str, Any], dict[str, float]]:
@@ -197,6 +262,11 @@ def make_status(
     control = get_nested(diagnostic, ["control_target"], {}) or {}
     delay = get_nested(diagnostic, ["delay"], {}) or {}
     rl = get_nested(diagnostic, ["rl_action"], {}) or {}
+    selected_index = int(finite(control.get("real_selected_index"), -1))
+    if selected_index < 0:
+        selected_index = int(finite(control.get("selected_index"), -1))
+    selected_name = str(control.get("selected_name") or armor_name_by_index(selected_index))
+    selected_layer = str(control.get("selected_layer") or armor_layer_by_index(selected_index))
     truth_record = nearest_by_time(truth_records, sim_time)
     truth_lag_ms = None
     target_error_m = None
@@ -229,6 +299,9 @@ def make_status(
         "target_id": str(diagnostic.get("selected_id", "")),
         "tracked_count": int(finite(diagnostic.get("tracked_count"), 0)),
         "armor_count": len(diagnostic.get("direct_armors", [])),
+        "selected_index": selected_index,
+        "selected_name": selected_name,
+        "selected_layer": selected_layer,
         "yaw_deg": finite(command.get("yaw_deg"), math.nan),
         "pitch_deg": finite(command.get("pitch_deg"), math.nan),
         "yaw_err_deg": finite(command.get("yaw_diff_deg"), math.nan),
@@ -246,6 +319,7 @@ def make_status(
         "rl_dpitch_deg": finite(rl.get("delta_pitch_rad"), 0.0) * K_RAD_TO_DEG,
         "rl_gate": int(finite(rl.get("fire_gate"), 1)),
         "score": score,
+        "score_events": score_events,
         "fire_ratio_window": rolling.ratio(lambda record: finite(get_nested(record, ["command", "fire_advice"], 0)) > 0),
         "track_ratio_window": rolling.ratio(lambda record: finite(record.get("tracked_count"), 0) > 0),
     }
@@ -264,6 +338,7 @@ def fmt_float(value: Any, precision: int = 2, suffix: str = "") -> str:
 
 def format_status(status: dict[str, Any]) -> str:
     score = status["score"]
+    score_events = status.get("score_events", {}) or {}
     score_text = "score=n/a"
     if score.get("shots") is not None or score.get("hits") is not None:
         hit_rate = score.get("hit_rate")
@@ -273,8 +348,22 @@ def format_status(status: dict[str, Any]) -> str:
             f"miss={score.get('misses', 0)} hit={fmt_float(hit_rate_pct, 1, '%')} "
             f"dps={fmt_float(score.get('dps'), 1)}"
         )
+    hits_by_armor = score_events.get("hits_by_armor", {})
+    if isinstance(hits_by_armor, dict) and hits_by_armor:
+        board_hits = ",".join(
+            f"{name}:{int(hits_by_armor.get(name, 0))}" for name in ["front", "left", "rear", "right"]
+        )
+        score_text += (
+            f" boards={board_hits} lower={int(score_events.get('lower_hits', 0))}"
+            f" upper={int(score_events.get('upper_hits', 0))}"
+            f" last={score_events.get('last_hit_armor') or 'n/a'}"
+        )
     target_error = status.get("target_error_m")
     target_error_text = "target_err=n/a" if target_error is None else f"target_err={target_error * 100.0:.1f}cm"
+    if status.get("selected_index", -1) >= 0:
+        board_text = f"board={status['selected_name']}/{status['selected_layer']}#{status['selected_index']}"
+    else:
+        board_text = "board=n/a"
     return (
         f"[SIM] t={fmt_float(status['time_s'], 2, 's')} seq={status['seq']} "
         f"fps={fmt_float(status.get('fps'), 1)} wall={fmt_float(status.get('wall_hz'), 1)} "
@@ -285,7 +374,7 @@ def format_status(status: dict[str, Any]) -> str:
         f"track_win={fmt_float((status.get('track_ratio_window') or 0.0) * 100.0, 0, '%')}\n"
         f"[AIM] yaw={fmt_float(status['yaw_deg'], 2, 'deg')} pitch={fmt_float(status['pitch_deg'], 2, 'deg')} "
         f"dist={fmt_float(status['distance_m'], 2, 'm')} fire={status['fire']} "
-        f"fire_win={fmt_float((status.get('fire_ratio_window') or 0.0) * 100.0, 0, '%')}\n"
+        f"fire_win={fmt_float((status.get('fire_ratio_window') or 0.0) * 100.0, 0, '%')} {board_text}\n"
         f"[ERR] yaw={fmt_float(status['yaw_err_deg'], 3, 'deg')} "
         f"pitch={fmt_float(status['pitch_err_deg'], 3, 'deg')} {target_error_text}\n"
         f"[TIME] proc={fmt_float(status['proc_ms'], 1, 'ms')} "
@@ -308,6 +397,7 @@ def main() -> int:
     parser.add_argument("--diagnostics", default="tracking_diagnostics.jsonl")
     parser.add_argument("--truth", default="target_truth.jsonl")
     parser.add_argument("--score", default="score.txt")
+    parser.add_argument("--score-events", default="score_events.jsonl")
     parser.add_argument("--interval", type=float, default=0.5)
     parser.add_argument("--window", type=int, default=120, help="rolling frame window for fire/track ratios")
     parser.add_argument("--once", action="store_true")
@@ -318,12 +408,15 @@ def main() -> int:
     diagnostics_path = expand_path(args.diagnostics)
     truth_path = expand_path(args.truth)
     score_path = expand_path(args.score)
+    score_events_path = expand_path(args.score_events)
     if not diagnostics_path.is_absolute():
         diagnostics_path = bridge_dir / diagnostics_path
     if not truth_path.is_absolute():
         truth_path = bridge_dir / truth_path
     if not score_path.is_absolute():
         score_path = bridge_dir / score_path
+    if not score_events_path.is_absolute():
+        score_events_path = bridge_dir / score_events_path
 
     rolling = RollingStats(args.window)
     previous: dict[str, float] | None = None
@@ -347,7 +440,8 @@ def main() -> int:
         if seq != last_seq:
             rolling.add(diagnostic)
             score = parse_score(score_path)
-            status, previous = make_status(diagnostic, truth_records, score, rolling, previous)
+            score_events = parse_score_events(score_events_path)
+            status, previous = make_status(diagnostic, truth_records, score, score_events, rolling, previous)
             if args.json:
                 print(json.dumps(status, ensure_ascii=False, separators=(",", ":")), flush=True)
             else:
