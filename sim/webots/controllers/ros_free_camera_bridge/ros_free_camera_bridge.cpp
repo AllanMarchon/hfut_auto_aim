@@ -79,6 +79,13 @@ struct ActiveProjectile {
   Vec3 origin;
   Vec3 velocity;
   Vec3 previous_position;
+  webots::Node *visual_node{nullptr};
+  webots::Field *visual_translation{nullptr};
+};
+
+struct VisualMarker {
+  double expire_time{0.0};
+  webots::Node *node{nullptr};
 };
 
 struct ScoreStats {
@@ -106,6 +113,113 @@ double getEnvDouble(const char *name, double defaultValue) {
   const char *value = std::getenv(name);
   if (value == nullptr || value[0] == '\0') return defaultValue;
   return std::stod(value);
+}
+
+std::string makeVisualDefName(const std::string &prefix, uint64_t id) {
+  return prefix + std::to_string(id);
+}
+
+std::string makeVisualSphereNode(
+    const std::string &defName,
+    const Vec3 &position,
+    double radius,
+    double red,
+    double green,
+    double blue) {
+  std::ostringstream node;
+  node << std::fixed << std::setprecision(6)
+       << "DEF " << defName << " Transform {\n"
+       << "  translation " << position.x << ' ' << position.y << ' ' << position.z << "\n"
+       << "  children [\n"
+       << "    Shape {\n"
+       << "      appearance PBRAppearance {\n"
+       << "        baseColor " << red << ' ' << green << ' ' << blue << "\n"
+       << "        roughness 0.25\n"
+       << "        metalness 0\n"
+       << "      }\n"
+       << "      geometry Sphere {\n"
+       << "        radius " << radius << "\n"
+       << "      }\n"
+       << "      castShadows FALSE\n"
+       << "    }\n"
+       << "  ]\n"
+       << "}\n";
+  return node.str();
+}
+
+webots::Node *importVisualSphere(
+    webots::Supervisor &robot,
+    webots::Field *rootChildren,
+    const std::string &defName,
+    const Vec3 &position,
+    double radius,
+    double red,
+    double green,
+    double blue) {
+  if (rootChildren == nullptr || radius <= 0.0) return nullptr;
+  rootChildren->importMFNodeFromString(
+      -1, makeVisualSphereNode(defName, position, radius, red, green, blue));
+  return robot.getFromDef(defName);
+}
+
+void setVisualTranslation(webots::Field *translation, const Vec3 &position) {
+  if (translation == nullptr) return;
+  const double value[3] = {position.x, position.y, position.z};
+  translation->setSFVec3f(value);
+}
+
+void removeNode(webots::Node *&node) {
+  if (node == nullptr) return;
+  node->remove();
+  node = nullptr;
+}
+
+void attachProjectileVisual(
+    webots::Supervisor &robot,
+    webots::Field *rootChildren,
+    ActiveProjectile &projectile,
+    double radius) {
+  const std::string defName = makeVisualDefName("HFUT_BULLET_", projectile.shot_id);
+  projectile.visual_node = importVisualSphere(
+      robot, rootChildren, defName, projectile.origin, radius, 1.0, 0.72, 0.02);
+  projectile.visual_translation =
+      projectile.visual_node ? projectile.visual_node->getField("translation") : nullptr;
+}
+
+void removeProjectileVisual(ActiveProjectile &projectile) {
+  removeNode(projectile.visual_node);
+  projectile.visual_translation = nullptr;
+}
+
+void addVisualMarker(
+    webots::Supervisor &robot,
+    webots::Field *rootChildren,
+    std::vector<VisualMarker> &markers,
+    const std::string &prefix,
+    uint64_t shotId,
+    const Vec3 &position,
+    double radius,
+    double ttl,
+    double now,
+    double red,
+    double green,
+    double blue) {
+  if (ttl <= 0.0) return;
+  const std::string defName = makeVisualDefName(prefix, shotId);
+  webots::Node *node = importVisualSphere(robot, rootChildren, defName, position, radius, red, green, blue);
+  if (node != nullptr) markers.push_back({now + ttl, node});
+}
+
+void expireVisualMarkers(std::vector<VisualMarker> &markers, double now) {
+  auto markerIt = markers.begin();
+  while (markerIt != markers.end()) {
+    if (now >= markerIt->expire_time) {
+      removeNode(markerIt->node);
+      markerIt = markers.erase(markerIt);
+    } else {
+      ++markerIt;
+    }
+  }
 }
 
 int getEnvInt(const char *name, int defaultValue) {
@@ -598,6 +712,16 @@ int main() {
     const std::string armorNumber = getEnvString("WEBOTS_ARMOR_NUMBER", "4");
     const bool writeTruth = getEnvBool("WEBOTS_WRITE_TARGET_TRUTH", true);
     const bool scoreEnabled = getEnvBool("WEBOTS_SCORE_ENABLED", true);
+    bool projectileVisualEnabled = getEnvBool("WEBOTS_PROJECTILE_VISUAL_ENABLED", true);
+    const bool projectileMarkersEnabled = getEnvBool("WEBOTS_PROJECTILE_MARKERS_ENABLED", true);
+    const double projectileVisualRadius =
+        std::max(0.001, getEnvDouble("WEBOTS_PROJECTILE_VISUAL_RADIUS", 0.025));
+    const double projectileMarkerRadius =
+        std::max(0.001, getEnvDouble("WEBOTS_PROJECTILE_MARKER_RADIUS", 0.045));
+    const double projectileHitMarkerTtl =
+        std::max(0.0, getEnvDouble("WEBOTS_PROJECTILE_HIT_MARKER_TTL_MS", 220.0) / 1000.0);
+    const double projectileMissMarkerTtl =
+        std::max(0.0, getEnvDouble("WEBOTS_PROJECTILE_MISS_MARKER_TTL_MS", 220.0) / 1000.0);
     const double fireDelay = std::max(0.0, getEnvDouble("WEBOTS_FIRE_DELAY_MS", 0.0) / 1000.0);
     const double fireRateHz = std::max(0.0, getEnvDouble("WEBOTS_FIRE_RATE_HZ", 20.0));
     const double fireInterval = fireRateHz > 0.0 ? 1.0 / fireRateHz : 0.0;
@@ -638,6 +762,16 @@ int main() {
     const std::array<std::string, 4> armorNames = {"front", "rear", "left", "right"};
     if (targetRoot == nullptr) throw std::runtime_error("missing RM_ARMOR_ROBOT");
 
+    webots::Field *rootChildren = nullptr;
+    if (projectileVisualEnabled) {
+      webots::Node *rootNode = robot.getRoot();
+      rootChildren = rootNode ? rootNode->getField("children") : nullptr;
+      if (rootChildren == nullptr) {
+        std::cerr << "projectile visual disabled: cannot access root children field" << std::endl;
+        projectileVisualEnabled = false;
+      }
+    }
+
     double yaw = getEnvDouble("WEBOTS_CAMERA_YAW", 0.0);
     double pitch = getEnvDouble("WEBOTS_CAMERA_TILT", 0.0);
     double desiredYaw = yaw;
@@ -675,6 +809,12 @@ int main() {
                 << "m/s armor=" << scoreArmorWidth << "x" << scoreArmorHeight
                 << "m" << std::endl;
     }
+    if (scoreEnabled && projectileVisualEnabled) {
+      std::cout << "ros_free_projectile_visual enabled radius=" << projectileVisualRadius
+                << "m marker_radius=" << projectileMarkerRadius
+                << "m hit_ttl=" << projectileHitMarkerTtl
+                << "s miss_ttl=" << projectileMissMarkerTtl << "s" << std::endl;
+    }
 
     uint64_t frameSeq = 0;
     uint64_t lastCommandSeq = 0;
@@ -684,6 +824,7 @@ int main() {
     scoreStats.start_time = robot.getTime();
     std::deque<PendingShot> pendingShots;
     std::vector<ActiveProjectile> activeProjectiles;
+    std::vector<VisualMarker> visualMarkers;
     double nextFireReadyTime = 0.0;
     double previousScoreTime = scoreStats.start_time;
     double lastScoreWriteTime = -std::numeric_limits<double>::infinity();
@@ -766,6 +907,9 @@ int main() {
           projectile.origin = origin;
           projectile.velocity = direction * bulletSpeed;
           projectile.previous_position = origin;
+          if (projectileVisualEnabled) {
+            attachProjectileVisual(robot, rootChildren, projectile, projectileVisualRadius);
+          }
           activeProjectiles.push_back(projectile);
           appendScoreEvent(scoreEvents, simTime, projectile.shot_id, "fired", "", 0.0, scoreStats);
         }
@@ -783,16 +927,27 @@ int main() {
         auto projectileIt = activeProjectiles.begin();
         while (projectileIt != activeProjectiles.end()) {
           const double flightTime = simTime - projectileIt->launch_time;
+          const Vec3 currentPosition = projectilePosition(
+              projectileIt->origin, projectileIt->velocity, gravity, std::max(0.0, flightTime));
+          if (projectileVisualEnabled) {
+            setVisualTranslation(projectileIt->visual_translation, currentPosition);
+          }
           if (flightTime > maxFlightTime) {
             ++scoreStats.misses;
+            if (projectileVisualEnabled) {
+              if (projectileMarkersEnabled) {
+                addVisualMarker(
+                    robot, rootChildren, visualMarkers, "HFUT_MISS_", projectileIt->shot_id,
+                    currentPosition, projectileMarkerRadius, projectileMissMarkerTtl, simTime,
+                    1.0, 0.05, 0.02);
+              }
+              removeProjectileVisual(*projectileIt);
+            }
             appendScoreEvent(scoreEvents, simTime, projectileIt->shot_id, "miss", "", flightTime, scoreStats);
             projectileIt = activeProjectiles.erase(projectileIt);
             resolvedThisTick = true;
             continue;
           }
-
-          const Vec3 currentPosition = projectilePosition(
-              projectileIt->origin, projectileIt->velocity, gravity, std::max(0.0, flightTime));
           bool hit = false;
           std::string hitArmor;
           double hitFraction = 0.0;
@@ -809,6 +964,17 @@ int main() {
           if (hit) {
             ++scoreStats.hits;
             const double hitFlightTime = std::max(0.0, flightTime - dt + dt * hitFraction);
+            const Vec3 hitPosition = projectileIt->previous_position +
+                                     (currentPosition - projectileIt->previous_position) * hitFraction;
+            if (projectileVisualEnabled) {
+              if (projectileMarkersEnabled) {
+                addVisualMarker(
+                    robot, rootChildren, visualMarkers, "HFUT_HIT_", projectileIt->shot_id,
+                    hitPosition, projectileMarkerRadius, projectileHitMarkerTtl, simTime,
+                    0.05, 1.0, 0.12);
+              }
+              removeProjectileVisual(*projectileIt);
+            }
             appendScoreEvent(scoreEvents, simTime, projectileIt->shot_id, "hit", hitArmor, hitFlightTime, scoreStats);
             projectileIt = activeProjectiles.erase(projectileIt);
             resolvedThisTick = true;
@@ -818,6 +984,8 @@ int main() {
           projectileIt->previous_position = currentPosition;
           ++projectileIt;
         }
+
+        if (projectileVisualEnabled) expireVisualMarkers(visualMarkers, simTime);
 
         if (scoreEvents && (firedThisTick || resolvedThisTick)) scoreEvents.flush();
         if (firedThisTick || resolvedThisTick || simTime - lastScoreWriteTime >= scorePublishPeriodMs / 1000.0) {
