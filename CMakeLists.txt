@@ -43,6 +43,7 @@ set(HFUT_IO_SOURCES
   io/gestalt/gestalt_latest_frame_receiver.cpp
   io/gimbal/webots_bridge_gimbal.cpp
   io/plotter/plotter.cpp
+  io/web/debug_mjpeg_server.cpp
 )
 
 if(HFUT_ENABLE_REAL_IO)

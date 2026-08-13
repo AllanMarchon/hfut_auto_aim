@@ -20,6 +20,7 @@
 #include <Eigen/Geometry>
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <std_msgs/msg/header.hpp>
 #include <yaml-cpp/yaml.h>
@@ -36,6 +37,7 @@
 #endif
 #include "io/camera/opencv_camera_source.hpp"
 #include "io/serial/infantry_serial.hpp"
+#include "io/web/debug_mjpeg_server.hpp"
 
 #include "config_loader.hpp"
 #include "armor_detector_nn/core/armor_detector_nn.hpp"
@@ -93,6 +95,12 @@ struct Options {
   bool dry_run{false};
   bool enable_fire{false};
   bool display{false};
+  bool web_view{false};
+  std::string web_host{"0.0.0.0"};
+  int web_port{8080};
+  int web_jpeg_quality{80};
+  int web_max_width{960};
+  int web_frame_step{2};
   int max_frames{-1};
 };
 
@@ -260,6 +268,12 @@ Options parseOptions(int argc, char** argv) {
           "  --dry-run                do not open/send serial\n"
           "  --enable-fire            allow fire_advice to reach serial packet\n"
           "  --display                show detector overlay\n"
+          "  --web-view               serve detector overlay at http://HOST:PORT/\n"
+          "  --web-host ADDR          web bind address (default 0.0.0.0)\n"
+          "  --web-port N             web port (default 8080)\n"
+          "  --web-jpeg-quality N     JPEG quality 30-95 (default 80)\n"
+          "  --web-max-width PX       stream downscale width (default 960)\n"
+          "  --web-frame-step N       publish every N processed frames (default 2)\n"
           "  --max-frames N           stop after N processed frames\n");
       std::exit(0);
     } else if (arg == "--dry-run") {
@@ -268,6 +282,8 @@ Options parseOptions(int argc, char** argv) {
       options.enable_fire = true;
     } else if (arg == "--display") {
       options.display = true;
+    } else if (arg == "--web-view") {
+      options.web_view = true;
     } else if (arg == "--flip-image") {
       options.camera_flip_image = true;
     } else if (arg == "--hardware-config" || arg == "--real-config") {
@@ -311,6 +327,16 @@ Options parseOptions(int argc, char** argv) {
       options.bullet_speed = std::stod(value);
     } else if (auto value = optionValue(argc, argv, i, arg, "--strategy"); !value.empty()) {
       options.controller_strategy = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--web-host"); !value.empty()) {
+      options.web_host = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--web-port"); !value.empty()) {
+      options.web_port = std::stoi(value);
+    } else if (auto value = optionValue(argc, argv, i, arg, "--web-jpeg-quality"); !value.empty()) {
+      options.web_jpeg_quality = std::stoi(value);
+    } else if (auto value = optionValue(argc, argv, i, arg, "--web-max-width"); !value.empty()) {
+      options.web_max_width = std::stoi(value);
+    } else if (auto value = optionValue(argc, argv, i, arg, "--web-frame-step"); !value.empty()) {
+      options.web_frame_step = std::stoi(value);
     } else if (auto value = optionValue(argc, argv, i, arg, "--max-frames"); !value.empty()) {
       options.max_frames = std::stoi(value);
     } else {
@@ -333,6 +359,18 @@ Options parseOptions(int argc, char** argv) {
   }
   if (options.feedback_timeout_ms <= 0) {
     throw std::invalid_argument("feedback timeout must be > 0");
+  }
+  if (options.web_port <= 0 || options.web_port > 65535) {
+    throw std::invalid_argument("web port must be in 1..65535");
+  }
+  if (options.web_jpeg_quality < 30 || options.web_jpeg_quality > 95) {
+    throw std::invalid_argument("web JPEG quality must be in 30..95");
+  }
+  if (options.web_max_width <= 0) {
+    throw std::invalid_argument("web max width must be > 0");
+  }
+  if (options.web_frame_step <= 0) {
+    throw std::invalid_argument("web frame step must be > 0");
   }
   hfut::io::InfantryPacketLayout tx_layout;
   if (!hfut::io::parseInfantryPacketLayout(options.serial_tx_protocol, tx_layout)) {
@@ -643,6 +681,50 @@ hfut::GimbalCommand toRadiansCommand(const rm_interfaces::msg::GimbalCmd& cmd_de
   return out;
 }
 
+void drawDebugLine(cv::Mat& image, int& y, const std::string& text,
+                   const cv::Scalar& color = cv::Scalar(80, 255, 80)) {
+  if (image.empty()) return;
+  constexpr int kFont = cv::FONT_HERSHEY_SIMPLEX;
+  constexpr double kScale = 0.55;
+  constexpr int kThickness = 1;
+  int baseline = 0;
+  const cv::Size size = cv::getTextSize(text, kFont, kScale, kThickness, &baseline);
+  const int x = 10;
+  const int top = std::max(0, y - size.height - 5);
+  cv::rectangle(image, cv::Rect(x - 4, top, size.width + 8, size.height + baseline + 8),
+                cv::Scalar(0, 0, 0), cv::FILLED);
+  cv::putText(image, text, cv::Point(x, y), kFont, kScale, color, kThickness,
+              cv::LINE_AA);
+  y += size.height + baseline + 10;
+}
+
+void drawWebOverlay(cv::Mat& image, const hfut::io::DebugMjpegStatus& status) {
+  int y = 24;
+  char buffer[256];
+  std::snprintf(buffer, sizeof(buffer),
+                "frames=%llu fps=%.1f det=%d poses=%d armors=%d tracked=%d",
+                static_cast<unsigned long long>(status.frames), status.fps,
+                status.detections, status.poses, status.armors, status.tracked);
+  drawDebugLine(image, y, buffer);
+
+  std::snprintf(buffer, sizeof(buffer),
+                "fb yaw=%.2f pitch=%.2f cmd yaw=%.2f pitch=%.2f mode=%d",
+                status.feedback_yaw_deg, status.feedback_pitch_deg,
+                status.command_yaw_deg, status.command_pitch_deg, status.mode);
+  drawDebugLine(image, y, buffer, cv::Scalar(255, 220, 120));
+
+  std::snprintf(buffer, sizeof(buffer),
+                "latency=%.1fms fb_age=%.0fms dry=%d fire_enabled=%d fire=%d",
+                status.latency_ms, status.feedback_age_ms, status.dry_run ? 1 : 0,
+                status.fire_enabled ? 1 : 0, status.fire ? 1 : 0);
+  drawDebugLine(image, y, buffer, status.fire ? cv::Scalar(80, 80, 255)
+                                           : cv::Scalar(180, 180, 180));
+
+  const std::string line = "selected=" + status.selected_id +
+      " state=" + status.track_state + " reason=" + status.reason;
+  drawDebugLine(image, y, line, cv::Scalar(220, 220, 220));
+}
+
 int run(const Options& options) {
   using namespace fyt::auto_aim;
 
@@ -688,10 +770,27 @@ int run(const Options& options) {
       "gimbal_pipeline", pipeline_overrides);
 
   std::unique_ptr<DebugDrawer> drawer;
-  if (options.display) {
+  if (options.display || options.web_view) {
     drawer = std::make_unique<DebugDrawer>();
+  }
+  if (options.display) {
     cv::namedWindow("hfut bringup real", cv::WINDOW_NORMAL);
     cv::resizeWindow("hfut bringup real", 960, 720);
+  }
+
+  std::unique_ptr<hfut::io::DebugMjpegServer> web_server;
+  if (options.web_view) {
+    hfut::io::DebugMjpegServerConfig web_config;
+    web_config.host = options.web_host;
+    web_config.port = static_cast<uint16_t>(options.web_port);
+    web_config.jpeg_quality = options.web_jpeg_quality;
+    web_config.max_width = options.web_max_width;
+    web_server = std::make_unique<hfut::io::DebugMjpegServer>(web_config);
+    if (!web_server->start()) {
+      throw std::runtime_error("web debug server failed: " + web_server->errorMessage());
+    }
+    std::printf("[bringup_real] web_view=%s stream=/stream.mjpg status=/status.json\n",
+                web_server->url().c_str());
   }
 
   if (options.camera_backend == "opencv" && options.camera_source.empty()) {
@@ -730,6 +829,7 @@ int run(const Options& options) {
   bool have_feedback = options.dry_run || !options.require_feedback;
   int processed = 0;
   uint64_t frames = 0;
+  const auto run_start = std::chrono::steady_clock::now();
   auto last_log = std::chrono::steady_clock::now();
   auto last_feedback_wait_log = std::chrono::steady_clock::now();
   auto last_feedback_time = std::chrono::steady_clock::now();
@@ -808,17 +908,56 @@ int run(const Options& options) {
     ++frames;
     ++processed;
 
-    if (drawer) {
-      cv::Mat display = frame.image.clone();
-      drawer->drawDetections(display, dets, true);
-      cv::imshow("hfut bringup real", display);
-      const int key = cv::waitKey(1);
-      if (key == 27 || key == 'q') break;
+    const auto now = std::chrono::steady_clock::now();
+    const auto& debug = pipeline.lastDebug();
+    hfut::io::DebugMjpegStatus web_status;
+    if (web_server) {
+      const double elapsed_s = std::chrono::duration<double>(now - run_start).count();
+      web_status.frames = frames;
+      web_status.fps = elapsed_s > 0.0 ? static_cast<double>(frames) / elapsed_s : 0.0;
+      web_status.latency_ms = latency_s * 1000.0;
+      web_status.detections = static_cast<int>(dets.size());
+      web_status.poses = static_cast<int>(poses.size());
+      web_status.armors = static_cast<int>(armors.armors.size());
+      web_status.tracked = debug.num_tracked;
+      web_status.selected_id = debug.selected_id.empty() ? "none" : debug.selected_id;
+      web_status.track_state = trackStateName(debug.selected_track_state);
+      web_status.reason = debug.tracker_decision_reason.empty()
+          ? "none"
+          : debug.tracker_decision_reason;
+      web_status.mode = static_cast<int>(command.mode);
+      web_status.feedback_yaw_deg = frame.gimbal_yaw * kRadToDeg;
+      web_status.feedback_pitch_deg = frame.gimbal_pitch * kRadToDeg;
+      web_status.command_yaw_deg = command.yaw * kRadToDeg;
+      web_status.command_pitch_deg = command.pitch * kRadToDeg;
+      web_status.feedback_age_ms = options.dry_run ? 0.0 : static_cast<double>(feedback_age.count());
+      web_status.fire = command.fire_advice;
+      web_status.dry_run = options.dry_run;
+      web_status.fire_enabled = options.enable_fire;
+      web_status.enemy_color = options.enemy_color;
+      web_status.camera_backend = options.camera_backend;
+      web_status.serial_tx = hfut::io::infantryPacketLayoutName(serial_config.tx_layout);
+      web_status.serial_rx = hfut::io::infantryPacketLayoutName(serial_config.rx_layout);
     }
 
-    const auto now = std::chrono::steady_clock::now();
+    if (drawer && (options.display || web_server)) {
+      cv::Mat visual = frame.image.clone();
+      drawer->drawDetections(visual, dets, true);
+      drawer->drawCrosshair(visual);
+      if (web_server) {
+        drawWebOverlay(visual, web_status);
+        if (frames % static_cast<uint64_t>(options.web_frame_step) == 0U) {
+          web_server->publish(visual, web_status);
+        }
+      }
+      if (options.display) {
+        cv::imshow("hfut bringup real", visual);
+        const int key = cv::waitKey(1);
+        if (key == 27 || key == 'q') break;
+      }
+    }
+
     if (now - last_log > std::chrono::seconds(1)) {
-      const auto& debug = pipeline.lastDebug();
       std::printf(
           "[bringup_real] frames=%llu det=%zu poses=%zu armors=%zu "
           "first=%s pose0=%s tracked=%d selected=%s state=%s mode=%d "
