@@ -99,7 +99,9 @@ struct Options {
 std::string optionValue(int argc, char** argv, int& index,
                         const std::string& arg, const std::string& name) {
   const std::string prefix = name + "=";
-  if (arg.compare(0, prefix.size()) == 0) return arg.substr(prefix.size());
+  if (arg.compare(0, prefix.size(), prefix) == 0) {
+    return arg.substr(prefix.size());
+  }
   if (arg == name && index + 1 < argc) return argv[++index];
   return {};
 }
