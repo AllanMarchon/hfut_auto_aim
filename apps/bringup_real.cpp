@@ -552,6 +552,36 @@ rm_interfaces::msg::Armors buildValidArmors(
   return message;
 }
 
+const char* trackStateName(int state) {
+  using Robot = rm_interfaces::msg::TrackedRobot;
+  switch (state) {
+    case Robot::DETECTING:
+      return "DETECTING";
+    case Robot::TRACKING:
+      return "TRACKING";
+    case Robot::TEMP_LOST:
+      return "TEMP_LOST";
+    default:
+      return "none";
+  }
+}
+
+std::string firstArmorSummary(const rm_interfaces::msg::Armors& armors) {
+  if (armors.armors.empty()) return "none";
+
+  const auto& armor = armors.armors.front();
+  const double x = armor.pose.position.x;
+  const double y = armor.pose.position.y;
+  const double z = armor.pose.position.z;
+  const double distance = std::sqrt(x * x + y * y + z * z);
+
+  char buffer[192];
+  std::snprintf(buffer, sizeof(buffer), "%s conf=%.2f z=%.2f dist=%.2f err=%.2f",
+                armor.number.c_str(), armor.detection_confidence, z, distance,
+                armor.reproj_error_refined);
+  return buffer;
+}
+
 void applyFeedbackPose(hfut::CameraFrame& frame,
                        const hfut::io::SerialFeedback& feedback,
                        const hfut::CameraToBarrelExtrinsics& extrinsics) {
@@ -763,12 +793,20 @@ int run(const Options& options) {
     if (now - last_log > std::chrono::seconds(1)) {
       const auto& debug = pipeline.lastDebug();
       std::printf(
-          "[bringup_real] frames=%llu det=%zu poses=%zu tracked=%d mode=%d "
-          "yaw=%.2f pitch=%.2f fire=%d latency=%.1fms\n",
+          "[bringup_real] frames=%llu det=%zu poses=%zu armors=%zu "
+          "first=%s tracked=%d selected=%s state=%s mode=%d "
+          "yaw=%.2f pitch=%.2f fire=%d latency=%.1fms reason=%s\n",
           static_cast<unsigned long long>(frames), dets.size(), poses.size(),
-          debug.num_tracked, static_cast<int>(command.mode),
+          armors.armors.size(), firstArmorSummary(armors).c_str(),
+          debug.num_tracked,
+          debug.selected_id.empty() ? "none" : debug.selected_id.c_str(),
+          trackStateName(debug.selected_track_state),
+          static_cast<int>(command.mode),
           command.yaw * kRadToDeg, command.pitch * kRadToDeg,
-          command.fire_advice ? 1 : 0, latency_s * 1000.0);
+          command.fire_advice ? 1 : 0, latency_s * 1000.0,
+          debug.tracker_decision_reason.empty()
+              ? "none"
+              : debug.tracker_decision_reason.c_str());
       std::fflush(stdout);
       last_log = now;
     }
