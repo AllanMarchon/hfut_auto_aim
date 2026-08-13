@@ -28,12 +28,14 @@ struct InfantrySerialConfig {
   std::string port = "/dev/ttyACM0";
   int baudrate = 115200;
   InfantryPacketLayout layout = InfantryPacketLayout::kInfantry24;
-  Infantry32TailFields tail_fields = Infantry32TailFields::kAcceleration;
+  Infantry32TailFields tail_fields = Infantry32TailFields::kDuplicateVelocity;
   bool command_angles_in_degrees = true;
   bool feedback_angles_in_degrees = true;
   bool allow_fire = false;
   int read_timeout_ms = 20;
 };
+
+GimbalCommand sanitizeInfantryCommandForTransport(const GimbalCommand& command);
 
 bool parseInfantryPacketLayout(const std::string& value,
                                InfantryPacketLayout& layout);

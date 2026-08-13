@@ -42,6 +42,7 @@ python scripts/validate_configs.py --strict
 - `hardware.yaml` 的 `controller.bullet_speed` 是实车弹速覆盖值。
 - `hardware.yaml` 的 `camera.backend` 决定实车相机来源：`opencv` 不需要工业相机 SDK；`hik` / `mindvision` 需要编译时打开对应 CMake 开关。
 - `hardware.yaml` 的 `serial.protocol` 默认用旧实车 `infantry` 24 字节协议；如果电控确认使用 32 字节，再切到 `infantry_32`。
+- `hardware.yaml` 的 `serial.infantry32_tail_fields` 默认用 `duplicate_velocity`，对齐旧实车 32 字节协议；只有电控明确要角加速度时再改成 `acceleration`。
 - `simulation.yaml` 的 `controller.bullet_speed` 只服务仿真，不用于实车入口。
 - `tracker.yaml` 和 `controller.yaml` 顶部有“常调区 / 进阶区”索引；先按常调区改，不要一上来动后端内部参数。
 

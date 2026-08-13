@@ -78,7 +78,7 @@ struct Options {
   std::string serial_port{"/dev/ttyACM0"};
   int serial_baudrate{115200};
   std::string serial_protocol{"infantry"};
-  std::string infantry32_tail_fields{"acceleration"};
+  std::string infantry32_tail_fields{"duplicate_velocity"};
   bool command_angles_in_degrees{true};
   bool feedback_angles_in_degrees{true};
   int serial_read_timeout_ms{2};

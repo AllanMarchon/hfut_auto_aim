@@ -32,7 +32,7 @@ hardware:
     port: "/dev/ttyACM0"
     baudrate: 115200
     protocol: "infantry"          # infantry=24字节旧实车协议 | infantry_16 | infantry_32
-    infantry32_tail_fields: "acceleration"  # acceleration=发加速度 | duplicate_velocity=兼容旧32字节写法
+    infantry32_tail_fields: "duplicate_velocity"  # duplicate_velocity=兼容旧32字节写法 | acceleration=发加速度
     command_angles_in_degrees: true
     feedback_angles_in_degrees: true
     read_timeout_ms: 2

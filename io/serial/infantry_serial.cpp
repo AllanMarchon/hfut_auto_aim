@@ -61,6 +61,19 @@ InfantrySerialTransport::InfantrySerialTransport(InfantrySerialConfig config)
     : config_(std::move(config)),
       uart_(std::make_unique<UartTransport>(config_.port, config_.baudrate)) {}
 
+GimbalCommand sanitizeInfantryCommandForTransport(const GimbalCommand& command) {
+  GimbalCommand sanitized = command;
+  if (sanitized.mode != GimbalMode::normal_measurement) {
+    sanitized.fire_advice = false;
+    sanitized.distance = -1.0;
+    sanitized.pitch_vel = 0.0;
+    sanitized.yaw_vel = 0.0;
+    sanitized.pitch_acc = 0.0;
+    sanitized.yaw_acc = 0.0;
+  }
+  return sanitized;
+}
+
 bool InfantrySerialTransport::open() { return uart_->open(); }
 
 void InfantrySerialTransport::close() { uart_->close(); }
@@ -83,25 +96,26 @@ float InfantrySerialTransport::commandAngle(double rad) const {
 
 template <std::size_t Capacity>
 bool InfantrySerialTransport::sendCommandPacket(const GimbalCommand& command) {
+  const GimbalCommand wire_command = sanitizeInfantryCommandForTransport(command);
   FixedPacket<Capacity> packet;
-  const std::uint8_t fire = (config_.allow_fire && command.fire_advice) ? 1 : 0;
+  const std::uint8_t fire = (config_.allow_fire && wire_command.fire_advice) ? 1 : 0;
   packet.load(fire, 1);
-  packet.load(commandAngle(command.pitch), 2);
-  packet.load(commandAngle(command.yaw), 6);
-  packet.load(finiteOrZero(command.distance), 10);
+  packet.load(commandAngle(wire_command.pitch), 2);
+  packet.load(commandAngle(wire_command.yaw), 6);
+  packet.load(finiteOrZero(wire_command.distance), 10);
   if constexpr (Capacity >= 24) {
-    packet.load(commandAngle(command.pitch_vel), 14);
-    packet.load(commandAngle(command.yaw_vel), 18);
+    packet.load(commandAngle(wire_command.pitch_vel), 14);
+    packet.load(commandAngle(wire_command.yaw_vel), 18);
   }
   if constexpr (Capacity >= 32) {
     const double pitch_tail =
         config_.tail_fields == Infantry32TailFields::kDuplicateVelocity
-            ? command.pitch_vel
-            : command.pitch_acc;
+            ? wire_command.pitch_vel
+            : wire_command.pitch_acc;
     const double yaw_tail =
         config_.tail_fields == Infantry32TailFields::kDuplicateVelocity
-            ? command.yaw_vel
-            : command.yaw_acc;
+            ? wire_command.yaw_vel
+            : wire_command.yaw_acc;
     packet.load(commandAngle(pitch_tail), 22);
     packet.load(commandAngle(yaw_tail), 26);
   }
