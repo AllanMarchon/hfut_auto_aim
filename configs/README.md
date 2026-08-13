@@ -41,8 +41,9 @@ python scripts/validate_configs.py --strict
 - 普通车跟踪器实现只在 `gimbal_pipeline.yaml` 的 `tracker.implementation` 切换，`tracker.yaml` 只调具体滤波/结构参数。
 - `hardware.yaml` 的 `controller.bullet_speed` 是实车弹速覆盖值。
 - `hardware.yaml` 的 `camera.backend` 决定实车相机来源：`opencv` 不需要工业相机 SDK；`hik` / `mindvision` 需要编译时打开对应 CMake 开关。
-- `hardware.yaml` 的 `serial.protocol` 默认用旧实车 `infantry` 24 字节协议；如果电控确认使用 32 字节，再切到 `infantry_32`。
-- `hardware.yaml` 的 `serial.infantry32_tail_fields` 默认用 `duplicate_velocity`，对齐旧实车 32 字节协议；只有电控明确要角加速度时再改成 `acceleration`。
+- `hardware.yaml` 的 `serial.tx_protocol` 控制视觉发给下位机的包长；`serial.rx_protocol` 控制下位机反馈解析包长。
+- 当前实车配置为 TX=`infantry_32`、RX=`infantry`：视觉下发 32 字节角加速度包，下位机反馈仍按已验证的 24 字节包解析。
+- `hardware.yaml` 的 `serial.command_angles_in_degrees=false` 表示下发单位为 rad、rad/s、rad/s²；反馈单位仍由 `feedback_angles_in_degrees` 单独控制。
 - `simulation.yaml` 的 `controller.bullet_speed` 只服务仿真，不用于实车入口。
 - `tracker.yaml` 和 `controller.yaml` 顶部有“常调区 / 进阶区”索引；先按常调区改，不要一上来动后端内部参数。
 

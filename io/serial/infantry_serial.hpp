@@ -27,7 +27,8 @@ enum class Infantry32TailFields {
 struct InfantrySerialConfig {
   std::string port = "/dev/ttyACM0";
   int baudrate = 115200;
-  InfantryPacketLayout layout = InfantryPacketLayout::kInfantry24;
+  InfantryPacketLayout tx_layout = InfantryPacketLayout::kInfantry24;
+  InfantryPacketLayout rx_layout = InfantryPacketLayout::kInfantry24;
   Infantry32TailFields tail_fields = Infantry32TailFields::kDuplicateVelocity;
   bool command_angles_in_degrees = true;
   bool feedback_angles_in_degrees = true;

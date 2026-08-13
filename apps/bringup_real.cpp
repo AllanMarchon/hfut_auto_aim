@@ -78,6 +78,8 @@ struct Options {
   std::string serial_port{"/dev/ttyACM0"};
   int serial_baudrate{115200};
   std::string serial_protocol{"infantry"};
+  std::string serial_tx_protocol{"infantry"};
+  std::string serial_rx_protocol{"infantry"};
   std::string infantry32_tail_fields{"duplicate_velocity"};
   bool command_angles_in_degrees{true};
   bool feedback_angles_in_degrees{true};
@@ -177,6 +179,10 @@ void loadHardwareConfig(Options& options) {
     options.serial_port = parseString(serial["port"], options.serial_port);
     options.serial_baudrate = parseInt(serial["baudrate"], options.serial_baudrate);
     options.serial_protocol = parseString(serial["protocol"], options.serial_protocol);
+    options.serial_tx_protocol = options.serial_protocol;
+    options.serial_rx_protocol = options.serial_protocol;
+    options.serial_tx_protocol = parseString(serial["tx_protocol"], options.serial_tx_protocol);
+    options.serial_rx_protocol = parseString(serial["rx_protocol"], options.serial_rx_protocol);
     options.infantry32_tail_fields = parseString(
         serial["infantry32_tail_fields"], options.infantry32_tail_fields);
     options.command_angles_in_degrees = parseBool(
@@ -242,7 +248,9 @@ Options parseOptions(int argc, char** argv) {
           "  --flip-image             flip industrial camera image 180 degrees\n"
           "  --serial-port PATH       serial device path\n"
           "  --baudrate N             serial baudrate\n"
-          "  --serial-protocol NAME   infantry | infantry_16 | infantry_32\n"
+          "  --serial-protocol NAME   set both TX/RX protocol\n"
+          "  --serial-tx-protocol NAME  infantry | infantry_16 | infantry_32\n"
+          "  --serial-rx-protocol NAME  infantry | infantry_16 | infantry_32\n"
           "  --infantry32-tail-fields acceleration | duplicate_velocity\n"
           "  --enemy-color COLOR      red | blue | white\n"
           "  --bullet-speed MPS       controller bullet speed override\n"
@@ -287,6 +295,12 @@ Options parseOptions(int argc, char** argv) {
       options.serial_baudrate = std::stoi(value);
     } else if (auto value = optionValue(argc, argv, i, arg, "--serial-protocol"); !value.empty()) {
       options.serial_protocol = value;
+      options.serial_tx_protocol = value;
+      options.serial_rx_protocol = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--serial-tx-protocol"); !value.empty()) {
+      options.serial_tx_protocol = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--serial-rx-protocol"); !value.empty()) {
+      options.serial_rx_protocol = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--infantry32-tail-fields"); !value.empty()) {
       options.infantry32_tail_fields = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--enemy-color"); !value.empty()) {
@@ -318,11 +332,17 @@ Options parseOptions(int argc, char** argv) {
   if (options.feedback_timeout_ms <= 0) {
     throw std::invalid_argument("feedback timeout must be > 0");
   }
-  hfut::io::InfantryPacketLayout layout;
-  if (!hfut::io::parseInfantryPacketLayout(options.serial_protocol, layout)) {
+  hfut::io::InfantryPacketLayout tx_layout;
+  if (!hfut::io::parseInfantryPacketLayout(options.serial_tx_protocol, tx_layout)) {
     throw std::invalid_argument(
-        "serial protocol must be infantry, infantry_16, or infantry_32, got: " +
-        options.serial_protocol);
+        "serial tx_protocol must be infantry, infantry_16, or infantry_32, got: " +
+        options.serial_tx_protocol);
+  }
+  hfut::io::InfantryPacketLayout rx_layout;
+  if (!hfut::io::parseInfantryPacketLayout(options.serial_rx_protocol, rx_layout)) {
+    throw std::invalid_argument(
+        "serial rx_protocol must be infantry, infantry_16, or infantry_32, got: " +
+        options.serial_rx_protocol);
   }
   hfut::io::Infantry32TailFields fields;
   if (!hfut::io::parseInfantry32TailFields(options.infantry32_tail_fields, fields)) {
@@ -450,8 +470,11 @@ hfut::io::InfantrySerialConfig makeSerialConfig(const Options& options) {
   hfut::io::InfantrySerialConfig config;
   config.port = options.serial_port;
   config.baudrate = options.serial_baudrate;
-  if (!hfut::io::parseInfantryPacketLayout(options.serial_protocol, config.layout)) {
-    throw std::invalid_argument("unsupported serial protocol: " + options.serial_protocol);
+  if (!hfut::io::parseInfantryPacketLayout(options.serial_tx_protocol, config.tx_layout)) {
+    throw std::invalid_argument("unsupported serial tx_protocol: " + options.serial_tx_protocol);
+  }
+  if (!hfut::io::parseInfantryPacketLayout(options.serial_rx_protocol, config.rx_layout)) {
+    throw std::invalid_argument("unsupported serial rx_protocol: " + options.serial_rx_protocol);
   }
   if (!hfut::io::parseInfantry32TailFields(
           options.infantry32_tail_fields, config.tail_fields)) {
@@ -616,7 +639,7 @@ int run(const Options& options) {
     std::printf(
         "[bringup_real] camera=%s:index %d serial=%s:%s@%d dry_run=%s fire=%s\n",
         options.camera_backend.c_str(), options.camera_index,
-        hfut::io::infantryPacketLayoutName(serial_config.layout),
+        hfut::io::infantryPacketLayoutName(serial_config.tx_layout),
         options.serial_port.c_str(), options.serial_baudrate,
         options.dry_run ? "true" : "false",
         options.enable_fire ? "enabled" : "disabled");
@@ -625,12 +648,16 @@ int run(const Options& options) {
         "[bringup_real] camera=%s:%s serial=%s:%s@%d dry_run=%s fire=%s\n",
         options.camera_backend.c_str(),
         (options.camera_backend == "opencv" ? options.camera_source : options.camera_sn).c_str(),
-        hfut::io::infantryPacketLayoutName(serial_config.layout),
+        hfut::io::infantryPacketLayoutName(serial_config.tx_layout),
         options.serial_port.c_str(), options.serial_baudrate,
         options.dry_run ? "true" : "false",
         options.enable_fire ? "enabled" : "disabled");
   }
-  if (serial_config.layout == hfut::io::InfantryPacketLayout::kInfantry32) {
+  if (serial_config.tx_layout != serial_config.rx_layout) {
+    std::printf("[bringup_real] serial_rx=%s\n",
+                hfut::io::infantryPacketLayoutName(serial_config.rx_layout));
+  }
+  if (serial_config.tx_layout == hfut::io::InfantryPacketLayout::kInfantry32) {
     std::printf("[bringup_real] infantry32_tail_fields=%s\n",
                 hfut::io::infantry32TailFieldsName(serial_config.tail_fields));
   }

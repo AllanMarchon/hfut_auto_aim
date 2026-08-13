@@ -49,18 +49,22 @@ int main() {
   }
 
   hfut::io::InfantrySerialConfig config;
+  if (config.tx_layout != hfut::io::InfantryPacketLayout::kInfantry24 ||
+      config.rx_layout != hfut::io::InfantryPacketLayout::kInfantry24) {
+    return fail("default TX/RX protocols are not 24-byte infantry", 4);
+  }
   if (config.tail_fields != hfut::io::Infantry32TailFields::kDuplicateVelocity) {
-    return fail("default 32-byte tail fields are not legacy-compatible", 4);
+    return fail("default 32-byte tail fields are not legacy-compatible", 5);
   }
 
   hfut::io::Infantry32TailFields parsed{};
   if (!hfut::io::parseInfantry32TailFields("acceleration", parsed) ||
       parsed != hfut::io::Infantry32TailFields::kAcceleration) {
-    return fail("acceleration tail field option did not parse", 5);
+    return fail("acceleration tail field option did not parse", 6);
   }
   if (!hfut::io::parseInfantry32TailFields("duplicate_velocity", parsed) ||
       parsed != hfut::io::Infantry32TailFields::kDuplicateVelocity) {
-    return fail("duplicate_velocity tail field option did not parse", 6);
+    return fail("duplicate_velocity tail field option did not parse", 7);
   }
 
   return 0;

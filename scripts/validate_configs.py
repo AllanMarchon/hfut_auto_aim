@@ -253,6 +253,11 @@ def validate_hardware(report: Report, repo_root: Path, configs: dict[str, Any]) 
             "hardware.serial.protocol",
             {"infantry", "infantry_16", "infantry_24", "infantry_32", "16", "24", "32"},
         )
+        protocol_choices = {"infantry", "infantry_16", "infantry_24", "infantry_32", "16", "24", "32"}
+        tx_protocol = serial.get("tx_protocol", serial.get("protocol"))
+        rx_protocol = serial.get("rx_protocol", serial.get("protocol"))
+        require_choice(report, tx_protocol, "hardware.serial.tx_protocol", protocol_choices)
+        require_choice(report, rx_protocol, "hardware.serial.rx_protocol", protocol_choices)
         require_choice(
             report,
             serial.get("infantry32_tail_fields"),
@@ -261,6 +266,12 @@ def validate_hardware(report: Report, repo_root: Path, configs: dict[str, Any]) 
         )
         require_bool(report, serial.get("command_angles_in_degrees"), "hardware.serial.command_angles_in_degrees")
         require_bool(report, serial.get("feedback_angles_in_degrees"), "hardware.serial.feedback_angles_in_degrees")
+        if (
+            tx_protocol in {"infantry_32", "32"}
+            and serial.get("infantry32_tail_fields") in {"acceleration", "accel"}
+            and serial.get("command_angles_in_degrees") is True
+        ):
+            report.warn("hardware.serial 使用32字节角加速度，但 command_angles_in_degrees=true；若电控要求弧度，应改为 false")
         require_number(report, serial.get("read_timeout_ms"), "hardware.serial.read_timeout_ms")
         require_number(report, serial.get("feedback_timeout_ms"), "hardware.serial.feedback_timeout_ms")
         require_bool(report, serial.get("require_feedback"), "hardware.serial.require_feedback")

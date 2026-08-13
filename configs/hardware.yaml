@@ -31,10 +31,12 @@ hardware:
   serial:
     port: "/dev/ttyACM0"
     baudrate: 115200
-    protocol: "infantry"          # infantry=24字节旧实车协议 | infantry_16 | infantry_32
-    infantry32_tail_fields: "duplicate_velocity"  # duplicate_velocity=兼容旧32字节写法 | acceleration=发加速度
-    command_angles_in_degrees: true
-    feedback_angles_in_degrees: true
+    protocol: "infantry"          # 兼容旧配置；未设置 tx/rx_protocol 时收发共用这个协议
+    tx_protocol: "infantry_32"    # 发给下位机：32字节，包含角加速度
+    rx_protocol: "infantry"       # 下位机反馈：实测仍为24字节 infantry
+    infantry32_tail_fields: "acceleration"  # 32字节尾部发送 pitch_acc/yaw_acc
+    command_angles_in_degrees: false  # false=下发 rad、rad/s、rad/s²；true=下发角度制
+    feedback_angles_in_degrees: true  # 当前下位机反馈仍按角度制解析，再转为内部弧度
     read_timeout_ms: 2
     feedback_timeout_ms: 100
     require_feedback: true

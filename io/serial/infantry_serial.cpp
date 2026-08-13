@@ -125,7 +125,7 @@ bool InfantrySerialTransport::sendCommandPacket(const GimbalCommand& command) {
 
 bool InfantrySerialTransport::sendCommand(const GimbalCommand& command) {
   if (!isOpen() && !open()) return false;
-  switch (config_.layout) {
+  switch (config_.tx_layout) {
     case InfantryPacketLayout::kInfantry16:
       return sendCommandPacket<16>(command);
     case InfantryPacketLayout::kInfantry24:
@@ -171,7 +171,7 @@ bool InfantrySerialTransport::readFeedback(SerialFeedback& feedback) {
   for (int i = 0; i < n; ++i) rx_buffer_.push_back(tmp[i]);
   if (rx_buffer_.size() > 32 * 16) rx_buffer_.clear();
 
-  switch (config_.layout) {
+  switch (config_.rx_layout) {
     case InfantryPacketLayout::kInfantry16:
       return readFeedbackPacket<16>(feedback);
     case InfantryPacketLayout::kInfantry24:
