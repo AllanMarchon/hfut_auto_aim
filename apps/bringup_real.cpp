@@ -582,6 +582,33 @@ std::string firstArmorSummary(const rm_interfaces::msg::Armors& armors) {
   return buffer;
 }
 
+std::string firstPoseSummary(
+    const std::vector<fyt::auto_aim::ArmorDetection>& detections,
+    const std::vector<fyt::auto_aim::PoseEstimate>& poses) {
+  if (poses.empty()) return "none";
+
+  const auto& pose = poses.front();
+  const std::string id = detections.empty() ? "?" : detections.front().publish_number;
+  const bool finite = pose.translation.allFinite();
+  std::string reject_reason = "ok";
+  if (!pose.valid) {
+    reject_reason = "invalid";
+  } else if (!finite) {
+    reject_reason = "nonfinite";
+  } else if (pose.translation.z() <= 0.0) {
+    reject_reason = "z<=0";
+  }
+
+  char buffer[256];
+  std::snprintf(
+      buffer, sizeof(buffer),
+      "%s valid=%d xyz=(%.2f,%.2f,%.2f) raw=%.2f refined=%.2f reason=%s",
+      id.c_str(), pose.valid ? 1 : 0, pose.translation.x(),
+      pose.translation.y(), pose.translation.z(), pose.reproj_error_raw,
+      pose.reproj_error_refined, reject_reason.c_str());
+  return buffer;
+}
+
 void applyFeedbackPose(hfut::CameraFrame& frame,
                        const hfut::io::SerialFeedback& feedback,
                        const hfut::CameraToBarrelExtrinsics& extrinsics) {
@@ -794,10 +821,11 @@ int run(const Options& options) {
       const auto& debug = pipeline.lastDebug();
       std::printf(
           "[bringup_real] frames=%llu det=%zu poses=%zu armors=%zu "
-          "first=%s tracked=%d selected=%s state=%s mode=%d "
+          "first=%s pose0=%s tracked=%d selected=%s state=%s mode=%d "
           "yaw=%.2f pitch=%.2f fire=%d latency=%.1fms reason=%s\n",
           static_cast<unsigned long long>(frames), dets.size(), poses.size(),
           armors.armors.size(), firstArmorSummary(armors).c_str(),
+          firstPoseSummary(dets, poses).c_str(),
           debug.num_tracked,
           debug.selected_id.empty() ? "none" : debug.selected_id.c_str(),
           trackStateName(debug.selected_track_state),
