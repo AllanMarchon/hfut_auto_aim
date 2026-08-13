@@ -174,9 +174,6 @@ if(HFUT_ENABLE_DETECTOR)
   target_link_libraries(detector_test PRIVATE hfut_io hfut_detector ${OpenCV_LIBS})
 endif()
 
-add_executable(camera_source_test apps/camera_source_test.cpp)
-target_link_libraries(camera_source_test PRIVATE hfut_io ${OpenCV_LIBS})
-
 if(HFUT_ENABLE_REAL_IO)
   add_executable(serial_transport_test apps/serial_transport_test.cpp)
   target_link_libraries(serial_transport_test PRIVATE hfut_io)
