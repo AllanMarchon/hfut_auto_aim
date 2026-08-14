@@ -986,7 +986,9 @@ int run(const Options& options) {
       std::printf(
           "[bringup_real] frames=%llu det=%zu poses=%zu armors=%zu "
           "first=%s pose0=%s tracked=%d selected=%s state=%s mode=%d "
-          "yaw=%.2f pitch=%.2f fire=%d latency=%.1fms reason=%s\n",
+          "yaw=%.2f pitch=%.2f yaw_vel=%.3f pitch_vel=%.3f "
+          "yaw_acc=%.3f pitch_acc=%.3f distance=%.3f fire=%d "
+          "latency=%.1fms reason=%s\n",
           static_cast<unsigned long long>(frames), dets.size(), poses.size(),
           armors.armors.size(), firstArmorSummary(armors).c_str(),
           firstPoseSummary(dets, poses).c_str(),
@@ -995,6 +997,9 @@ int run(const Options& options) {
           trackStateName(debug.selected_track_state),
           static_cast<int>(command.mode),
           command.yaw * kRadToDeg, command.pitch * kRadToDeg,
+          command.yaw_vel, command.pitch_vel,
+          command.yaw_acc, command.pitch_acc,
+          command.distance,
           command.fire_advice ? 1 : 0, latency_s * 1000.0,
           debug.tracker_decision_reason.empty()
               ? "none"
