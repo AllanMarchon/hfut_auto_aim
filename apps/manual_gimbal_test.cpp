@@ -65,7 +65,7 @@ void printUsage(const char* argv0) {
       "  --max-rate-rad-s N          Velocity clamp, default 5\n"
       "  --max-acc-rad-s2 N          Acceleration clamp, default 80\n"
       "  --no-feedback               Do not read lower-controller feedback\n"
-      "Keys: q/Esc quit, Space/p pause, r center\n",
+      "Keys: q/Esc quit, Space/p pause, r center, WASD/IJKL/arrows move\n",
       argv0);
 }
 
@@ -150,6 +150,18 @@ void onMouse(int event, int x, int y, int, void* userdata) {
   state->y = std::clamp(y, 0, kWindowHeight - 1);
 }
 
+void nudgeInput(MouseState& state, const Options& options,
+                double yaw_delta_deg, double pitch_delta_deg) {
+  const double x_delta = yaw_delta_deg / options.yaw_range_deg *
+                         (kWindowWidth / 2.0);
+  const double y_delta = -pitch_delta_deg / options.pitch_range_deg *
+                         (kWindowHeight / 2.0);
+  state.x = std::clamp(static_cast<int>(std::lround(state.x + x_delta)), 0,
+                       kWindowWidth - 1);
+  state.y = std::clamp(static_cast<int>(std::lround(state.y + y_delta)), 0,
+                       kWindowHeight - 1);
+}
+
 CommandState mouseToCommand(const MouseState& mouse, const Options& options,
                             double dt, const CommandState& previous) {
   const double nx = (static_cast<double>(mouse.x) - kWindowWidth / 2.0) /
@@ -222,7 +234,7 @@ void drawWindow(const MouseState& mouse, const Options& options,
     std::snprintf(line, sizeof(line), "feedback: none");
   }
   drawText(image, y, line, cv::Scalar(255, 210, 120));
-  drawText(image, y, "keys: q/Esc quit, Space/p pause, r center");
+  drawText(image, y, "keys: WASD/IJKL/arrows move, r center, Space/p pause, q/Esc quit");
   cv::imshow("manual_gimbal_test", image);
 }
 
@@ -323,6 +335,14 @@ int main(int argc, char** argv) {
     } else if (key == 'r' || key == 'R') {
       mouse.x = kWindowWidth / 2;
       mouse.y = kWindowHeight / 2;
+    } else if (key == 'a' || key == 'A' || key == 'j' || key == 'J' || key == 81) {
+      nudgeInput(mouse, options, -1.0, 0.0);
+    } else if (key == 'd' || key == 'D' || key == 'l' || key == 'L' || key == 83) {
+      nudgeInput(mouse, options, 1.0, 0.0);
+    } else if (key == 'w' || key == 'W' || key == 'i' || key == 'I' || key == 82) {
+      nudgeInput(mouse, options, 0.0, 1.0);
+    } else if (key == 's' || key == 'S' || key == 'k' || key == 'K' || key == 84) {
+      nudgeInput(mouse, options, 0.0, -1.0);
     }
 
     if (now - last_print > std::chrono::milliseconds(500)) {
