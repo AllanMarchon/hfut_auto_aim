@@ -838,6 +838,7 @@ int run(const Options& options) {
   auto last_log = std::chrono::steady_clock::now();
   auto last_feedback_wait_log = std::chrono::steady_clock::now();
   auto last_feedback_time = std::chrono::steady_clock::now();
+  auto last_feedback_heartbeat_time = std::chrono::steady_clock::now();
 
   while (!g_stop.load() &&
          (options.max_frames < 0 || processed < options.max_frames)) {
@@ -858,6 +859,16 @@ int run(const Options& options) {
         (have_feedback && feedback_age.count() <= options.feedback_timeout_ms);
     if (!feedback_ready) {
       const auto now = std::chrono::steady_clock::now();
+      if (!options.dry_run &&
+          now - last_feedback_heartbeat_time >= std::chrono::milliseconds(20)) {
+        hfut::GimbalCommand heartbeat;
+        heartbeat.yaw = latest_feedback.yaw_rad;
+        heartbeat.pitch = latest_feedback.pitch_rad;
+        heartbeat.fire_advice = false;
+        heartbeat.mode = hfut::GimbalMode::no_valid_measurement;
+        serial.sendCommand(heartbeat);
+        last_feedback_heartbeat_time = now;
+      }
       if (now - last_feedback_wait_log > std::chrono::seconds(1)) {
         std::printf(
             "[bringup_real] waiting for fresh serial feedback on %s "
