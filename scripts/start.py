@@ -29,6 +29,7 @@ CONFLICT_PATTERNS = [
     "ros2 launch rm_bringup",
     "MvViewer",
     "bringup_real",
+    "manual_gimbal_test",
 ]
 
 
@@ -222,11 +223,40 @@ def run_serial_test(args: argparse.Namespace, env: dict[str, str]) -> int:
     return run(cmd, env=env).returncode
 
 
+def run_manual_gimbal_test(args: argparse.Namespace, env: dict[str, str]) -> int:
+    exe = BUILD_DIR / "manual_gimbal_test"
+    require_file(exe, "Run: python3 scripts/start.py --mode build")
+    if args.stop_conflicts:
+        stop_conflicting_processes()
+    cmd = [
+        str(exe),
+        "--port",
+        args.serial_port,
+        "--baudrate",
+        str(args.baudrate),
+        "--yaw-range-deg",
+        str(args.manual_yaw_range_deg),
+        "--pitch-range-deg",
+        str(args.manual_pitch_range_deg),
+        "--hz",
+        str(args.manual_hz),
+        "--distance",
+        str(args.manual_distance),
+        "--max-rate-rad-s",
+        str(args.manual_max_rate_rad_s),
+        "--max-acc-rad-s2",
+        str(args.manual_max_acc_rad_s2),
+    ]
+    if args.manual_no_feedback:
+        cmd.append("--no-feedback")
+    return run(cmd, env=env).returncode
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Start the HFUT auto-aim real pipeline.")
     parser.add_argument(
         "--mode",
-        choices=("dry", "live", "build", "check", "serial-test"),
+        choices=("dry", "live", "build", "check", "serial-test", "manual-gimbal"),
         default="live",
         help="dry is safe default; live opens serial but still keeps fire off.",
     )
@@ -258,6 +288,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--serial-rx-protocol", default="infantry")
     parser.add_argument("--infantry32-tail-fields", default="acceleration")
     parser.add_argument("--command-unit", choices=("radians", "degrees"), default="radians")
+    parser.add_argument("--manual-yaw-range-deg", type=float, default=20.0)
+    parser.add_argument("--manual-pitch-range-deg", type=float, default=15.0)
+    parser.add_argument("--manual-hz", type=float, default=100.0)
+    parser.add_argument("--manual-distance", type=float, default=1.0)
+    parser.add_argument("--manual-max-rate-rad-s", type=float, default=5.0)
+    parser.add_argument("--manual-max-acc-rad-s2", type=float, default=80.0)
+    parser.add_argument("--manual-no-feedback", action="store_true")
     parser.add_argument("extra", nargs=argparse.REMAINDER, help="Extra args after -- are passed to bringup_real.")
     args = parser.parse_args(argv)
     if args.extra and args.extra[0] == "--":
@@ -285,6 +322,8 @@ def main(argv: list[str]) -> int:
         return build_project(args, env)
     if args.mode == "serial-test":
         return run_serial_test(args, env)
+    if args.mode == "manual-gimbal":
+        return run_manual_gimbal_test(args, env)
     return run_bringup(args, env)
 
 

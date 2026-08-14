@@ -24,12 +24,18 @@ enum class Infantry32TailFields {
   kDuplicateVelocity,
 };
 
+enum class InfantryStatusByte {
+  kFireAdvice,
+  kCommandMode,
+};
+
 struct InfantrySerialConfig {
   std::string port = "/dev/ttyACM0";
   int baudrate = 115200;
   InfantryPacketLayout tx_layout = InfantryPacketLayout::kInfantry24;
   InfantryPacketLayout rx_layout = InfantryPacketLayout::kInfantry24;
   Infantry32TailFields tail_fields = Infantry32TailFields::kDuplicateVelocity;
+  InfantryStatusByte status_byte = InfantryStatusByte::kFireAdvice;
   bool command_angles_in_degrees = true;
   bool feedback_angles_in_degrees = true;
   bool allow_fire = false;

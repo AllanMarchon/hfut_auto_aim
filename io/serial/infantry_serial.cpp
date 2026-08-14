@@ -98,8 +98,13 @@ template <std::size_t Capacity>
 bool InfantrySerialTransport::sendCommandPacket(const GimbalCommand& command) {
   const GimbalCommand wire_command = sanitizeInfantryCommandForTransport(command);
   FixedPacket<Capacity> packet;
-  const std::uint8_t fire = (config_.allow_fire && wire_command.fire_advice) ? 1 : 0;
-  packet.load(fire, 1);
+  if (config_.status_byte == InfantryStatusByte::kCommandMode) {
+    const std::int8_t mode = static_cast<std::int8_t>(wire_command.mode);
+    packet.load(mode, 1);
+  } else {
+    const std::uint8_t fire = (config_.allow_fire && wire_command.fire_advice) ? 1 : 0;
+    packet.load(fire, 1);
+  }
   packet.load(commandAngle(wire_command.pitch), 2);
   packet.load(commandAngle(wire_command.yaw), 6);
   packet.load(finiteOrZero(wire_command.distance), 10);

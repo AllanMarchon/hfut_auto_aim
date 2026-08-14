@@ -179,6 +179,9 @@ if(HFUT_ENABLE_REAL_IO)
   add_executable(serial_transport_test apps/serial_transport_test.cpp)
   target_link_libraries(serial_transport_test PRIVATE hfut_io)
 
+  add_executable(manual_gimbal_test apps/manual_gimbal_test.cpp)
+  target_link_libraries(manual_gimbal_test PRIVATE hfut_io ${OpenCV_LIBS})
+
   if(HFUT_ENABLE_DETECTOR AND HFUT_ENABLE_PIPELINE)
     add_executable(bringup_real apps/bringup_real.cpp)
     target_include_directories(bringup_real PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
