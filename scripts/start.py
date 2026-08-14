@@ -227,7 +227,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         choices=("dry", "live", "build", "check", "serial-test"),
-        default="dry",
+        default="live",
         help="dry is safe default; live opens serial but still keeps fire off.",
     )
     parser.add_argument("--camera-backend", default="hik", choices=("hik", "opencv", "mindvision"))

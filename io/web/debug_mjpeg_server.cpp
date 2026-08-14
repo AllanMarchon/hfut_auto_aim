@@ -61,6 +61,8 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"feedback_pitch_deg\":" << finiteOrZero(status.feedback_pitch_deg)
       << ",\"command_yaw_deg\":" << finiteOrZero(status.command_yaw_deg)
       << ",\"command_pitch_deg\":" << finiteOrZero(status.command_pitch_deg)
+      << ",\"target_distance_m\":" << finiteOrZero(status.target_distance_m)
+      << ",\"command_distance_m\":" << finiteOrZero(status.command_distance_m)
       << ",\"feedback_age_ms\":" << finiteOrZero(status.feedback_age_ms)
       << ",\"fire\":" << (status.fire ? "true" : "false")
       << ",\"dry_run\":" << (status.dry_run ? "true" : "false")

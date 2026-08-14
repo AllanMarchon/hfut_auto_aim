@@ -36,6 +36,8 @@ struct DebugMjpegStatus {
   double feedback_pitch_deg{0.0};
   double command_yaw_deg{0.0};
   double command_pitch_deg{0.0};
+  double target_distance_m{0.0};
+  double command_distance_m{0.0};
   double feedback_age_ms{0.0};
   bool fire{false};
   bool dry_run{false};

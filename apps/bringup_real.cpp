@@ -714,6 +714,11 @@ void drawWebOverlay(cv::Mat& image, const hfut::io::DebugMjpegStatus& status) {
   drawDebugLine(image, y, buffer, cv::Scalar(255, 220, 120));
 
   std::snprintf(buffer, sizeof(buffer),
+                "target_dist=%.2fm cmd_dist=%.2fm",
+                status.target_distance_m, status.command_distance_m);
+  drawDebugLine(image, y, buffer, cv::Scalar(120, 220, 255));
+
+  std::snprintf(buffer, sizeof(buffer),
                 "latency=%.1fms fb_age=%.0fms dry=%d fire_enabled=%d fire=%d",
                 status.latency_ms, status.feedback_age_ms, status.dry_run ? 1 : 0,
                 status.fire_enabled ? 1 : 0, status.fire ? 1 : 0);
@@ -913,6 +918,13 @@ int run(const Options& options) {
     hfut::io::DebugMjpegStatus web_status;
     if (web_server) {
       const double elapsed_s = std::chrono::duration<double>(now - run_start).count();
+      double target_distance_m = 0.0;
+      if (!armors.armors.empty()) {
+        const auto& position = armors.armors.front().pose.position;
+        target_distance_m = std::sqrt(position.x * position.x +
+                                      position.y * position.y +
+                                      position.z * position.z);
+      }
       web_status.frames = frames;
       web_status.fps = elapsed_s > 0.0 ? static_cast<double>(frames) / elapsed_s : 0.0;
       web_status.latency_ms = latency_s * 1000.0;
@@ -930,6 +942,8 @@ int run(const Options& options) {
       web_status.feedback_pitch_deg = frame.gimbal_pitch * kRadToDeg;
       web_status.command_yaw_deg = command.yaw * kRadToDeg;
       web_status.command_pitch_deg = command.pitch * kRadToDeg;
+      web_status.target_distance_m = target_distance_m;
+      web_status.command_distance_m = command.distance;
       web_status.feedback_age_ms = options.dry_run ? 0.0 : static_cast<double>(feedback_age.count());
       web_status.fire = command.fire_advice;
       web_status.dry_run = options.dry_run;
