@@ -719,6 +719,12 @@ void drawWebOverlay(cv::Mat& image, const hfut::io::DebugMjpegStatus& status) {
   drawDebugLine(image, y, buffer, cv::Scalar(120, 220, 255));
 
   std::snprintf(buffer, sizeof(buffer),
+                "cmd vel yaw=%.3f pitch=%.3f acc yaw=%.3f pitch=%.3f",
+                status.command_yaw_vel_rad_s, status.command_pitch_vel_rad_s,
+                status.command_yaw_acc_rad_s2, status.command_pitch_acc_rad_s2);
+  drawDebugLine(image, y, buffer, cv::Scalar(140, 220, 255));
+
+  std::snprintf(buffer, sizeof(buffer),
                 "latency=%.1fms fb_age=%.0fms dry=%d fire_enabled=%d fire=%d",
                 status.latency_ms, status.feedback_age_ms, status.dry_run ? 1 : 0,
                 status.fire_enabled ? 1 : 0, status.fire ? 1 : 0);
@@ -953,6 +959,10 @@ int run(const Options& options) {
       web_status.feedback_pitch_deg = frame.gimbal_pitch * kRadToDeg;
       web_status.command_yaw_deg = command.yaw * kRadToDeg;
       web_status.command_pitch_deg = command.pitch * kRadToDeg;
+      web_status.command_yaw_vel_rad_s = command.yaw_vel;
+      web_status.command_pitch_vel_rad_s = command.pitch_vel;
+      web_status.command_yaw_acc_rad_s2 = command.yaw_acc;
+      web_status.command_pitch_acc_rad_s2 = command.pitch_acc;
       web_status.target_distance_m = target_distance_m;
       web_status.command_distance_m = command.distance;
       web_status.feedback_age_ms = options.dry_run ? 0.0 : static_cast<double>(feedback_age.count());

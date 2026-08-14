@@ -61,6 +61,10 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"feedback_pitch_deg\":" << finiteOrZero(status.feedback_pitch_deg)
       << ",\"command_yaw_deg\":" << finiteOrZero(status.command_yaw_deg)
       << ",\"command_pitch_deg\":" << finiteOrZero(status.command_pitch_deg)
+      << ",\"command_yaw_vel_rad_s\":" << finiteOrZero(status.command_yaw_vel_rad_s)
+      << ",\"command_pitch_vel_rad_s\":" << finiteOrZero(status.command_pitch_vel_rad_s)
+      << ",\"command_yaw_acc_rad_s2\":" << finiteOrZero(status.command_yaw_acc_rad_s2)
+      << ",\"command_pitch_acc_rad_s2\":" << finiteOrZero(status.command_pitch_acc_rad_s2)
       << ",\"target_distance_m\":" << finiteOrZero(status.target_distance_m)
       << ",\"command_distance_m\":" << finiteOrZero(status.command_distance_m)
       << ",\"feedback_age_ms\":" << finiteOrZero(status.feedback_age_ms)
@@ -84,12 +88,21 @@ std::string indexHtml() {
   <title>HFUT Auto Aim Debug</title>
   <style>
     body { margin: 0; background: #111; color: #eee; font-family: Arial, sans-serif; }
-    main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; padding: 12px; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 12px; padding: 12px; }
     img { width: 100%; height: auto; background: #000; border: 1px solid #333; }
     aside { background: #1b1b1b; border: 1px solid #333; padding: 12px; }
     h1 { font-size: 18px; margin: 0 0 10px; }
+    h2 { font-size: 14px; margin: 14px 0 8px; color: #ddd; }
     p { color: #bbb; line-height: 1.5; margin: 8px 0; font-size: 14px; }
     a { color: #9bd1ff; }
+    .status-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .metric { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid #2b2b2b; }
+    .metric label { color: #bbb; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .metric strong { color: #f5f5f5; font-size: 13px; font-weight: 600; }
+    .metric input { width: 15px; height: 15px; }
+    .muted { color: #888; font-size: 12px; }
+    .bad { color: #ff8a8a; }
+    .ok { color: #8cffb0; }
     @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -98,11 +111,103 @@ std::string indexHtml() {
   <section><img src="/stream.mjpg" alt="debug stream"></section>
   <aside>
     <h1>HFUT Auto Aim Debug</h1>
-    <p>Status is overlaid on the video stream.</p>
+    <p>Use checkboxes to show or hide status rows. Values are refreshed from <a href="/status.json">status.json</a>.</p>
+    <h2>Command to lower controller</h2>
+    <div id="command" class="status-grid"></div>
+    <h2>Vision and feedback</h2>
+    <div id="runtime" class="status-grid"></div>
     <p><a href="/snapshot.jpg">snapshot.jpg</a></p>
-    <p><a href="/status.json">status.json</a></p>
+    <p id="status-note" class="muted">waiting for status...</p>
   </aside>
 </main>
+<script>
+const METRICS = [
+  {section: 'command', key: 'mode', label: 'mode', digits: 0, unit: ''},
+  {section: 'command', key: 'command_yaw_deg', label: 'yaw', digits: 2, unit: 'deg'},
+  {section: 'command', key: 'command_pitch_deg', label: 'pitch', digits: 2, unit: 'deg'},
+  {section: 'command', key: 'command_yaw_vel_rad_s', label: 'yaw_vel', digits: 3, unit: 'rad/s'},
+  {section: 'command', key: 'command_pitch_vel_rad_s', label: 'pitch_vel', digits: 3, unit: 'rad/s'},
+  {section: 'command', key: 'command_yaw_acc_rad_s2', label: 'yaw_acc', digits: 3, unit: 'rad/s^2'},
+  {section: 'command', key: 'command_pitch_acc_rad_s2', label: 'pitch_acc', digits: 3, unit: 'rad/s^2'},
+  {section: 'command', key: 'command_distance_m', label: 'distance', digits: 3, unit: 'm'},
+  {section: 'command', key: 'fire', label: 'fire', type: 'bool', unit: ''},
+  {section: 'runtime', key: 'feedback_yaw_deg', label: 'fb_yaw', digits: 2, unit: 'deg'},
+  {section: 'runtime', key: 'feedback_pitch_deg', label: 'fb_pitch', digits: 2, unit: 'deg'},
+  {section: 'runtime', key: 'feedback_age_ms', label: 'feedback_age', digits: 0, unit: 'ms'},
+  {section: 'runtime', key: 'latency_ms', label: 'latency', digits: 1, unit: 'ms'},
+  {section: 'runtime', key: 'fps', label: 'fps', digits: 1, unit: ''},
+  {section: 'runtime', key: 'detections', label: 'detections', digits: 0, unit: ''},
+  {section: 'runtime', key: 'poses', label: 'poses', digits: 0, unit: ''},
+  {section: 'runtime', key: 'armors', label: 'armors', digits: 0, unit: ''},
+  {section: 'runtime', key: 'tracked', label: 'tracked', digits: 0, unit: ''},
+  {section: 'runtime', key: 'selected_id', label: 'selected', unit: ''},
+  {section: 'runtime', key: 'track_state', label: 'state', unit: ''},
+  {section: 'runtime', key: 'target_distance_m', label: 'target_distance', digits: 3, unit: 'm'},
+  {section: 'runtime', key: 'reason', label: 'reason', unit: ''},
+];
+
+const visible = new Set(JSON.parse(localStorage.getItem('hfut-visible-metrics') || 'null') || METRICS.map(m => m.key));
+
+function saveVisible() {
+  localStorage.setItem('hfut-visible-metrics', JSON.stringify([...visible]));
+}
+
+function formatValue(metric, value) {
+  if (value === undefined || value === null) return '--';
+  if (metric.type === 'bool') return value ? '1' : '0';
+  if (typeof value === 'number') return Number.isFinite(value) ? value.toFixed(metric.digits ?? 2) : '--';
+  return String(value);
+}
+
+function buildRows() {
+  for (const metric of METRICS) {
+    const row = document.createElement('div');
+    row.className = 'metric';
+    row.dataset.key = metric.key;
+
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.checked = visible.has(metric.key);
+    check.addEventListener('change', () => {
+      if (check.checked) visible.add(metric.key); else visible.delete(metric.key);
+      saveVisible();
+    });
+
+    const label = document.createElement('label');
+    label.textContent = metric.label + (metric.unit ? ` (${metric.unit})` : '');
+    const value = document.createElement('strong');
+    value.id = `value-${metric.key}`;
+    value.textContent = '--';
+    row.append(check, label, value);
+    document.getElementById(metric.section).appendChild(row);
+  }
+}
+
+async function refreshStatus() {
+  const note = document.getElementById('status-note');
+  try {
+    const response = await fetch('/status.json', {cache: 'no-store'});
+    const status = await response.json();
+    for (const metric of METRICS) {
+      const value = document.getElementById(`value-${metric.key}`);
+      if (!value) continue;
+      value.textContent = visible.has(metric.key)
+          ? formatValue(metric, status[metric.key])
+          : 'hidden';
+      value.className = visible.has(metric.key) ? '' : 'muted';
+    }
+    note.textContent = `frames=${status.frames ?? 0} tx=${status.serial_tx ?? ''} rx=${status.serial_rx ?? ''}`;
+    note.className = status.mode === 1 ? 'muted ok' : 'muted bad';
+  } catch (error) {
+    note.textContent = `status error: ${error}`;
+    note.className = 'muted bad';
+  }
+}
+
+buildRows();
+setInterval(refreshStatus, 200);
+refreshStatus();
+</script>
 </body>
 </html>
 )HTML";
