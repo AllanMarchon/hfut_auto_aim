@@ -42,7 +42,11 @@ struct DebugMjpegStatus {
   double command_pitch_acc_rad_s2{0.0};
   double target_distance_m{0.0};
   double command_distance_m{0.0};
+  double yaw_error_deg{0.0};
+  double pitch_error_deg{0.0};
+  double distance_error_m{0.0};
   double feedback_age_ms{0.0};
+  bool fire_advice{false};
   bool fire{false};
   bool dry_run{false};
   bool fire_enabled{false};

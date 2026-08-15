@@ -714,25 +714,20 @@ void drawWebOverlay(cv::Mat& image, const hfut::io::DebugMjpegStatus& status) {
   drawDebugLine(image, y, buffer, cv::Scalar(255, 220, 120));
 
   std::snprintf(buffer, sizeof(buffer),
-                "target_dist=%.2fm cmd_dist=%.2fm",
-                status.target_distance_m, status.command_distance_m);
+                "target_dist=%.2fm cmd_dist=%.2fm fire_advice=%d",
+                status.target_distance_m, status.command_distance_m,
+                status.fire_advice ? 1 : 0);
   drawDebugLine(image, y, buffer, cv::Scalar(120, 220, 255));
 
   std::snprintf(buffer, sizeof(buffer),
-                "cmd vel yaw=%.3f pitch=%.3f acc yaw=%.3f pitch=%.3f",
-                status.command_yaw_vel_rad_s, status.command_pitch_vel_rad_s,
-                status.command_yaw_acc_rad_s2, status.command_pitch_acc_rad_s2);
-  drawDebugLine(image, y, buffer, cv::Scalar(140, 220, 255));
-
-  std::snprintf(buffer, sizeof(buffer),
-                "latency=%.1fms fb_age=%.0fms dry=%d fire_enabled=%d fire=%d",
+                "latency=%.1fms fb_age=%.0fms dry=%d fire_enabled=%d",
                 status.latency_ms, status.feedback_age_ms, status.dry_run ? 1 : 0,
-                status.fire_enabled ? 1 : 0, status.fire ? 1 : 0);
-  drawDebugLine(image, y, buffer, status.fire ? cv::Scalar(80, 80, 255)
-                                           : cv::Scalar(180, 180, 180));
+                status.fire_enabled ? 1 : 0);
+  drawDebugLine(image, y, buffer, status.fire_advice ? cv::Scalar(80, 255, 80)
+                                                     : cv::Scalar(180, 180, 180));
 
   const std::string line = "selected=" + status.selected_id +
-      " state=" + status.track_state + " reason=" + status.reason;
+      " state=" + status.track_state;
   drawDebugLine(image, y, line, cv::Scalar(220, 220, 220));
 }
 
@@ -920,7 +915,8 @@ int run(const Options& options) {
         std::chrono::steady_clock::now() - processing_start).count();
     auto command_deg = pipeline.computeCommand(
         frame.gimbal_yaw, frame.gimbal_pitch, frame.sim_time_s + latency_s);
-    hfut::GimbalCommand command = toRadiansCommand(command_deg);
+    const hfut::GimbalCommand algorithm_command = toRadiansCommand(command_deg);
+    hfut::GimbalCommand command = algorithm_command;
     if (!options.enable_fire) command.fire_advice = false;
 
     if (!options.dry_run) {
@@ -965,7 +961,11 @@ int run(const Options& options) {
       web_status.command_pitch_acc_rad_s2 = command.pitch_acc;
       web_status.target_distance_m = target_distance_m;
       web_status.command_distance_m = command.distance;
+      web_status.yaw_error_deg = web_status.command_yaw_deg - web_status.feedback_yaw_deg;
+      web_status.pitch_error_deg = web_status.command_pitch_deg - web_status.feedback_pitch_deg;
+      web_status.distance_error_m = web_status.command_distance_m - web_status.target_distance_m;
       web_status.feedback_age_ms = options.dry_run ? 0.0 : static_cast<double>(feedback_age.count());
+      web_status.fire_advice = algorithm_command.fire_advice;
       web_status.fire = command.fire_advice;
       web_status.dry_run = options.dry_run;
       web_status.fire_enabled = options.enable_fire;

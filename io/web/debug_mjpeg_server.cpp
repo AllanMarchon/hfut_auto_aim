@@ -67,7 +67,11 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"command_pitch_acc_rad_s2\":" << finiteOrZero(status.command_pitch_acc_rad_s2)
       << ",\"target_distance_m\":" << finiteOrZero(status.target_distance_m)
       << ",\"command_distance_m\":" << finiteOrZero(status.command_distance_m)
+      << ",\"yaw_error_deg\":" << finiteOrZero(status.yaw_error_deg)
+      << ",\"pitch_error_deg\":" << finiteOrZero(status.pitch_error_deg)
+      << ",\"distance_error_m\":" << finiteOrZero(status.distance_error_m)
       << ",\"feedback_age_ms\":" << finiteOrZero(status.feedback_age_ms)
+      << ",\"fire_advice\":" << (status.fire_advice ? "true" : "false")
       << ",\"fire\":" << (status.fire ? "true" : "false")
       << ",\"dry_run\":" << (status.dry_run ? "true" : "false")
       << ",\"fire_enabled\":" << (status.fire_enabled ? "true" : "false")
@@ -87,99 +91,577 @@ std::string indexHtml() {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>HFUT Auto Aim Debug</title>
   <style>
-    body { margin: 0; background: #111; color: #eee; font-family: Arial, sans-serif; }
-    main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 12px; padding: 12px; }
-    img { width: 100%; height: auto; background: #000; border: 1px solid #333; }
-    aside { background: #1b1b1b; border: 1px solid #333; padding: 12px; }
-    h1 { font-size: 18px; margin: 0 0 10px; }
-    h2 { font-size: 14px; margin: 14px 0 8px; color: #ddd; }
-    p { color: #bbb; line-height: 1.5; margin: 8px 0; font-size: 14px; }
-    a { color: #9bd1ff; }
-    .status-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
-    .metric { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid #2b2b2b; }
-    .metric label { color: #bbb; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .metric strong { color: #f5f5f5; font-size: 13px; font-weight: 600; }
-    .metric input { width: 15px; height: 15px; }
-    .muted { color: #888; font-size: 12px; }
-    .bad { color: #ff8a8a; }
-    .ok { color: #8cffb0; }
-    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    * { box-sizing: border-box; }
+    :root {
+      --bg: #0d0f12;
+      --panel: #171a1f;
+      --panel-2: #20242a;
+      --border: #303640;
+      --muted: #9aa4b2;
+      --text: #edf1f7;
+      --green: #31d07d;
+      --blue: #5cb7ff;
+      --orange: #ff9f43;
+      --red: #ff5c70;
+      --yellow: #ffd166;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 14px;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(420px, 500px);
+      gap: 12px;
+      padding: 12px;
+      min-height: 100vh;
+    }
+    .video-panel {
+      min-width: 0;
+      background: #050607;
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .video-panel img {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: #000;
+    }
+    .side-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 12px;
+      min-width: 0;
+    }
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    h1 { font-size: 18px; line-height: 1.2; margin: 0; font-weight: 700; }
+    h2 { font-size: 13px; line-height: 1.2; margin: 0; color: var(--text); font-weight: 700; }
+    .subtitle { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .pill {
+      flex: 0 0 auto;
+      min-width: 78px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      text-align: center;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 12px;
+    }
+    .pill.ok { color: var(--green); border-color: rgba(49, 208, 125, 0.45); }
+    .pill.warn { color: var(--yellow); border-color: rgba(255, 209, 102, 0.45); }
+    .pill.bad { color: var(--red); border-color: rgba(255, 92, 112, 0.45); }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .card {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 9px 10px;
+      min-width: 0;
+    }
+    .card .label { color: var(--muted); font-size: 11px; margin-bottom: 5px; }
+    .card .value {
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .card .meta { color: var(--muted); font-size: 11px; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chart-block {
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+      margin-top: 10px;
+    }
+    .chart-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .toggles {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 7px 10px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    .toggle input { width: 13px; height: 13px; margin: 0; }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 150px;
+      background: #101318;
+      border: 1px solid #2b313a;
+      border-radius: 5px;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 8px 0 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    button {
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 5px 9px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button:hover { border-color: #566170; }
+    details {
+      margin-top: 12px;
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+    }
+    summary { cursor: pointer; color: var(--muted); font-weight: 700; }
+    .telemetry {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px 10px;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+    .telemetry span:nth-child(odd) { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .telemetry span:nth-child(even) { color: var(--text); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+    .status-line { color: var(--muted); font-size: 12px; margin-top: 10px; }
+    @media (max-width: 1100px) {
+      main { grid-template-columns: 1fr; }
+      .side-panel { order: 2; }
+    }
+    @media (max-width: 520px) {
+      main { padding: 8px; }
+      .cards { grid-template-columns: 1fr; }
+      .chart-head { align-items: flex-start; flex-direction: column; }
+      .toggles { justify-content: flex-start; }
+    }
   </style>
 </head>
 <body>
 <main>
-  <section><img src="/stream.mjpg" alt="debug stream"></section>
-  <aside>
-    <h1>HFUT Auto Aim Debug</h1>
-    <p>Use checkboxes to show or hide status rows. Values are refreshed from <a href="/status.json">status.json</a>.</p>
-    <h2>Command to lower controller</h2>
-    <div id="command" class="status-grid"></div>
-    <h2>Vision and feedback</h2>
-    <div id="runtime" class="status-grid"></div>
-    <p><a href="/snapshot.jpg">snapshot.jpg</a></p>
-    <p id="status-note" class="muted">waiting for status...</p>
+  <section class="video-panel" aria-label="debug stream">
+    <img src="/stream.mjpg" alt="detector stream">
+  </section>
+  <aside class="side-panel">
+    <div class="topbar">
+      <div>
+        <h1>HFUT Auto Aim Debug</h1>
+        <div class="subtitle">Video, gimbal tracking, and fire advice</div>
+      </div>
+      <div id="track-pill" class="pill">WAIT</div>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="label">Vision</div>
+        <div id="value-vision" class="value">--</div>
+        <div id="meta-vision" class="meta">det / poses / armors / tracked</div>
+      </div>
+      <div class="card">
+        <div class="label">Runtime</div>
+        <div id="value-runtime" class="value">--</div>
+        <div id="meta-runtime" class="meta">fps / latency</div>
+      </div>
+      <div class="card">
+        <div class="label">Distance</div>
+        <div id="value-distance" class="value">--</div>
+        <div id="meta-distance" class="meta">target / command</div>
+      </div>
+      <div class="card">
+        <div class="label">Fire Advice</div>
+        <div id="value-fire" class="value">--</div>
+        <div id="meta-fire" class="meta">algorithm only</div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <label class="toggle"><input id="pause-history" type="checkbox"> pause curves</label>
+      <button id="clear-history" type="button">Clear</button>
+    </div>
+
+    <section class="chart-block" aria-label="yaw chart">
+      <div class="chart-head">
+        <h2>Yaw tracking</h2>
+        <div id="yaw-toggles" class="toggles"></div>
+      </div>
+      <canvas id="chart-yaw"></canvas>
+    </section>
+
+    <section class="chart-block" aria-label="pitch chart">
+      <div class="chart-head">
+        <h2>Pitch tracking</h2>
+        <div id="pitch-toggles" class="toggles"></div>
+      </div>
+      <canvas id="chart-pitch"></canvas>
+    </section>
+
+    <section class="chart-block" aria-label="fire advice chart">
+      <div class="chart-head">
+        <h2>Fire advice</h2>
+        <div id="fire-toggles" class="toggles"></div>
+      </div>
+      <canvas id="chart-fire"></canvas>
+    </section>
+
+    <details open>
+      <summary>Telemetry</summary>
+      <div id="telemetry" class="telemetry"></div>
+    </details>
+    <div id="status-note" class="status-line">waiting for status...</div>
   </aside>
 </main>
 <script>
-const METRICS = [
-  {section: 'command', key: 'mode', label: 'mode', digits: 0, unit: ''},
-  {section: 'command', key: 'command_yaw_deg', label: 'yaw', digits: 2, unit: 'deg'},
-  {section: 'command', key: 'command_pitch_deg', label: 'pitch', digits: 2, unit: 'deg'},
-  {section: 'command', key: 'command_yaw_vel_rad_s', label: 'yaw_vel', digits: 3, unit: 'rad/s'},
-  {section: 'command', key: 'command_pitch_vel_rad_s', label: 'pitch_vel', digits: 3, unit: 'rad/s'},
-  {section: 'command', key: 'command_yaw_acc_rad_s2', label: 'yaw_acc', digits: 3, unit: 'rad/s^2'},
-  {section: 'command', key: 'command_pitch_acc_rad_s2', label: 'pitch_acc', digits: 3, unit: 'rad/s^2'},
-  {section: 'command', key: 'command_distance_m', label: 'distance', digits: 3, unit: 'm'},
-  {section: 'command', key: 'fire', label: 'fire', type: 'bool', unit: ''},
-  {section: 'runtime', key: 'feedback_yaw_deg', label: 'fb_yaw', digits: 2, unit: 'deg'},
-  {section: 'runtime', key: 'feedback_pitch_deg', label: 'fb_pitch', digits: 2, unit: 'deg'},
-  {section: 'runtime', key: 'feedback_age_ms', label: 'feedback_age', digits: 0, unit: 'ms'},
-  {section: 'runtime', key: 'latency_ms', label: 'latency', digits: 1, unit: 'ms'},
-  {section: 'runtime', key: 'fps', label: 'fps', digits: 1, unit: ''},
-  {section: 'runtime', key: 'detections', label: 'detections', digits: 0, unit: ''},
-  {section: 'runtime', key: 'poses', label: 'poses', digits: 0, unit: ''},
-  {section: 'runtime', key: 'armors', label: 'armors', digits: 0, unit: ''},
-  {section: 'runtime', key: 'tracked', label: 'tracked', digits: 0, unit: ''},
-  {section: 'runtime', key: 'selected_id', label: 'selected', unit: ''},
-  {section: 'runtime', key: 'track_state', label: 'state', unit: ''},
-  {section: 'runtime', key: 'target_distance_m', label: 'target_distance', digits: 3, unit: 'm'},
-  {section: 'runtime', key: 'reason', label: 'reason', unit: ''},
+const HISTORY_SECONDS = 18;
+const POLL_MS = 200;
+const COLORS = {
+  feedback: '#5cb7ff',
+  command: '#ff9f43',
+  error: '#ff5c70',
+  fire: '#31d07d',
+  grid: '#2d3440',
+  text: '#edf1f7',
+  muted: '#9aa4b2'
+};
+
+const CHARTS = [
+  {
+    id: 'yaw',
+    canvas: 'chart-yaw',
+    toggles: 'yaw-toggles',
+    unit: 'deg',
+    series: [
+      {key: 'feedback_yaw_deg', label: 'fb_yaw', color: COLORS.feedback, digits: 2},
+      {key: 'command_yaw_deg', label: 'cmd_yaw', color: COLORS.command, digits: 2},
+      {key: 'yaw_error_deg', label: 'error', color: COLORS.error, digits: 2}
+    ]
+  },
+  {
+    id: 'pitch',
+    canvas: 'chart-pitch',
+    toggles: 'pitch-toggles',
+    unit: 'deg',
+    series: [
+      {key: 'feedback_pitch_deg', label: 'fb_pitch', color: COLORS.feedback, digits: 2},
+      {key: 'command_pitch_deg', label: 'cmd_pitch', color: COLORS.command, digits: 2},
+      {key: 'pitch_error_deg', label: 'error', color: COLORS.error, digits: 2}
+    ]
+  },
+  {
+    id: 'fire',
+    canvas: 'chart-fire',
+    toggles: 'fire-toggles',
+    unit: '0/1',
+    fixedRange: [0, 1],
+    series: [
+      {key: 'fire_advice', label: 'fire_advice', color: COLORS.fire, digits: 0, step: true}
+    ]
+  }
 ];
 
-const visible = new Set(JSON.parse(localStorage.getItem('hfut-visible-metrics') || 'null') || METRICS.map(m => m.key));
+const TELEMETRY = [
+  ['frames', 'frames', 0, ''],
+  ['mode', 'mode', 0, ''],
+  ['selected', 'selected_id', null, ''],
+  ['state', 'track_state', null, ''],
+  ['reason', 'reason', null, ''],
+  ['enemy', 'enemy_color', null, ''],
+  ['camera', 'camera_backend', null, ''],
+  ['serial tx', 'serial_tx', null, ''],
+  ['serial rx', 'serial_rx', null, ''],
+  ['dry run', 'dry_run', null, ''],
+  ['fire enabled', 'fire_enabled', null, ''],
+  ['cmd yaw vel', 'command_yaw_vel_rad_s', 3, ' rad/s'],
+  ['cmd pitch vel', 'command_pitch_vel_rad_s', 3, ' rad/s'],
+  ['cmd yaw acc', 'command_yaw_acc_rad_s2', 3, ' rad/s^2'],
+  ['cmd pitch acc', 'command_pitch_acc_rad_s2', 3, ' rad/s^2'],
+  ['distance error', 'distance_error_m', 3, ' m']
+];
 
-function saveVisible() {
-  localStorage.setItem('hfut-visible-metrics', JSON.stringify([...visible]));
+const defaultVisible = CHARTS.flatMap(chart => chart.series.map(series => series.key));
+let visibleSeries = new Set(loadJson('hfut-visible-series', defaultVisible));
+let history = [];
+let latestStatus = null;
+
+function loadJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (_) {
+    return fallback;
+  }
 }
 
-function formatValue(metric, value) {
+function saveVisible() {
+  localStorage.setItem('hfut-visible-series', JSON.stringify([...visibleSeries]));
+}
+
+function finite(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function fmt(value, digits = 1, unit = '') {
   if (value === undefined || value === null) return '--';
-  if (metric.type === 'bool') return value ? '1' : '0';
-  if (typeof value === 'number') return Number.isFinite(value) ? value.toFixed(metric.digits ?? 2) : '--';
+  if (typeof value === 'boolean') return value ? '1' : '0';
+  if (typeof value === 'number') return Number.isFinite(value) ? `${value.toFixed(digits)}${unit}` : '--';
   return String(value);
 }
 
-function buildRows() {
-  for (const metric of METRICS) {
-    const row = document.createElement('div');
-    row.className = 'metric';
-    row.dataset.key = metric.key;
+function normalizeStatus(status) {
+  status.fire_advice = Boolean(status.fire_advice ?? status.fire ?? false);
+  status.yaw_error_deg = finite(
+      status.yaw_error_deg,
+      finite(status.command_yaw_deg) - finite(status.feedback_yaw_deg));
+  status.pitch_error_deg = finite(
+      status.pitch_error_deg,
+      finite(status.command_pitch_deg) - finite(status.feedback_pitch_deg));
+  status.distance_error_m = finite(
+      status.distance_error_m,
+      finite(status.command_distance_m) - finite(status.target_distance_m));
+  return status;
+}
 
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    check.checked = visible.has(metric.key);
-    check.addEventListener('change', () => {
-      if (check.checked) visible.add(metric.key); else visible.delete(metric.key);
-      saveVisible();
-    });
+function buildToggles() {
+  for (const chart of CHARTS) {
+    const root = document.getElementById(chart.toggles);
+    root.textContent = '';
+    for (const series of chart.series) {
+      const label = document.createElement('label');
+      label.className = 'toggle';
+      label.style.color = series.color;
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = visibleSeries.has(series.key);
+      input.addEventListener('change', () => {
+        if (input.checked) visibleSeries.add(series.key);
+        else visibleSeries.delete(series.key);
+        saveVisible();
+        drawAllCharts();
+      });
+      label.append(input, document.createTextNode(series.label));
+      root.appendChild(label);
+    }
+  }
+}
 
-    const label = document.createElement('label');
-    label.textContent = metric.label + (metric.unit ? ` (${metric.unit})` : '');
-    const value = document.createElement('strong');
-    value.id = `value-${metric.key}`;
-    value.textContent = '--';
-    row.append(check, label, value);
-    document.getElementById(metric.section).appendChild(row);
+function updateCards(status) {
+  document.getElementById('value-vision').textContent =
+      `${status.detections ?? 0}/${status.poses ?? 0}/${status.armors ?? 0}/${status.tracked ?? 0}`;
+  document.getElementById('meta-vision').textContent =
+      `selected=${status.selected_id ?? 'none'} state=${status.track_state ?? 'none'}`;
+
+  document.getElementById('value-runtime').textContent =
+      `${fmt(finite(status.fps), 1)} fps`;
+  document.getElementById('meta-runtime').textContent =
+      `latency=${fmt(finite(status.latency_ms), 1, ' ms')} fb_age=${fmt(finite(status.feedback_age_ms), 0, ' ms')}`;
+
+  document.getElementById('value-distance').textContent =
+      `${fmt(finite(status.target_distance_m), 2, ' m')} / ${fmt(finite(status.command_distance_m), 2, ' m')}`;
+  document.getElementById('meta-distance').textContent =
+      `target / cmd, delta=${fmt(finite(status.distance_error_m), 2, ' m')}`;
+
+  document.getElementById('value-fire').textContent = status.fire_advice ? 'YES' : 'HOLD';
+  document.getElementById('meta-fire').textContent =
+      `safety=${status.fire_enabled ? 'enabled' : 'disabled'} dry=${status.dry_run ? 1 : 0}`;
+
+  const pill = document.getElementById('track-pill');
+  if (status.fire_advice) {
+    pill.textContent = 'FIRE';
+    pill.className = 'pill ok';
+  } else if ((status.tracked ?? 0) > 0) {
+    pill.textContent = 'TRACK';
+    pill.className = 'pill ok';
+  } else if ((status.detections ?? 0) > 0) {
+    pill.textContent = 'DETECT';
+    pill.className = 'pill warn';
+  } else {
+    pill.textContent = 'WAIT';
+    pill.className = 'pill bad';
+  }
+}
+
+function updateTelemetry(status) {
+  const root = document.getElementById('telemetry');
+  root.textContent = '';
+  for (const [label, key, digits, unit] of TELEMETRY) {
+    const name = document.createElement('span');
+    const value = document.createElement('span');
+    name.textContent = label;
+    value.textContent = digits === null ? fmt(status[key]) : fmt(finite(status[key]), digits, unit);
+    root.append(name, value);
+  }
+}
+
+function addSample(status) {
+  const t = performance.now() / 1000;
+  const sample = {t};
+  for (const chart of CHARTS) {
+    for (const series of chart.series) {
+      const value = status[series.key];
+      sample[series.key] = typeof value === 'boolean' ? (value ? 1 : 0) : finite(value);
+    }
+  }
+  history.push(sample);
+  const cutoff = t - HISTORY_SECONDS;
+  while (history.length > 1 && history[0].t < cutoff) history.shift();
+}
+
+function drawAllCharts() {
+  for (const chart of CHARTS) drawChart(chart);
+}
+
+function drawChart(chart) {
+  const canvas = document.getElementById(chart.canvas);
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(260, Math.floor(rect.width));
+  const height = Math.max(120, Math.floor(rect.height || 150));
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
+    canvas.width = Math.floor(width * dpr);
+    canvas.height = Math.floor(height * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const left = 46;
+  const right = 12;
+  const top = 12;
+  const bottom = 24;
+  const plotW = Math.max(1, width - left - right);
+  const plotH = Math.max(1, height - top - bottom);
+  const seriesList = chart.series.filter(series => visibleSeries.has(series.key));
+
+  ctx.fillStyle = '#101318';
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = COLORS.grid;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(left, top, plotW, plotH);
+
+  if (history.length < 2 || seriesList.length === 0) {
+    ctx.fillStyle = COLORS.muted;
+    ctx.font = '12px Arial';
+    ctx.fillText('waiting for samples', left + 8, top + 22);
+    return;
+  }
+
+  const tMax = history[history.length - 1].t;
+  const tMin = Math.max(history[0].t, tMax - HISTORY_SECONDS);
+  let yMin = Infinity;
+  let yMax = -Infinity;
+  for (const sample of history) {
+    for (const series of seriesList) {
+      const value = finite(sample[series.key], NaN);
+      if (!Number.isFinite(value)) continue;
+      yMin = Math.min(yMin, value);
+      yMax = Math.max(yMax, value);
+    }
+  }
+  if (chart.fixedRange) {
+    yMin = chart.fixedRange[0];
+    yMax = chart.fixedRange[1];
+  } else if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+    yMin = -1;
+    yMax = 1;
+  } else if (Math.abs(yMax - yMin) < 1e-6) {
+    yMin -= 1;
+    yMax += 1;
+  } else {
+    const pad = (yMax - yMin) * 0.14;
+    yMin -= pad;
+    yMax += pad;
+  }
+
+  const xOf = t => left + ((t - tMin) / Math.max(0.001, tMax - tMin)) * plotW;
+  const yOf = v => top + (1 - (v - yMin) / Math.max(0.001, yMax - yMin)) * plotH;
+
+  ctx.font = '11px Arial';
+  ctx.fillStyle = COLORS.muted;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i <= 2; ++i) {
+    const frac = i / 2;
+    const y = top + plotH * frac;
+    const value = yMax - (yMax - yMin) * frac;
+    ctx.strokeStyle = i === 0 || i === 2 ? COLORS.grid : 'rgba(154,164,178,0.22)';
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(left + plotW, y);
+    ctx.stroke();
+    ctx.fillText(chart.fixedRange ? value.toFixed(0) : value.toFixed(1), left - 7, y);
+  }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(`-${HISTORY_SECONDS}s`, left, height - 7);
+  ctx.textAlign = 'right';
+  ctx.fillText('now', left + plotW, height - 7);
+
+  for (const series of seriesList) {
+    ctx.strokeStyle = series.color;
+    ctx.lineWidth = series.key.includes('error') ? 1.4 : 2;
+    ctx.beginPath();
+    let started = false;
+    let prevX = 0;
+    let prevY = 0;
+    for (const sample of history) {
+      if (sample.t < tMin) continue;
+      const x = xOf(sample.t);
+      const y = yOf(finite(sample[series.key]));
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else if (series.step) {
+        ctx.lineTo(x, prevY);
+        ctx.lineTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+      prevX = x;
+      prevY = y;
+    }
+    if (started) ctx.stroke();
+    if (history.length > 0) {
+      const last = history[history.length - 1];
+      const lx = xOf(last.t);
+      const ly = yOf(finite(last[series.key]));
+      ctx.fillStyle = series.color;
+      ctx.beginPath();
+      ctx.arc(lx, ly, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
@@ -187,25 +669,29 @@ async function refreshStatus() {
   const note = document.getElementById('status-note');
   try {
     const response = await fetch('/status.json', {cache: 'no-store'});
-    const status = await response.json();
-    for (const metric of METRICS) {
-      const value = document.getElementById(`value-${metric.key}`);
-      if (!value) continue;
-      value.textContent = visible.has(metric.key)
-          ? formatValue(metric, status[metric.key])
-          : 'hidden';
-      value.className = visible.has(metric.key) ? '' : 'muted';
-    }
-    note.textContent = `frames=${status.frames ?? 0} tx=${status.serial_tx ?? ''} rx=${status.serial_rx ?? ''}`;
-    note.className = status.mode === 1 ? 'muted ok' : 'muted bad';
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    latestStatus = normalizeStatus(await response.json());
+    updateCards(latestStatus);
+    updateTelemetry(latestStatus);
+    if (!document.getElementById('pause-history').checked) addSample(latestStatus);
+    drawAllCharts();
+    note.textContent = `frames=${latestStatus.frames ?? 0} tx=${latestStatus.serial_tx ?? ''} rx=${latestStatus.serial_rx ?? ''}`;
   } catch (error) {
     note.textContent = `status error: ${error}`;
-    note.className = 'muted bad';
+    const pill = document.getElementById('track-pill');
+    pill.textContent = 'ERROR';
+    pill.className = 'pill bad';
   }
 }
 
-buildRows();
-setInterval(refreshStatus, 200);
+document.getElementById('clear-history').addEventListener('click', () => {
+  history = [];
+  if (latestStatus) addSample(latestStatus);
+  drawAllCharts();
+});
+window.addEventListener('resize', drawAllCharts);
+buildToggles();
+setInterval(refreshStatus, POLL_MS);
 refreshStatus();
 </script>
 </body>
