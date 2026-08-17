@@ -1,10 +1,27 @@
 # armor_detector_nn 的 ROS-free 移植版：构建神经网络检测和位姿估计库。
-# 目前只启用 onnxruntime 后端。ROS 类型通过 third_party/compat 下的头文件
-# 兼容层提供，尽量保持算法源码不做侵入式改动。
+# 默认编译 onnxruntime 后端；OpenVINO 可用时一并编译，便于 Intel NUC
+# 直接切换推理后端。ROS 类型通过 third_party/compat 下的头文件兼容层提供。
 
 find_package(OpenCV 4.5 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
+
+option(HFUT_ENABLE_OPENVINO "Build OpenVINO detector backend when available" ON)
+set(HFUT_OPENVINO_AVAILABLE OFF)
+if(HFUT_ENABLE_OPENVINO)
+  find_package(OpenVINO QUIET COMPONENTS Runtime)
+  if(NOT OpenVINO_FOUND)
+    find_package(OpenVINO QUIET)
+  endif()
+  if(OpenVINO_FOUND AND TARGET openvino::runtime)
+    set(HFUT_OPENVINO_AVAILABLE ON)
+    message(STATUS "OpenVINO detector backend enabled")
+  else()
+    message(WARNING
+      "OpenVINO was not found; detector will build with ONNX Runtime only. "
+      "Set OpenVINO_DIR or install OpenVINO to enable the OpenVINO backend.")
+  endif()
+endif()
 
 set(THIRD_PARTY "${CMAKE_SOURCE_DIR}/third_party")
 set(COMPAT "${THIRD_PARTY}/compat")
@@ -24,7 +41,6 @@ endif()
 # 内置的 rm_utils logger，已经去掉 ROS 依赖。
 file(GLOB RM_UTILS_SRC "${THIRD_PARTY}/rm_utils/src/logger/*.cpp")
 
-# 这里只编译 onnxruntime 后端，暂不引入 openvino/tensorrt 源码。
 set(DETECTOR_SRC
   src/core/armor_detector_nn.cpp
   src/core/armor_pose_estimator_adapter.cpp
@@ -50,9 +66,16 @@ set(DETECTOR_SRC
   config_loader.cpp
 )
 
+if(HFUT_OPENVINO_AVAILABLE)
+  list(APPEND DETECTOR_SRC src/backend/openvino_backend.cpp)
+endif()
+
 add_library(hfut_detector STATIC ${DETECTOR_SRC} ${RM_UTILS_SRC})
 
 target_compile_definitions(hfut_detector PUBLIC ARMOR_DETECTOR_NN_HAS_ONNX=1)
+if(HFUT_OPENVINO_AVAILABLE)
+  target_compile_definitions(hfut_detector PUBLIC ARMOR_DETECTOR_NN_HAS_OPENVINO=1)
+endif()
 # 提供给 ament_index_cpp 兼容层，用于解析 package:// 模型和标签路径。
 target_compile_definitions(hfut_detector PRIVATE
   HFUT_DETECTOR_ASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR})
@@ -69,4 +92,7 @@ target_include_directories(hfut_detector SYSTEM PRIVATE "${ONNXRUNTIME_INCLUDE_D
 
 target_link_libraries(hfut_detector PUBLIC ${OpenCV_LIBS} yaml-cpp fmt)
 target_link_libraries(hfut_detector PRIVATE ${ONNXRUNTIME_LIB})
+if(HFUT_OPENVINO_AVAILABLE)
+  target_link_libraries(hfut_detector PRIVATE openvino::runtime)
+endif()
 target_link_directories(hfut_detector PUBLIC "${ONNXRUNTIME_ROOT}/lib")

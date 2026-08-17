@@ -8,11 +8,13 @@
 detector:
   # impl 已移至总控 gimbal_pipeline.yaml global.detector_impl
   backend:
-    type: "onnxruntime"
-    device: "cuda"
-    precision: "fp16"
+    type: "openvino"
+    device: "CPU"       # Intel NUC 默认先测 CPU；GPU 跑通后可改为 "GPU"
+    precision: "fp32"
     model_path: "package://armor_detector_nn/model/RobotDetectionModel/0708.onnx"
     engine_path: "package://armor_detector_nn/model/RobotDetectionModel/0708.onnx"
+    openvino_model_xml: ""
+    openvino_model_bin: ""
     input_name: "images"
     output_names: ["output"]
     warmup_iterations: 10

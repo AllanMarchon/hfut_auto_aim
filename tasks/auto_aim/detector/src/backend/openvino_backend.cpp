@@ -75,7 +75,7 @@ void OpenVINOBackend::load(const BackendConfig& config) {
     throw std::runtime_error("OpenVINOBackend: no available device found");
   }
 
-  FYT_INFO("armor_detector_nn", "OpenVINOBackend loading: %s on %s",
+  FYT_INFO("armor_detector_nn", "OpenVINOBackend loading: {} on {}",
            model_path.c_str(), device.c_str());
 
   loadModel(model_path, bin_path, device, config.num_threads);
@@ -86,7 +86,7 @@ void OpenVINOBackend::load(const BackendConfig& config) {
                     config.precision == Precision::FP16 ? "fp16" : "fp32";
 
   loaded_ = true;
-  FYT_INFO("armor_detector_nn", "OpenVINOBackend loaded successfully (precision: %s)",
+  FYT_INFO("armor_detector_nn", "OpenVINOBackend loaded successfully (precision: {})",
            info_.precision.c_str());
 }
 
@@ -133,9 +133,20 @@ std::vector<TensorOutput> OpenVINOBackend::infer(const TensorInput& input) {
     out.info.dtype = TensorInfo::DType::FLOAT32;
     out.host_data.resize(num_elements);
 
-    std::memcpy(out.host_data.data(),
-                out_tensor.data<float>(),
-                num_elements * sizeof(float));
+    const auto element_type = out_tensor.get_element_type();
+    if (element_type == ov::element::f32) {
+      std::memcpy(out.host_data.data(),
+                  out_tensor.data<float>(),
+                  num_elements * sizeof(float));
+    } else if (element_type == ov::element::f16) {
+      const auto* data = out_tensor.data<ov::float16>();
+      std::transform(data, data + num_elements, out.host_data.begin(),
+                     [](ov::float16 value) { return static_cast<float>(value); });
+    } else {
+      throw std::runtime_error(
+        std::string("OpenVINOBackend::infer: unsupported output element type: ") +
+        element_type.get_type_name());
+    }
 
     results.push_back(std::move(out));
   }
@@ -252,7 +263,7 @@ void OpenVINOBackend::detectQuantizationPrecision() {
       auto nncf = rt_info.at("nncf").as<ov::AnyMap>();
       if (nncf.count("version")) {
         auto ver = nncf.at("version").as<std::string>();
-        FYT_INFO("armor_detector_nn", "NNCF quantization version: %s", ver.c_str());
+        FYT_INFO("armor_detector_nn", "NNCF quantization version: {}", ver.c_str());
       }
     }
   } catch (...) {
