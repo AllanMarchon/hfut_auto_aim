@@ -4,7 +4,7 @@ hardware:
   camera:
     # backend: opencv=普通摄像头/视频文件 | hik=海康 MVS | mindvision=迈德威视
     # 工业相机需要在 CMake 打开对应开关后才能使用。
-    backend: "opencv"
+    backend: "hik"
     camera_sn: ""                # 留空使用检测到的第一台工业相机；多相机时建议填序列号
 
     # source 为空时通过 OpenCV 打开 device_index；非空时可以是视频文件、
@@ -14,7 +14,7 @@ hardware:
     width: 1280
     height: 1024
     fps: 120.0
-    exposure_time_us: 2500.0      # 海康/迈德威视曝光时间，单位微秒
+    exposure_time_us: 5500.0      # 海康/迈德威视曝光时间，单位微秒
     gain: 16.0                    # 海康增益；OpenCV 后端仅在值大于 0 时尝试设置
     analog_gain: 8                # 迈德威视模拟增益
     frame_speed: 1                # 迈德威视帧速模式：0=Low, 1=Normal, 2=High, 3=Super
@@ -25,8 +25,8 @@ hardware:
     # 相机 optical 坐标系相对枪管坐标系的外参。xyz 单位米，rpy 单位弧度，
     # 约定与 configs/simulation.yaml 保持一致。
     camera_to_barrel:
-      xyz: [0.0, 0.0, 0.0]
-      rpy: [0.0, 0.0, 0.0]
+      xyz: [0.100, 0.0075, 0.000]
+      rpy: [0.0, 0.137, 0.0]
 
   serial:
     port: "/dev/ttyACM0"
@@ -35,6 +35,7 @@ hardware:
     tx_protocol: "infantry_32"    # 发给下位机：32字节，包含角加速度
     rx_protocol: "infantry"       # 下位机反馈：实测仍为24字节 infantry
     infantry32_tail_fields: "acceleration"  # 32字节尾部发送 pitch_acc/yaw_acc
+    command_angle_reference: "relative"  # absolute=下发目标绝对角；relative=下发 yaw_diff/pitch_diff
     command_angles_in_degrees: false  # false=下发 rad、rad/s、rad/s²；true=下发角度制
     feedback_angles_in_degrees: true  # 当前下位机反馈仍按角度制解析，再转为内部弧度
     read_timeout_ms: 2

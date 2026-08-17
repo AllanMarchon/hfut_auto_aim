@@ -83,6 +83,7 @@ struct Options {
   std::string serial_tx_protocol{"infantry"};
   std::string serial_rx_protocol{"infantry"};
   std::string infantry32_tail_fields{"duplicate_velocity"};
+  std::string command_angle_reference{"absolute"};
   bool command_angles_in_degrees{true};
   bool feedback_angles_in_degrees{true};
   int serial_read_timeout_ms{2};
@@ -195,6 +196,8 @@ void loadHardwareConfig(Options& options) {
     options.serial_rx_protocol = parseString(serial["rx_protocol"], options.serial_rx_protocol);
     options.infantry32_tail_fields = parseString(
         serial["infantry32_tail_fields"], options.infantry32_tail_fields);
+    options.command_angle_reference = parseString(
+        serial["command_angle_reference"], options.command_angle_reference);
     options.command_angles_in_degrees = parseBool(
         serial["command_angles_in_degrees"], options.command_angles_in_degrees);
     options.feedback_angles_in_degrees = parseBool(
@@ -262,6 +265,7 @@ Options parseOptions(int argc, char** argv) {
           "  --serial-tx-protocol NAME  infantry | infantry_16 | infantry_32\n"
           "  --serial-rx-protocol NAME  infantry | infantry_16 | infantry_32\n"
           "  --infantry32-tail-fields acceleration | duplicate_velocity\n"
+          "  --command-angle-reference absolute | relative\n"
           "  --enemy-color COLOR      red | blue | white\n"
           "  --bullet-speed MPS       controller bullet speed override\n"
           "  --strategy NAME          controller strategy override\n"
@@ -321,6 +325,8 @@ Options parseOptions(int argc, char** argv) {
       options.serial_rx_protocol = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--infantry32-tail-fields"); !value.empty()) {
       options.infantry32_tail_fields = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--command-angle-reference"); !value.empty()) {
+      options.command_angle_reference = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--enemy-color"); !value.empty()) {
       options.enemy_color = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--bullet-speed"); !value.empty()) {
@@ -359,6 +365,12 @@ Options parseOptions(int argc, char** argv) {
   }
   if (options.feedback_timeout_ms <= 0) {
     throw std::invalid_argument("feedback timeout must be > 0");
+  }
+  if (options.command_angle_reference != "absolute" &&
+      options.command_angle_reference != "relative") {
+    throw std::invalid_argument(
+        "command angle reference must be absolute or relative, got: " +
+        options.command_angle_reference);
   }
   if (options.web_port <= 0 || options.web_port > 65535) {
     throw std::invalid_argument("web port must be in 1..65535");
@@ -681,6 +693,21 @@ hfut::GimbalCommand toRadiansCommand(const rm_interfaces::msg::GimbalCmd& cmd_de
   return out;
 }
 
+double normalizeRadians(double value) {
+  return std::remainder(value, 2.0 * kPi);
+}
+
+hfut::GimbalCommand makeSerialWireCommand(
+    const hfut::GimbalCommand& command,
+    const std::string& command_angle_reference) {
+  if (command_angle_reference != "relative") return command;
+
+  hfut::GimbalCommand wire = command;
+  wire.yaw = normalizeRadians(command.yaw_diff);
+  wire.pitch = command.pitch_diff;
+  return wire;
+}
+
 void drawDebugLine(cv::Mat& image, int& y, const std::string& text,
                    const cv::Scalar& color = cv::Scalar(80, 255, 80)) {
   if (image.empty()) return;
@@ -712,6 +739,12 @@ void drawWebOverlay(cv::Mat& image, const hfut::io::DebugMjpegStatus& status) {
                 status.feedback_yaw_deg, status.feedback_pitch_deg,
                 status.command_yaw_deg, status.command_pitch_deg, status.mode);
   drawDebugLine(image, y, buffer, cv::Scalar(255, 220, 120));
+
+  std::snprintf(buffer, sizeof(buffer),
+                "send(%s) yaw=%.2f pitch=%.2f",
+                status.serial_command_reference.c_str(), status.sent_yaw_deg,
+                status.sent_pitch_deg);
+  drawDebugLine(image, y, buffer, cv::Scalar(255, 180, 120));
 
   std::snprintf(buffer, sizeof(buffer),
                 "target_dist=%.2fm cmd_dist=%.2fm fire_advice=%d",
@@ -825,6 +858,8 @@ int run(const Options& options) {
     std::printf("[bringup_real] infantry32_tail_fields=%s\n",
                 hfut::io::infantry32TailFieldsName(serial_config.tail_fields));
   }
+  std::printf("[bringup_real] command_angle_reference=%s\n",
+              options.command_angle_reference.c_str());
   std::printf(
       "[bringup_real] camera_info=%s calibration_mode=%s enemy=%s bullet=%.2f\n",
       options.camera_info_path.c_str(),
@@ -930,11 +965,13 @@ int run(const Options& options) {
     const hfut::GimbalCommand algorithm_command = toRadiansCommand(command_deg);
     hfut::GimbalCommand command = algorithm_command;
     if (!options.enable_fire) command.fire_advice = false;
+    const hfut::GimbalCommand wire_command = makeSerialWireCommand(
+        command, options.command_angle_reference);
     const auto control_end = std::chrono::steady_clock::now();
 
     const auto serial_tx_start = control_end;
     if (!options.dry_run) {
-      serial.sendCommand(command);
+      serial.sendCommand(wire_command);
     }
     const auto serial_tx_end = std::chrono::steady_clock::now();
     const double serial_tx_ms = elapsedMs(serial_tx_start, serial_tx_end);
@@ -972,6 +1009,8 @@ int run(const Options& options) {
       web_status.feedback_pitch_deg = frame.gimbal_pitch * kRadToDeg;
       web_status.command_yaw_deg = command.yaw * kRadToDeg;
       web_status.command_pitch_deg = command.pitch * kRadToDeg;
+      web_status.sent_yaw_deg = wire_command.yaw * kRadToDeg;
+      web_status.sent_pitch_deg = wire_command.pitch * kRadToDeg;
       web_status.command_yaw_vel_rad_s = command.yaw_vel;
       web_status.command_pitch_vel_rad_s = command.pitch_vel;
       web_status.command_yaw_acc_rad_s2 = command.yaw_acc;
@@ -990,6 +1029,7 @@ int run(const Options& options) {
       web_status.camera_backend = options.camera_backend;
       web_status.serial_tx = hfut::io::infantryPacketLayoutName(serial_config.tx_layout);
       web_status.serial_rx = hfut::io::infantryPacketLayoutName(serial_config.rx_layout);
+      web_status.serial_command_reference = options.command_angle_reference;
     }
 
     const auto visual_start = std::chrono::steady_clock::now();

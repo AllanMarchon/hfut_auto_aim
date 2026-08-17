@@ -264,6 +264,12 @@ def validate_hardware(report: Report, repo_root: Path, configs: dict[str, Any]) 
             "hardware.serial.infantry32_tail_fields",
             {"acceleration", "accel", "duplicate_velocity", "velocity"},
         )
+        require_choice(
+            report,
+            serial.get("command_angle_reference", "absolute"),
+            "hardware.serial.command_angle_reference",
+            {"absolute", "relative"},
+        )
         require_bool(report, serial.get("command_angles_in_degrees"), "hardware.serial.command_angles_in_degrees")
         require_bool(report, serial.get("feedback_angles_in_degrees"), "hardware.serial.feedback_angles_in_degrees")
         if (

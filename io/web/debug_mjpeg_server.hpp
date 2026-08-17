@@ -36,6 +36,8 @@ struct DebugMjpegStatus {
   double feedback_pitch_deg{0.0};
   double command_yaw_deg{0.0};
   double command_pitch_deg{0.0};
+  double sent_yaw_deg{0.0};
+  double sent_pitch_deg{0.0};
   double command_yaw_vel_rad_s{0.0};
   double command_pitch_vel_rad_s{0.0};
   double command_yaw_acc_rad_s2{0.0};
@@ -54,6 +56,7 @@ struct DebugMjpegStatus {
   std::string camera_backend;
   std::string serial_tx;
   std::string serial_rx;
+  std::string serial_command_reference{"absolute"};
 };
 
 class DebugMjpegServer {
