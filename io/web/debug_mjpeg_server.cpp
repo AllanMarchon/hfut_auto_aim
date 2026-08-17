@@ -403,7 +403,6 @@ const TELEMETRY = [
   ['dry run', 'dry_run', null, ''],
   ['fire enabled', 'fire_enabled', null, ''],
   ['distance', 'distance_m', 3, ' m'],
-  ['pnp first dist', 'pnp_first_distance_m', 3, ' m'],
   ['cmd yaw vel', 'command_yaw_vel_rad_s', 3, ' rad/s'],
   ['cmd pitch vel', 'command_pitch_vel_rad_s', 3, ' rad/s'],
   ['cmd yaw acc', 'command_yaw_acc_rad_s2', 3, ' rad/s^2'],
@@ -490,7 +489,7 @@ function updateCards(status) {
   document.getElementById('value-distance').textContent =
       `${fmt(finite(status.distance_m), 2, ' m')}`;
   document.getElementById('meta-distance').textContent =
-      `pnp_first=${fmt(finite(status.pnp_first_distance_m), 2, ' m')}`;
+      'yaw/pitch target';
 
   document.getElementById('value-fire').textContent = status.fire_advice ? 'YES' : 'HOLD';
   document.getElementById('meta-fire').textContent =

@@ -276,7 +276,7 @@ void DebugDrawer::drawControlOverlay(
       fixed(status.command_pitch_rad, 3) + " rad",
     "Delta   Y " + fixed(status.yaw_diff_rad, 3) + "  P " +
       fixed(status.pitch_diff_rad, 3) + " rad",
-    "Range " + fixed(status.distance_m, 2) + " m  Speed " +
+    "Distance " + fixed(status.distance_m, 2) + " m  Speed " +
       fixed(status.target_speed_mps, 2) + " m/s  Turn " +
       fixed(status.target_yaw_rate_radps, 2) + " rad/s",
     "Body  R " + (status.body_attitude_valid
