@@ -22,6 +22,7 @@ else()
 endif()
 option(HFUT_ENABLE_DETECTOR "Build detector library and detector-dependent apps" ON)
 option(HFUT_ENABLE_PIPELINE "Build tracker/controller pipeline and pipeline-dependent apps" ON)
+option(HFUT_ENABLE_SP25 "Build SP25 auto-aim core and real-vehicle entrypoint" ON)
 option(HFUT_ENABLE_HIK_CAMERA "Build Hikvision MVS camera source" OFF)
 option(HFUT_ENABLE_MINDVISION_CAMERA "Build MindVision camera source" OFF)
 
@@ -159,6 +160,12 @@ else()
   message(STATUS "HFUT_ENABLE_PIPELINE=OFF: skipping tracker/controller pipeline")
 endif()
 
+if(HFUT_ENABLE_SP25)
+  add_subdirectory(sp25)
+else()
+  message(STATUS "HFUT_ENABLE_SP25=OFF: skipping SP25 real-vehicle pipeline")
+endif()
+
 if(HFUT_ENABLE_DETECTOR AND HFUT_ENABLE_PIPELINE)
   # bringup_sim 应用：detector + pipeline + IO 全链路。
   add_executable(bringup_sim apps/bringup_sim.cpp)
@@ -189,6 +196,15 @@ if(HFUT_ENABLE_REAL_IO)
       hfut_io hfut_detector hfut_pipeline ${OpenCV_LIBS} yaml-cpp)
     target_compile_definitions(bringup_real PRIVATE
       HFUT_DETECTOR_ASSET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tasks/auto_aim/detector)
+  endif()
+
+  if(HFUT_ENABLE_SP25)
+    add_executable(bringup_sp25_real apps/bringup_sp25_real.cpp)
+    target_include_directories(bringup_sp25_real PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(bringup_sp25_real PRIVATE
+      hfut_io sp25_auto_aim sp25_tools ${OpenCV_LIBS} yaml-cpp)
   endif()
 endif()
 

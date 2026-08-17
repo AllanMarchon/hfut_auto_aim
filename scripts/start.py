@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""One-command launcher for the HFUT auto-aim real-vehicle pipeline.
+"""实车一键启动脚本。
 
-Default mode is safe and useful for bench debugging: camera + detector + PnP +
-tracker + controller + web stream, but no serial output. Use --mode live to open
-serial and send gimbal commands. Fire output is still forced off unless
---allow-fire is passed explicitly.
+test 分支默认启动 SP25 主链：相机和串口沿用本项目适配层，检测、PnP、
+跟踪和瞄准使用 SP25。需要回到旧主链时传 --pipeline current。
 """
 
 from __future__ import annotations
@@ -29,6 +27,7 @@ CONFLICT_PATTERNS = [
     "ros2 launch rm_bringup",
     "MvViewer",
     "bringup_real",
+    "bringup_sp25_real",
     "manual_gimbal_test",
 ]
 
@@ -60,15 +59,52 @@ def default_onnx_root() -> pathlib.Path:
     env_root = os.environ.get("ONNXRUNTIME_ROOT")
     if env_root:
         return pathlib.Path(env_root).expanduser()
+    hfut_root = pathlib.Path.home() / "opt" / "onnxruntime-linux-x64-gpu-1.18.1"
+    if hfut_root.exists():
+        return hfut_root
     home_root = pathlib.Path.home() / "opt" / "onnxruntime"
     if home_root.exists():
         return home_root
     return pathlib.Path("/opt/onnxruntime-gpu")
 
 
-def make_env(onnx_root: pathlib.Path, mvs_lib_dir: pathlib.Path) -> dict[str, str]:
+def default_openvino_dir() -> pathlib.Path:
+    env_root = os.environ.get("OpenVINO_DIR") or os.environ.get("OPENVINO_DIR")
+    if env_root:
+        return pathlib.Path(env_root).expanduser()
+    candidates = [
+        pathlib.Path("/usr/lib/openvino-2025.3.0/cmake"),
+        pathlib.Path("/usr/lib/x86_64-linux-gnu/cmake/openvino"),
+        pathlib.Path("/opt/intel/openvino_2025.3.0/runtime/cmake"),
+        pathlib.Path("/opt/intel/openvino/runtime/cmake"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def default_openvino_lib_dir() -> pathlib.Path:
+    candidates = [
+        pathlib.Path("/usr/lib/openvino-2025.3.0"),
+        pathlib.Path("/usr/lib/x86_64-linux-gnu"),
+        pathlib.Path("/opt/intel/openvino_2025.3.0/runtime/lib/intel64"),
+        pathlib.Path("/opt/intel/openvino/runtime/lib/intel64"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def make_env(onnx_root: pathlib.Path, mvs_lib_dir: pathlib.Path,
+             openvino_lib_dir: pathlib.Path) -> dict[str, str]:
     env = os.environ.copy()
-    paths = [str(path) for path in (onnx_root / "lib", mvs_lib_dir) if path.exists()]
+    paths = [
+        str(path)
+        for path in (onnx_root / "lib", mvs_lib_dir, openvino_lib_dir)
+        if path.exists()
+    ]
     current = env.get("LD_LIBRARY_PATH", "")
     if current:
         paths.append(current)
@@ -124,21 +160,25 @@ def check_environment(args: argparse.Namespace) -> int:
     print(f"ONNXRUNTIME_ROOT={args.onnx_root}")
     print(f"ONNX header: {args.onnx_root / 'include' / 'onnxruntime_cxx_api.h'}")
     print(f"ONNX library: {args.onnx_root / 'lib' / 'libonnxruntime.so'}")
+    print(f"OpenVINO_DIR={args.openvino_dir}")
+    print(f"OpenVINO lib dir: {args.openvino_lib_dir}")
     print_camera_owners()
     return run([sys.executable, "scripts/validate_configs.py"]).returncode
 
 
 def build_project(args: argparse.Namespace, env: dict[str, str]) -> int:
-    require_file(
-        args.onnx_root / "include" / "onnxruntime_cxx_api.h",
-        "Install ONNX Runtime first, or pass --onnx-root /path/to/onnxruntime.",
-    )
-    require_file(
-        args.onnx_root / "lib" / "libonnxruntime.so",
-        "Install ONNX Runtime first, or pass --onnx-root /path/to/onnxruntime.",
-    )
     require_file(args.hik_include / "MvCameraControl.h", "Hik MVS include path is wrong.")
     require_file(args.hik_library, "Hik MVS library path is wrong.")
+
+    if args.pipeline == "current":
+        require_file(
+            args.onnx_root / "include" / "onnxruntime_cxx_api.h",
+            "Install ONNX Runtime first, or pass --onnx-root /path/to/onnxruntime.",
+        )
+        require_file(
+            args.onnx_root / "lib" / "libonnxruntime.so",
+            "Install ONNX Runtime first, or pass --onnx-root /path/to/onnxruntime.",
+        )
 
     configure = [
         "cmake",
@@ -148,12 +188,18 @@ def build_project(args: argparse.Namespace, env: dict[str, str]) -> int:
         str(BUILD_DIR),
         "-DHFUT_ENABLE_REAL_IO=ON",
         "-DHFUT_ENABLE_HIK_CAMERA=ON",
+        f"-DHFUT_ENABLE_DETECTOR={'ON' if args.pipeline == 'current' else 'OFF'}",
+        f"-DHFUT_ENABLE_PIPELINE={'ON' if args.pipeline == 'current' else 'OFF'}",
+        f"-DHFUT_ENABLE_SP25={'ON' if args.pipeline == 'sp25' else 'OFF'}",
         f"-DHFUT_HIK_INCLUDE_DIR={args.hik_include}",
         f"-DHFUT_HIK_LIBRARY={args.hik_library}",
-        f"-DONNXRUNTIME_ROOT={args.onnx_root}",
         "-DBUILD_TESTING=ON",
         f"-DCMAKE_BUILD_TYPE={args.build_type}",
     ]
+    if args.pipeline == "current":
+        configure.append(f"-DONNXRUNTIME_ROOT={args.onnx_root}")
+    if args.pipeline == "sp25" and args.openvino_dir.exists():
+        configure.append(f"-DOpenVINO_DIR={args.openvino_dir}")
     status = run(configure, env=env).returncode
     if status != 0:
         return status
@@ -161,8 +207,8 @@ def build_project(args: argparse.Namespace, env: dict[str, str]) -> int:
 
 
 def build_bringup_command(args: argparse.Namespace) -> list[str]:
-    exe = BUILD_DIR / "bringup_real"
-    require_file(exe, "Run: python3 scripts/start.py --mode build")
+    exe = BUILD_DIR / ("bringup_sp25_real" if args.pipeline == "sp25" else "bringup_real")
+    require_file(exe, f"Run: python3 scripts/start.py --mode build --pipeline {args.pipeline}")
 
     cmd = [
         str(exe),
@@ -173,6 +219,10 @@ def build_bringup_command(args: argparse.Namespace) -> list[str]:
         "--web-port",
         str(args.web_port),
     ]
+    if args.pipeline == "sp25":
+        cmd += ["--sp25-config", str(args.sp25_config)]
+        if args.sp25_device:
+            cmd += ["--sp25-device", args.sp25_device]
     if args.mode == "dry":
         cmd.append("--dry-run")
     if args.web_view:
@@ -253,27 +303,33 @@ def run_manual_gimbal_test(args: argparse.Namespace, env: dict[str, str]) -> int
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Start the HFUT auto-aim real pipeline.")
+    parser = argparse.ArgumentParser(description="启动 HFUT 实车自瞄主链。")
+    parser.add_argument("--pipeline", choices=("sp25", "current"), default="sp25",
+                        help="sp25 为 test 分支默认主链；current 保留旧主链。")
     parser.add_argument(
         "--mode",
         choices=("dry", "live", "build", "check", "serial-test", "manual-gimbal"),
         default="live",
-        help="dry is safe default; live opens serial but still keeps fire off.",
+        help="dry 不发串口；live 打开串口，但未传 --allow-fire 时仍关闭开火。",
     )
     parser.add_argument("--camera-backend", default="hik", choices=("hik", "opencv", "mindvision"))
     parser.add_argument("--hardware-config", type=pathlib.Path, default=PROJECT_DIR / "configs" / "hardware.yaml")
+    parser.add_argument("--sp25-config", type=pathlib.Path, default=PROJECT_DIR / "configs" / "sp25_real.yaml")
+    parser.add_argument("--sp25-device", default="", help="覆盖 SP25 OpenVINO device，例如 GPU 或 CPU。")
     parser.add_argument("--onnx-root", type=pathlib.Path, default=default_onnx_root())
+    parser.add_argument("--openvino-dir", type=pathlib.Path, default=default_openvino_dir())
+    parser.add_argument("--openvino-lib-dir", type=pathlib.Path, default=default_openvino_lib_dir())
     parser.add_argument("--hik-include", type=pathlib.Path, default=pathlib.Path("/opt/MVS/include"))
     parser.add_argument("--hik-library", type=pathlib.Path, default=pathlib.Path("/opt/MVS/lib/64/libMvCameraControl.so"))
     parser.add_argument("--mvs-lib-dir", type=pathlib.Path, default=pathlib.Path("/opt/MVS/lib/64"))
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--build-type", default="Release")
-    parser.add_argument("--max-frames", type=int, default=-1, help="Use -1 to run until Ctrl+C.")
+    parser.add_argument("--max-frames", type=int, default=-1, help="-1 表示一直运行直到 Ctrl+C。")
     parser.add_argument("--enemy-color", choices=("red", "blue", "white"), default=None)
     parser.add_argument("--exposure-time-us", type=float, default=None)
     parser.add_argument("--gain", type=float, default=None)
-    parser.add_argument("--display", action="store_true", help="Open OpenCV GUI window. Usually avoid over SSH.")
-    parser.add_argument("--no-web-view", dest="web_view", action="store_false", help="Disable MJPEG web stream.")
+    parser.add_argument("--display", action="store_true", help="打开 OpenCV 调试窗口，SSH 下通常不要开。")
+    parser.add_argument("--no-web-view", dest="web_view", action="store_false", help="关闭 MJPEG Web 调试流。")
     parser.set_defaults(web_view=True)
     parser.add_argument("--web-host", default="0.0.0.0")
     parser.add_argument("--viewer-host", default=os.environ.get("HFUT_AUTO_AIM_HOST", "192.168.137.44"))
@@ -281,7 +337,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--web-frame-step", type=int, default=2)
     parser.add_argument("--no-stop-conflicts", dest="stop_conflicts", action="store_false")
     parser.set_defaults(stop_conflicts=True)
-    parser.add_argument("--allow-fire", action="store_true", help="Dangerous: pass --enable-fire to bringup_real.")
+    parser.add_argument("--allow-fire", action="store_true", help="危险开关：允许把开火建议发给下位机。")
     parser.add_argument("--serial-port", default="/dev/ttyACM0")
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--serial-tx-protocol", default="infantry_32")
@@ -295,15 +351,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--manual-max-rate-rad-s", type=float, default=5.0)
     parser.add_argument("--manual-max-acc-rad-s2", type=float, default=80.0)
     parser.add_argument("--manual-no-feedback", action="store_true")
-    parser.add_argument("extra", nargs=argparse.REMAINDER, help="Extra args after -- are passed to bringup_real.")
+    parser.add_argument("extra", nargs=argparse.REMAINDER, help="-- 后面的额外参数会传给当前主链入口。")
     args = parser.parse_args(argv)
     if args.extra and args.extra[0] == "--":
         args.extra = args.extra[1:]
     args.onnx_root = args.onnx_root.expanduser().resolve()
     args.hardware_config = args.hardware_config.expanduser().resolve()
+    args.sp25_config = args.sp25_config.expanduser().resolve()
+    args.openvino_dir = args.openvino_dir.expanduser().resolve()
+    args.openvino_lib_dir = args.openvino_lib_dir.expanduser().resolve()
     args.hik_include = args.hik_include.expanduser().resolve()
     args.hik_library = args.hik_library.expanduser().resolve()
     args.mvs_lib_dir = args.mvs_lib_dir.expanduser().resolve()
+    if args.pipeline == "sp25" and args.camera_backend == "mindvision":
+        raise SystemExit("SP25 entrypoint currently supports --camera-backend hik or opencv")
+    if args.pipeline == "sp25" and args.enemy_color == "white":
+        raise SystemExit("SP25 entrypoint currently supports --enemy-color red or blue")
     if args.allow_fire and args.mode != "live":
         raise SystemExit("--allow-fire is only valid with --mode live")
     if args.web_port <= 0 or args.web_port > 65535:
@@ -315,7 +378,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    env = make_env(args.onnx_root, args.mvs_lib_dir)
+    env = make_env(args.onnx_root, args.mvs_lib_dir, args.openvino_lib_dir)
     if args.mode == "check":
         return check_environment(args)
     if args.mode == "build":
