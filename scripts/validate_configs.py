@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""校验自瞄配置文件的常见错误。
-
-用法：
-  python scripts/validate_configs.py
-  python scripts/validate_configs.py --strict
-"""
+"""校验 HFUT 适配版 SP25 的实车配置。"""
 
 from __future__ import annotations
 
 import argparse
-import difflib
 import math
 import sys
 from pathlib import Path
@@ -18,38 +12,19 @@ from typing import Any
 
 try:
     import yaml
-except ImportError as exc:  # pragma: no cover - 本机环境依赖提示
+except ImportError as exc:
     print(f"[ERROR] 缺少 PyYAML，无法解析 YAML：{exc}")
-    print("        安装方式：python -m pip install pyyaml")
+    print("        安装方式：python3 -m pip install pyyaml")
     sys.exit(2)
 
 
-REQUIRED_CONFIGS = [
-    "hardware.yaml",
-    "camera_info.yaml",
-    "detector.yaml",
-    "tracker.yaml",
-    "controller.yaml",
-    "gimbal_pipeline.yaml",
-    "simulation.yaml",
-]
-
-KNOWN_ROBOT_IDS = {
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "sentry",
-    "outpost",
-    "base",
-    "negative",
+REQUIRED_CONFIGS = ["hardware.yaml", "camera_info.yaml", "standard3.yaml"]
+YOLO_MODELS = {
+    "yolov5": "yolov5_model_path",
+    "yolov8": "yolov8_model_path",
+    "yolo11": "yolo11_model_path",
 }
-
-COMMON_SELECTOR_TYPOS = {
-    "out_post": "outpost",
-    "negtive": "negative",
-}
+SERIAL_PROTOCOLS = {"infantry", "infantry_16", "infantry_24", "infantry_32", "16", "24", "32"}
 
 
 class Report:
@@ -92,17 +67,8 @@ def load_yaml(path: Path, report: Report) -> Any:
     return {} if data is None else data
 
 
-def get_in(data: Any, keys: list[str]) -> Any:
-    node = data
-    for key in keys:
-        if not isinstance(node, dict) or key not in node:
-            return None
-        node = node[key]
-    return node
-
-
 def is_finite_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and math.isfinite(float(value))
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
 def require_number(report: Report, value: Any, name: str, *, positive: bool = False) -> None:
@@ -113,73 +79,69 @@ def require_number(report: Report, value: Any, name: str, *, positive: bool = Fa
         report.error(f"{name} 必须大于 0")
 
 
+def require_int(report: Report, value: Any, name: str, *, positive: bool = False) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        report.error(f"{name} 必须是整数")
+        return
+    if positive and value <= 0:
+        report.error(f"{name} 必须大于 0")
+
+
 def require_bool(report: Report, value: Any, name: str) -> None:
     if not isinstance(value, bool):
         report.error(f"{name} 必须是 true/false")
 
 
 def require_choice(report: Report, value: Any, name: str, choices: set[str]) -> None:
-    if not isinstance(value, str):
-        report.error(f"{name} 必须是字符串，可选值：{sorted(choices)}")
+    if not isinstance(value, str) or not value:
+        report.error(f"{name} 必须是非空字符串，可选值：{sorted(choices)}")
         return
     if value not in choices:
         report.error(f"{name}={value!r} 不在允许范围内：{sorted(choices)}")
 
 
-def require_vector3(report: Report, value: Any, name: str) -> bool:
-    if not isinstance(value, list) or len(value) != 3:
-        report.error(f"{name} 必须是长度为 3 的数组")
-        return False
-    bad = [v for v in value if not is_finite_number(v)]
-    if bad:
+def require_vector(report: Report, value: Any, name: str, length: int) -> None:
+    if not isinstance(value, list) or len(value) != length:
+        report.error(f"{name} 必须是长度为 {length} 的数组")
+        return
+    if any(not is_finite_number(item) for item in value):
         report.error(f"{name} 必须只包含有限数字")
-        return False
-    return True
 
 
-def all_zero(values: Any) -> bool:
-    return isinstance(values, list) and all(is_finite_number(v) and abs(float(v)) < 1e-12 for v in values)
-
-
-def resolve_repo_path(repo_root: Path, raw_path: Any) -> Path | None:
+def require_path(report: Report, repo_root: Path, raw_path: Any, name: str) -> Path | None:
     if not isinstance(raw_path, str) or not raw_path:
-        return None
-    if raw_path.startswith("package://"):
+        report.error(f"{name} 必须是非空路径")
         return None
     path = Path(raw_path)
-    return path if path.is_absolute() else repo_root / path
+    resolved = path if path.is_absolute() else repo_root / path
+    if not resolved.exists():
+        report.error(f"{name} 指向的文件不存在：{resolved}")
+    return resolved
 
 
-def ros_params(data: Any) -> Any:
-    return get_in(data, ["gimbal_pipeline", "ros__parameters"])
+def validate_camera_info(report: Report, camera_info: Any, path: Path) -> tuple[int | None, int | None]:
+    if not isinstance(camera_info, dict):
+        report.error(f"{path.name} 必须是 YAML 对象")
+        return None, None
 
-
-def validate_camera_info(report: Report, data: Any, path: Path) -> None:
-    width = data.get("image_width") if isinstance(data, dict) else None
-    height = data.get("image_height") if isinstance(data, dict) else None
+    width = camera_info.get("image_width")
+    height = camera_info.get("image_height")
     require_number(report, width, f"{path.name}.image_width", positive=True)
     require_number(report, height, f"{path.name}.image_height", positive=True)
 
-    matrix_data = get_in(data, ["camera_matrix", "data"])
-    if not isinstance(matrix_data, list) or len(matrix_data) != 9:
-        report.error(f"{path.name}.camera_matrix.data 必须是 9 个数")
-    elif any(not is_finite_number(v) for v in matrix_data):
-        report.error(f"{path.name}.camera_matrix.data 必须只包含有限数字")
-
-    dist_data = get_in(data, ["distortion_coefficients", "data"])
-    if not isinstance(dist_data, list) or len(dist_data) not in {4, 5, 8, 12, 14}:
+    matrix = camera_info.get("camera_matrix", {}).get("data")
+    require_vector(report, matrix, f"{path.name}.camera_matrix.data", 9)
+    dist = camera_info.get("distortion_coefficients", {}).get("data")
+    if not isinstance(dist, list) or len(dist) not in {4, 5, 8, 12, 14}:
         report.warn(f"{path.name}.distortion_coefficients.data 长度通常应为 4/5/8/12/14")
-    elif any(not is_finite_number(v) for v in dist_data):
+    elif any(not is_finite_number(item) for item in dist):
         report.error(f"{path.name}.distortion_coefficients.data 必须只包含有限数字")
 
-    projection_data = get_in(data, ["projection_matrix", "data"])
-    if projection_data is not None and (not isinstance(projection_data, list) or len(projection_data) != 12):
-        report.warn(f"{path.name}.projection_matrix.data 通常应为 12 个数")
+    return int(width) if isinstance(width, int) else None, int(height) if isinstance(height, int) else None
 
 
-def validate_hardware(report: Report, repo_root: Path, configs: dict[str, Any]) -> None:
-    data = configs.get("hardware.yaml")
-    root = data.get("hardware") if isinstance(data, dict) else None
+def validate_hardware(report: Report, repo_root: Path, hardware: Any, camera_info: Any) -> None:
+    root = hardware.get("hardware") if isinstance(hardware, dict) else None
     if not isinstance(root, dict):
         report.error("hardware.yaml 缺少 hardware 根节点")
         return
@@ -188,57 +150,32 @@ def validate_hardware(report: Report, repo_root: Path, configs: dict[str, Any]) 
     if not isinstance(camera, dict):
         report.error("hardware.camera 缺失或不是对象")
         return
-
-    require_choice(report, camera.get("backend"), "hardware.camera.backend", {"opencv", "hik", "mindvision"})
+    require_choice(report, camera.get("backend"), "hardware.camera.backend", {"hik", "opencv"})
     if not isinstance(camera.get("camera_sn", ""), str):
         report.error("hardware.camera.camera_sn 必须是字符串")
+    require_int(report, camera.get("device_index"), "hardware.camera.device_index")
     require_number(report, camera.get("width"), "hardware.camera.width", positive=True)
     require_number(report, camera.get("height"), "hardware.camera.height", positive=True)
     require_number(report, camera.get("fps"), "hardware.camera.fps", positive=True)
     require_number(report, camera.get("exposure_time_us"), "hardware.camera.exposure_time_us", positive=True)
     require_number(report, camera.get("gain"), "hardware.camera.gain")
-    require_number(report, camera.get("analog_gain"), "hardware.camera.analog_gain")
-    require_number(report, camera.get("frame_speed"), "hardware.camera.frame_speed")
-    frame_speed = camera.get("frame_speed")
-    if is_finite_number(frame_speed) and int(frame_speed) not in {0, 1, 2, 3}:
-        report.warn("hardware.camera.frame_speed 通常应为 0/1/2/3")
     require_bool(report, camera.get("flip_image"), "hardware.camera.flip_image")
-    require_choice(
-        report,
-        camera.get("calibration_mode"),
-        "hardware.camera.calibration_mode",
-        {"strict", "scale", "center_crop"},
-    )
+    require_choice(report, camera.get("calibration_mode"), "hardware.camera.calibration_mode", {"strict", "scale", "center_crop"})
 
-    camera_info_raw = camera.get("camera_info")
-    camera_info_path = resolve_repo_path(repo_root, camera_info_raw)
-    if camera_info_path is None:
-        report.error("hardware.camera.camera_info 必须指向本仓库内的 camera_info YAML")
-    elif not camera_info_path.exists():
-        report.error(f"hardware.camera.camera_info 指向的文件不存在：{camera_info_path}")
-    else:
-        camera_info = load_yaml(camera_info_path, report)
-        if camera_info:
-            validate_camera_info(report, camera_info, camera_info_path)
-            if camera_info.get("image_width") != camera.get("width"):
-                report.error(
-                    "hardware.camera.width 与 camera_info.image_width 不一致："
-                    f"{camera.get('width')} != {camera_info.get('image_width')}"
-                )
-            if camera_info.get("image_height") != camera.get("height"):
-                report.error(
-                    "hardware.camera.height 与 camera_info.image_height 不一致："
-                    f"{camera.get('height')} != {camera_info.get('image_height')}"
-                )
+    camera_info_path = require_path(report, repo_root, camera.get("camera_info"), "hardware.camera.camera_info")
+    if camera_info_path is not None and camera_info_path.name == "camera_info.yaml":
+        info_width, info_height = validate_camera_info(report, camera_info, camera_info_path)
+        if info_width is not None and camera.get("width") != info_width:
+            report.error(f"hardware.camera.width 与 camera_info.image_width 不一致：{camera.get('width')} != {info_width}")
+        if info_height is not None and camera.get("height") != info_height:
+            report.error(f"hardware.camera.height 与 camera_info.image_height 不一致：{camera.get('height')} != {info_height}")
 
     extrinsics = camera.get("camera_to_barrel")
     if not isinstance(extrinsics, dict):
         report.error("hardware.camera.camera_to_barrel 缺失或不是对象")
     else:
-        xyz_ok = require_vector3(report, extrinsics.get("xyz"), "hardware.camera.camera_to_barrel.xyz")
-        rpy_ok = require_vector3(report, extrinsics.get("rpy"), "hardware.camera.camera_to_barrel.rpy")
-        if xyz_ok and rpy_ok and all_zero(extrinsics.get("xyz")) and all_zero(extrinsics.get("rpy")):
-            report.warn("hardware.camera.camera_to_barrel 仍为全 0；上车前需要填真实外参")
+        require_vector(report, extrinsics.get("xyz"), "hardware.camera.camera_to_barrel.xyz", 3)
+        require_vector(report, extrinsics.get("rpy"), "hardware.camera.camera_to_barrel.rpy", 3)
 
     serial = root.get("serial")
     if not isinstance(serial, dict):
@@ -247,288 +184,115 @@ def validate_hardware(report: Report, repo_root: Path, configs: dict[str, Any]) 
         if not isinstance(serial.get("port"), str) or not serial.get("port"):
             report.error("hardware.serial.port 不能为空")
         require_number(report, serial.get("baudrate"), "hardware.serial.baudrate", positive=True)
-        require_choice(
-            report,
-            serial.get("protocol"),
-            "hardware.serial.protocol",
-            {"infantry", "infantry_16", "infantry_24", "infantry_32", "16", "24", "32"},
-        )
-        protocol_choices = {"infantry", "infantry_16", "infantry_24", "infantry_32", "16", "24", "32"}
-        tx_protocol = serial.get("tx_protocol", serial.get("protocol"))
-        rx_protocol = serial.get("rx_protocol", serial.get("protocol"))
-        require_choice(report, tx_protocol, "hardware.serial.tx_protocol", protocol_choices)
-        require_choice(report, rx_protocol, "hardware.serial.rx_protocol", protocol_choices)
-        require_choice(
-            report,
-            serial.get("infantry32_tail_fields"),
-            "hardware.serial.infantry32_tail_fields",
-            {"acceleration", "accel", "duplicate_velocity", "velocity"},
-        )
+        require_choice(report, serial.get("protocol"), "hardware.serial.protocol", SERIAL_PROTOCOLS)
+        require_choice(report, serial.get("tx_protocol", serial.get("protocol")), "hardware.serial.tx_protocol", SERIAL_PROTOCOLS)
+        require_choice(report, serial.get("rx_protocol", serial.get("protocol")), "hardware.serial.rx_protocol", SERIAL_PROTOCOLS)
+        require_choice(report, serial.get("infantry32_tail_fields"), "hardware.serial.infantry32_tail_fields", {"duplicate_velocity", "acceleration"})
         require_bool(report, serial.get("command_angles_in_degrees"), "hardware.serial.command_angles_in_degrees")
         require_bool(report, serial.get("feedback_angles_in_degrees"), "hardware.serial.feedback_angles_in_degrees")
-        if (
-            tx_protocol in {"infantry_32", "32"}
-            and serial.get("infantry32_tail_fields") in {"acceleration", "accel"}
-            and serial.get("command_angles_in_degrees") is True
-        ):
-            report.warn("hardware.serial 使用32字节角加速度，但 command_angles_in_degrees=true；若电控要求弧度，应改为 false")
         require_number(report, serial.get("read_timeout_ms"), "hardware.serial.read_timeout_ms")
-        require_number(report, serial.get("feedback_timeout_ms"), "hardware.serial.feedback_timeout_ms")
+        require_number(report, serial.get("feedback_timeout_ms"), "hardware.serial.feedback_timeout_ms", positive=True)
         require_bool(report, serial.get("require_feedback"), "hardware.serial.require_feedback")
 
-    detector = root.get("detector")
-    if isinstance(detector, dict):
-        require_choice(report, detector.get("enemy_color"), "hardware.detector.enemy_color", {"red", "blue", "white"})
+    detector = root.get("detector", {})
+    if not isinstance(detector, dict):
+        report.error("hardware.detector 必须是对象")
     else:
-        report.error("hardware.detector 缺失或不是对象")
+        require_choice(report, detector.get("enemy_color"), "hardware.detector.enemy_color", {"red", "blue"})
 
-    controller = root.get("controller")
-    if isinstance(controller, dict):
+    controller = root.get("controller", {})
+    if not isinstance(controller, dict):
+        report.error("hardware.controller 必须是对象")
+    else:
         require_number(report, controller.get("bullet_speed"), "hardware.controller.bullet_speed", positive=True)
-        strategy = controller.get("strategy", "")
-        if strategy:
-            require_choice(
-                report,
-                strategy,
-                "hardware.controller.strategy",
-                {"current", "predicted", "mpc", "state_machine"},
-            )
-    else:
-        report.error("hardware.controller 缺失或不是对象")
 
-    safety = root.get("safety")
-    if isinstance(safety, dict):
+    safety = root.get("safety", {})
+    if not isinstance(safety, dict):
+        report.error("hardware.safety 必须是对象")
+    else:
         require_bool(report, safety.get("dry_run"), "hardware.safety.dry_run")
         require_bool(report, safety.get("enable_fire"), "hardware.safety.enable_fire")
-        if safety.get("enable_fire") is True:
-            report.warn("hardware.safety.enable_fire=true；确认上车闭环稳定后再开火")
-    else:
-        report.error("hardware.safety 缺失或不是对象")
+        if safety.get("enable_fire"):
+            report.warn("hardware.safety.enable_fire 当前为 true；上车前确认安全边界")
 
 
-def validate_master(report: Report, configs: dict[str, Any]) -> None:
-    data = configs.get("gimbal_pipeline.yaml")
-    if not isinstance(data, dict):
-        report.error("gimbal_pipeline.yaml 不是对象")
+def validate_standard3(report: Report, repo_root: Path, config: Any) -> None:
+    if not isinstance(config, dict):
+        report.error("standard3.yaml 必须是 YAML 对象")
         return
 
-    global_cfg = data.get("global")
-    if not isinstance(global_cfg, dict):
-        report.error("gimbal_pipeline.yaml 缺少 global 段")
+    require_choice(report, config.get("enemy_color"), "standard3.enemy_color", {"red", "blue"})
+    yolo_name = config.get("yolo_name")
+    require_choice(report, yolo_name, "standard3.yolo_name", set(YOLO_MODELS))
+    if isinstance(yolo_name, str) and yolo_name in YOLO_MODELS:
+        require_path(report, repo_root, config.get(YOLO_MODELS[yolo_name]), f"standard3.{YOLO_MODELS[yolo_name]}")
+    require_path(report, repo_root, config.get("classify_model"), "standard3.classify_model")
+    for key in YOLO_MODELS.values():
+        if key in config:
+            require_path(report, repo_root, config.get(key), f"standard3.{key}")
+    if not isinstance(config.get("device"), str) or not config.get("device"):
+        report.error("standard3.device 必须是 OpenVINO device 字符串，例如 GPU 或 CPU")
+    require_number(report, config.get("min_confidence"), "standard3.min_confidence", positive=True)
+    require_bool(report, config.get("use_traditional"), "standard3.use_traditional")
+    require_bool(report, config.get("use_roi"), "standard3.use_roi")
+
+    roi = config.get("roi")
+    if not isinstance(roi, dict):
+        report.error("standard3.roi 缺失或不是对象")
     else:
-        require_choice(report, global_cfg.get("bridge_path"), "global.bridge_path", {"webots", "gestalt"})
-        require_choice(report, global_cfg.get("input_mode"), "global.input_mode", {"vision", "armor_pose"})
-        require_choice(report, global_cfg.get("detector_impl"), "global.detector_impl", {"nn", "traditional", "auto"})
+        for key in ["x", "y", "width", "height"]:
+            require_int(report, roi.get(key), f"standard3.roi.{key}", positive=key in {"width", "height"})
 
-    params = ros_params(data)
-    if not isinstance(params, dict):
-        report.error("gimbal_pipeline.yaml 缺少 gimbal_pipeline.ros__parameters")
-        return
-
-    require_number(report, params.get("predict_rate"), "gimbal_pipeline.predict_rate", positive=True)
-    require_number(report, params.get("tracker_timeout"), "gimbal_pipeline.tracker_timeout", positive=True)
-
-    tracker_impl = get_in(params, ["tracker", "implementation"])
-    require_choice(report, tracker_impl, "tracker.implementation", {"vehicle", "norm4", "norm4_v2", "norm4_v3"})
-
-    backend_type = get_in(params, ["norm4_v3", "backend_config", "backend_type"])
-    require_choice(report, backend_type, "norm4_v3.backend_config.backend_type", {"inekf", "ukf_v1", "ukf_v2"})
-
-    selector = params.get("selector")
-    if isinstance(selector, dict):
-        priority = selector.get("priority_robot_ids")
-        blocked = selector.get("blocked_robot_ids")
-        if not isinstance(priority, list) or not all(isinstance(v, str) for v in priority):
-            report.error("selector.priority_robot_ids 必须是字符串数组")
-        if not isinstance(blocked, list) or not all(isinstance(v, str) for v in blocked):
-            report.error("selector.blocked_robot_ids 必须是字符串数组")
-        else:
-            validate_robot_id_list(report, blocked, "selector.blocked_robot_ids")
-    else:
-        report.error("gimbal_pipeline.selector 缺失或不是对象")
-
-    controller = params.get("controller")
-    if isinstance(controller, dict):
-        require_choice(report, controller.get("strategy"), "controller.strategy", {"current", "predicted", "mpc", "state_machine"})
-        require_choice(report, controller.get("ballistic_mode"), "controller.ballistic_mode", {"local", "service"})
-    else:
-        report.error("gimbal_pipeline.controller 缺失或不是对象")
+    numeric_fields = [
+        "threshold", "max_angle_error", "min_lightbar_ratio", "max_lightbar_ratio",
+        "min_lightbar_length", "min_armor_ratio", "max_armor_ratio", "max_side_ratio",
+        "max_rectangular_error", "yaw_offset", "pitch_offset", "comming_angle",
+        "leaving_angle", "decision_speed", "high_speed_delay_time", "low_speed_delay_time",
+        "first_tolerance", "second_tolerance", "judge_distance",
+    ]
+    for field in numeric_fields:
+        require_number(report, config.get(field), f"standard3.{field}")
+    for field in ["min_detect_count", "max_temp_lost_count", "outpost_max_temp_lost_count"]:
+        require_int(report, config.get(field), f"standard3.{field}", positive=True)
+    require_bool(report, config.get("auto_fire"), "standard3.auto_fire")
+    require_vector(report, config.get("R_gimbal2imubody"), "standard3.R_gimbal2imubody", 9)
+    require_vector(report, config.get("R_camera2gimbal"), "standard3.R_camera2gimbal", 9)
+    require_vector(report, config.get("t_camera2gimbal"), "standard3.t_camera2gimbal", 3)
+    require_vector(report, config.get("camera_matrix"), "standard3.camera_matrix", 9)
+    require_vector(report, config.get("distort_coeffs"), "standard3.distort_coeffs", 5)
 
 
-def validate_robot_id_list(report: Report, values: list[str], name: str) -> None:
-    for value in values:
-        if value in COMMON_SELECTOR_TYPOS:
-            report.error(f"{name} 中的 {value!r} 疑似拼写错误，应为 {COMMON_SELECTOR_TYPOS[value]!r}")
-            continue
-        if value not in KNOWN_ROBOT_IDS:
-            suggestion = difflib.get_close_matches(value, sorted(KNOWN_ROBOT_IDS), n=1)
-            if suggestion:
-                report.warn(f"{name} 中的 {value!r} 不是常见目标名，是否想写 {suggestion[0]!r}？")
-            else:
-                report.warn(f"{name} 中的 {value!r} 不是常见目标名，请确认是否为新增目标")
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="校验 HFUT 适配版 SP25 配置。")
+    parser.add_argument("--config-dir", type=Path, default=Path("configs"))
+    parser.add_argument("--strict", action="store_true", help="把警告也视为失败。")
+    return parser.parse_args(argv)
 
 
-def validate_tracker(report: Report, configs: dict[str, Any]) -> None:
-    data = configs.get("tracker.yaml")
-    params = ros_params(data)
-    if not isinstance(params, dict):
-        report.error("tracker.yaml 缺少 gimbal_pipeline.ros__parameters")
-        return
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    repo_root = Path(__file__).resolve().parents[1]
+    config_dir = args.config_dir if args.config_dir.is_absolute() else repo_root / args.config_dir
+    report = Report()
 
-    tracker = params.get("tracker")
-    if not isinstance(tracker, dict):
-        report.error("tracker.yaml 缺少 tracker 段")
-    else:
-        if "implementation" in tracker:
-            report.error("tracker.implementation 不应写在 tracker.yaml；请只在 gimbal_pipeline.yaml 中切换")
-        require_number(report, tracker.get("tracking_thres"), "tracker.tracking_thres", positive=True)
-        require_number(report, tracker.get("lost_thres"), "tracker.lost_thres", positive=True)
-
-    tracking = data.get("tracking") if isinstance(data, dict) else None
-    if isinstance(tracking, dict):
-        scale = tracking.get("observation_noise_scale")
-        if isinstance(scale, dict):
-            require_number(report, scale.get("vision"), "tracking.observation_noise_scale.vision", positive=True)
-            require_number(report, scale.get("armor_pose"), "tracking.observation_noise_scale.armor_pose", positive=True)
-        else:
-            report.error("tracking.observation_noise_scale 缺失或不是对象")
-        require_number(report, tracking.get("max_temp_lost_prediction_s"), "tracking.max_temp_lost_prediction_s")
-        require_number(report, tracking.get("temp_lost_coast_max_s"), "tracking.temp_lost_coast_max_s")
-        require_number(report, tracking.get("temp_lost_coast_min_speed_mps"), "tracking.temp_lost_coast_min_speed_mps")
-        require_number(report, tracking.get("id_association_max_distance_m"), "tracking.id_association_max_distance_m")
-
-
-def validate_controller(report: Report, configs: dict[str, Any]) -> None:
-    data = configs.get("controller.yaml")
-    params = ros_params(data)
-    if not isinstance(params, dict):
-        report.error("controller.yaml 缺少 gimbal_pipeline.ros__parameters")
-        return
-    controller = params.get("controller")
-    if not isinstance(controller, dict):
-        report.error("controller.yaml 缺少 controller 段")
-        return
-
-    solver = controller.get("solver")
-    if isinstance(solver, dict):
-        require_number(report, solver.get("shooting_range_width"), "controller.solver.shooting_range_width", positive=True)
-        require_number(report, solver.get("shooting_range_height"), "controller.solver.shooting_range_height", positive=True)
-        require_number(report, solver.get("gravity"), "controller.solver.gravity", positive=True)
-        require_number(report, solver.get("iteration_times"), "controller.solver.iteration_times", positive=True)
-    else:
-        report.error("controller.solver 缺失或不是对象")
-
-    delay = controller.get("delay")
-    if isinstance(delay, dict):
-        for key in ["prediction_extra_s", "control_latency_s", "trigger_to_muzzle_s", "max_processing_delay_s"]:
-            require_number(report, delay.get(key), f"controller.delay.{key}")
-    else:
-        report.warn("controller.delay 缺失，调延迟时会不直观")
-
-
-def validate_detector(report: Report, configs: dict[str, Any]) -> None:
-    data = configs.get("detector.yaml")
-    if not isinstance(data, dict):
-        report.error("detector.yaml 不是对象")
-        return
-    detector = data.get("detector")
-    if not isinstance(detector, dict):
-        report.error("detector.yaml 缺少 detector 段")
-        return
-    tracker = detector.get("tracker")
-    if not isinstance(tracker, dict):
-        report.error("detector.tracker 缺失；这是检测器内部 2D 关联器")
-    else:
-        require_number(report, tracker.get("iou_threshold"), "detector.tracker.iou_threshold")
-        require_number(report, tracker.get("max_missed"), "detector.tracker.max_missed", positive=True)
-
-    traditional = data.get("detector_traditional")
-    if isinstance(traditional, dict):
-        require_number(report, traditional.get("binary_thres"), "detector_traditional.binary_thres", positive=True)
-        ignore_classes = traditional.get("ignore_classes")
-        if isinstance(ignore_classes, list):
-            for value in ignore_classes:
-                if value in COMMON_SELECTOR_TYPOS:
-                    report.error(f"detector_traditional.ignore_classes 中的 {value!r} 疑似拼写错误")
-        else:
-            report.warn("detector_traditional.ignore_classes 缺失或不是数组")
-
-
-def validate_simulation(report: Report, configs: dict[str, Any]) -> None:
-    data = configs.get("simulation.yaml")
-    if not isinstance(data, dict):
-        report.error("simulation.yaml 不是对象")
-        return
-    extrinsics = data.get("camera_to_barrel")
-    if isinstance(extrinsics, dict):
-        for path_name in ["webots", "gestalt"]:
-            node = extrinsics.get(path_name)
-            if isinstance(node, dict):
-                require_vector3(report, node.get("xyz"), f"simulation.camera_to_barrel.{path_name}.xyz")
-                require_vector3(report, node.get("rpy"), f"simulation.camera_to_barrel.{path_name}.rpy")
-            else:
-                report.error(f"simulation.camera_to_barrel.{path_name} 缺失或不是对象")
-    else:
-        report.error("simulation.camera_to_barrel 缺失或不是对象")
-
-    bullet_speed = get_in(data, ["controller", "bullet_speed"])
-    if isinstance(bullet_speed, dict):
-        require_number(report, bullet_speed.get("webots"), "simulation.controller.bullet_speed.webots", positive=True)
-        require_number(report, bullet_speed.get("gestalt"), "simulation.controller.bullet_speed.gestalt", positive=True)
-    else:
-        report.error("simulation.controller.bullet_speed 缺失或不是对象")
-
-
-def validate_required_files(report: Report, config_dir: Path) -> dict[str, Any]:
     configs: dict[str, Any] = {}
     for name in REQUIRED_CONFIGS:
-        path = config_dir / name
-        if not path.exists():
-            report.error(f"缺少必要配置文件：{path}")
-            continue
-        configs[name] = load_yaml(path, report)
-    return configs
+        configs[name] = load_yaml(config_dir / name, report)
 
+    if configs.get("hardware.yaml") is not None and configs.get("camera_info.yaml") is not None:
+        validate_hardware(report, repo_root, configs["hardware.yaml"], configs["camera_info.yaml"])
+    if configs.get("standard3.yaml") is not None:
+        validate_standard3(report, repo_root, configs["standard3.yaml"])
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="校验 HFUT 自瞄配置文件")
-    parser.add_argument(
-        "--config-dir",
-        default="configs",
-        help="配置目录，默认 configs",
-    )
-    parser.add_argument(
-        "--strict",
-        action="store_true",
-        help="有警告也返回失败",
-    )
-    args = parser.parse_args()
-
-    repo_root = Path(__file__).resolve().parents[1]
-    config_dir = Path(args.config_dir)
-    if not config_dir.is_absolute():
-        config_dir = repo_root / config_dir
-
-    report = Report()
-    configs = validate_required_files(report, config_dir)
-    if len(configs) == len(REQUIRED_CONFIGS):
-        validate_hardware(report, repo_root, configs)
-        validate_master(report, configs)
-        validate_tracker(report, configs)
-        validate_controller(report, configs)
-        validate_detector(report, configs)
-        validate_simulation(report, configs)
-
+    report.info("配置校验目标：SP25 核心 + HFUT 海康相机/串口/Web 可视化适配")
     report.print()
     if report.errors:
-        print(f"\n配置校验失败：{len(report.errors)} 个错误，{len(report.warnings)} 个警告")
         return 1
     if args.strict and report.warnings:
-        print(f"\n严格模式失败：0 个错误，{len(report.warnings)} 个警告")
         return 1
-    print(f"\n配置校验通过：0 个错误，{len(report.warnings)} 个警告")
+    print("[OK] SP25 实车配置校验通过")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

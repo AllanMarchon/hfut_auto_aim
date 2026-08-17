@@ -1,4 +1,0 @@
-#ifndef HFUT_COMPAT_GEOMETRY_MSGS_VECTOR3_HPP
-#define HFUT_COMPAT_GEOMETRY_MSGS_VECTOR3_HPP
-#include "pose.hpp"
-#endif

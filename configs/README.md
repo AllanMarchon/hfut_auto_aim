@@ -1,63 +1,32 @@
-# 配置文件说明
+# 配置说明
 
-上车调试时优先从 `hardware.yaml` 开始看。它负责真实硬件入口，其他文件按算法模块拆分。
+当前 `test` 分支已经切到 HFUT 适配版 SP25 主链，配置入口只保留实车需要的三类文件。
 
-| 文件 | 什么时候改 |
-|---|---|
-| `hardware.yaml` | 实车相机来源、串口端口、相机到枪管外参、弹速、安全开火开关 |
-| `camera_info.yaml` | 相机内参和畸变；每次重新标定相机后更新这里 |
-| `detector.yaml` | 装甲板识别、置信度、PnP 和传统灯条检测参数 |
-| `tracker.yaml` | 3D 目标跟踪、关联、丢失保持、车体结构估计参数 |
-| `controller.yaml` | 云台控制、弹道补偿、延迟补偿、开火判定参数 |
-| `gimbal_pipeline.yaml` | 总控开关，例如 tracker/controller 策略和仿真输入模式 |
-| `simulation.yaml` | Webots/Gestalt 仿真专用配置；实车调试通常不用改 |
+| 文件 | 作用 |
+| --- | --- |
+| `standard3.yaml` | SP25 算法配置：模型、OpenVINO device、颜色、ROI、传统检测、tracker、aimer、shooter |
+| `hardware.yaml` | HFUT 实车硬件配置：海康相机、OpenCV 备用相机、infantry 串口、弹速、安全开火 |
+| `camera_info.yaml` | 相机内参、畸变参数和图像尺寸 |
 
-## 实车调试顺序
+## 运行时配置
 
-1. 在 `hardware.yaml` 里确认 `camera.backend`、`camera.camera_info`、`serial.port`、`serial.protocol`、`controller.bullet_speed`。
-2. 把真实相机标定结果写入 `camera_info.yaml`。
-3. 先保持 `hardware.yaml` 的 `safety.enable_fire: false`。
-4. 修改配置后先运行 `python scripts/validate_configs.py`。
-5. 识别不稳改 `detector.yaml`，跟踪不稳改 `tracker.yaml`，控制和开火判定改 `controller.yaml`。
-6. 所有链路稳定后，再考虑打开 `safety.enable_fire`。
+`src/standard.cpp` 启动后会读取 `hardware.yaml` 和 `camera_info.yaml`，再把相机内参、畸变、相机到枪管外参、敌方颜色和可选 OpenVINO device 写入 `build/sp25_runtime.yaml`。SP25 的 `YOLO/Solver/Tracker/Aimer/Shooter` 实际读取这个运行时 YAML。
 
-## 配置校验
+这样做的目的：SP25 算法参数保持原版风格，HFUT 实车硬件参数集中放在 `hardware.yaml`，上车换相机/串口时不需要到算法配置里到处改。
 
-```bash
-python scripts/validate_configs.py
-```
+## 常调顺序
 
-脚本会检查 YAML 解析、实车分辨率和 `camera_info.yaml` 是否一致、相机外参是否仍为全 0、常见拼写错误（例如 `out_post` / `negtive`）、以及 `tracker.implementation` 是否误写在 `tracker.yaml`。
+1. 相机打不开或 FPS 异常：先看 `hardware.yaml` 的 `camera` 段和 MVS SDK 路径。
+2. 图像识别效果差：先看 `standard3.yaml` 的 `enemy_color`、`device`、`yolo_name`、`min_confidence`、`threshold`、`use_roi`。
+3. PnP 距离或角度明显不对：先看 `camera_info.yaml` 和 `hardware.camera.camera_to_barrel`。
+4. 串口无反馈或云台不动：先看 `hardware.serial` 的端口、波特率、收发协议和角度单位。
+5. 不开火：先确认 `hardware.safety.enable_fire` 和启动命令是否带 `--allow-fire`。
 
-如果希望警告也导致失败：
+## 校验命令
 
 ```bash
-python scripts/validate_configs.py --strict
+python3 scripts/validate_configs.py
+python3 scripts/start.py --mode check
 ```
 
-## 容易混淆的点
-
-- `detector.yaml` 里的 tracker 是检测器内部的 2D 跟踪，不是 `tracker.yaml` 的 3D 目标跟踪。
-- 普通车跟踪器实现只在 `gimbal_pipeline.yaml` 的 `tracker.implementation` 切换，`tracker.yaml` 只调具体滤波/结构参数。
-- `hardware.yaml` 的 `controller.bullet_speed` 是实车弹速覆盖值。
-- `hardware.yaml` 的 `camera.backend` 决定实车相机来源：`opencv` 不需要工业相机 SDK；`hik` / `mindvision` 需要编译时打开对应 CMake 开关。
-- `hardware.yaml` 的 `serial.tx_protocol` 控制视觉发给下位机的包长；`serial.rx_protocol` 控制下位机反馈解析包长。
-- 当前实车配置为 TX=`infantry_32`、RX=`infantry`：视觉下发 32 字节角加速度包，下位机反馈仍按已验证的 24 字节包解析。
-- `hardware.yaml` 的 `serial.command_angles_in_degrees=false` 表示下发单位为 rad、rad/s、rad/s²；反馈单位仍由 `feedback_angles_in_degrees` 单独控制。
-- `simulation.yaml` 的 `controller.bullet_speed` 只服务仿真，不用于实车入口。
-- `tracker.yaml` 和 `controller.yaml` 顶部有“常调区 / 进阶区”索引；先按常调区改，不要一上来动后端内部参数。
-
-## 调参速查
-
-| 症状 | 优先看哪里 |
-|---|---|
-| 相机打不开或选错相机 | `hardware.yaml`：`camera.backend`、`camera.camera_sn`、SDK 编译开关 |
-| 串口有数据但解析不到反馈 | `hardware.yaml`：`serial.protocol`、`serial.port`、`serial.baudrate` |
-| 画面识别不到装甲 | `detector.yaml`：敌方颜色、置信度、传统灯条阈值、模型路径 |
-| PnP 距离或姿态明显错 | `camera_info.yaml`、`detector.yaml` 的 `pose` |
-| 目标丢失或轨迹漂 | `tracker.yaml`：生命周期、观测噪声、运动模型、门控 |
-| 想切普通车跟踪器实现 | `gimbal_pipeline.yaml` 的 `tracker.implementation` |
-| 想切控制策略 | `gimbal_pipeline.yaml` 的 `controller.strategy` |
-| 云台跟随慢或提前量不对 | `controller.yaml` 的 `delay` / `solver` |
-| 输出角度抖动 | `controller.yaml` 的 `output_filter` |
-| 明明选了不该打的目标 | `gimbal_pipeline.yaml` 的 `selector` |
+`--mode check` 会额外打印系统环境、OpenCV、CMake、MVS 和 USB 相机检测信息，适合上车前快速排查。

@@ -1,5 +1,4 @@
-// Final pipeline output. Replaces rm_interfaces/msg/GimbalCmd. Angles in
-// RADIANS (the wire <-> sim conversion happens in WebotsBridgeGimbal).
+// SP25 实车主链输出给串口层的云台命令。内部角度统一使用弧度。
 #ifndef HFUT_AUTO_AIM_GIMBAL_COMMAND_HPP
 #define HFUT_AUTO_AIM_GIMBAL_COMMAND_HPP
 
@@ -24,7 +23,7 @@ struct GimbalCommand {
   double pitch_diff = 0.0;
   double pitch_vel = 0.0;
   double pitch_acc = 0.0;
-  double distance = 0.0;  // meters
+  double distance = 0.0;  // 米
   bool fire_advice = false;
   std::string target_id;
   GimbalMode mode = GimbalMode::unknown;

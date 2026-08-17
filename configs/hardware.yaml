@@ -1,9 +1,8 @@
-# apps/bringup_real 的硬件与实车启动默认配置。
+# SP25 实车入口 standard 的硬件与启动默认配置。
 # 上车调试时优先看这个文件；除非显式开启，否则默认不允许发送开火。
 hardware:
   camera:
-    # backend: opencv=普通摄像头/视频文件 | hik=海康 MVS | mindvision=迈德威视
-    # 工业相机需要在 CMake 打开对应开关后才能使用。
+    # backend: opencv=普通摄像头/视频文件 | hik=海康 MVS
     backend: "hik"
     camera_sn: ""                # 留空使用检测到的第一台工业相机；多相机时建议填序列号
 
@@ -14,16 +13,15 @@ hardware:
     width: 1280
     height: 1024
     fps: 120.0
-    exposure_time_us: 5500.0      # 海康/迈德威视曝光时间，单位微秒
+    exposure_time_us: 5500.0      # 海康曝光时间，单位微秒
     gain: 16.0                    # 海康增益；OpenCV 后端仅在值大于 0 时尝试设置
-    analog_gain: 8                # 迈德威视模拟增益
-    frame_speed: 1                # 迈德威视帧速模式：0=Low, 1=Normal, 2=High, 3=Super
+    analog_gain: 8                # 保留旧字段，standard 当前不读取
+    frame_speed: 1                # 保留旧字段，standard 当前不读取
     flip_image: true              # 旧实车海康配置为 true；画面倒置时调这个
     camera_info: "configs/camera_info.yaml"
     calibration_mode: "strict"   # strict=严格匹配 | scale=缩放内参 | center_crop=中心裁剪
 
-    # 相机 optical 坐标系相对枪管坐标系的外参。xyz 单位米，rpy 单位弧度，
-    # 约定与 configs/simulation.yaml 保持一致。
+    # 相机 optical 坐标系相对枪管坐标系的外参。xyz 单位米，rpy 单位弧度。
     camera_to_barrel:
       xyz: [0.100, 0.0075, 0.000]
       rpy: [0.0, 0.137, 0.0]
@@ -42,11 +40,11 @@ hardware:
     require_feedback: true
 
   detector:
-    enemy_color: "red"           # red=红方 | blue=蓝方 | white=不过滤颜色
+    enemy_color: "red"           # red=红方 | blue=蓝方
 
   controller:
     bullet_speed: 23.0
-    strategy: ""                 # 留空表示使用 configs/controller.yaml
+    strategy: ""                 # 保留旧字段，standard 当前不读取
 
   safety:
     dry_run: false               # true 表示不打开串口、不发送串口数据
