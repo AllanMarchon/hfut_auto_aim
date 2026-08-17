@@ -61,8 +61,6 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"feedback_pitch_deg\":" << finiteOrZero(status.feedback_pitch_deg)
       << ",\"command_yaw_deg\":" << finiteOrZero(status.command_yaw_deg)
       << ",\"command_pitch_deg\":" << finiteOrZero(status.command_pitch_deg)
-      << ",\"sent_yaw_deg\":" << finiteOrZero(status.sent_yaw_deg)
-      << ",\"sent_pitch_deg\":" << finiteOrZero(status.sent_pitch_deg)
       << ",\"command_yaw_vel_rad_s\":" << finiteOrZero(status.command_yaw_vel_rad_s)
       << ",\"command_pitch_vel_rad_s\":" << finiteOrZero(status.command_pitch_vel_rad_s)
       << ",\"command_yaw_acc_rad_s2\":" << finiteOrZero(status.command_yaw_acc_rad_s2)
@@ -81,8 +79,6 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"camera_backend\":\"" << escapeJson(status.camera_backend) << "\""
       << ",\"serial_tx\":\"" << escapeJson(status.serial_tx) << "\""
       << ",\"serial_rx\":\"" << escapeJson(status.serial_rx) << "\""
-      << ",\"serial_command_reference\":\""
-      << escapeJson(status.serial_command_reference) << "\""
       << '}';
   return out.str();
 }
@@ -405,11 +401,8 @@ const TELEMETRY = [
   ['camera', 'camera_backend', null, ''],
   ['serial tx', 'serial_tx', null, ''],
   ['serial rx', 'serial_rx', null, ''],
-  ['cmd ref', 'serial_command_reference', null, ''],
   ['dry run', 'dry_run', null, ''],
   ['fire enabled', 'fire_enabled', null, ''],
-  ['sent yaw', 'sent_yaw_deg', 2, ' deg'],
-  ['sent pitch', 'sent_pitch_deg', 2, ' deg'],
   ['cmd yaw vel', 'command_yaw_vel_rad_s', 3, ' rad/s'],
   ['cmd pitch vel', 'command_pitch_vel_rad_s', 3, ' rad/s'],
   ['cmd yaw acc', 'command_yaw_acc_rad_s2', 3, ' rad/s^2'],
@@ -682,7 +675,7 @@ async function refreshStatus() {
     updateTelemetry(latestStatus);
     if (!document.getElementById('pause-history').checked) addSample(latestStatus);
     drawAllCharts();
-    note.textContent = `frames=${latestStatus.frames ?? 0} tx=${latestStatus.serial_tx ?? ''} rx=${latestStatus.serial_rx ?? ''} ref=${latestStatus.serial_command_reference ?? ''}`;
+    note.textContent = `frames=${latestStatus.frames ?? 0} tx=${latestStatus.serial_tx ?? ''} rx=${latestStatus.serial_rx ?? ''}`;
   } catch (error) {
     note.textContent = `status error: ${error}`;
     const pill = document.getElementById('track-pill');
