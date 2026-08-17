@@ -840,9 +840,14 @@ int run(const Options& options) {
   auto last_feedback_wait_log = std::chrono::steady_clock::now();
   auto last_feedback_time = std::chrono::steady_clock::now();
   auto last_feedback_heartbeat_time = std::chrono::steady_clock::now();
+  const auto elapsedMs = [](const auto& start, const auto& end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+  };
 
   while (!g_stop.load() &&
          (options.max_frames < 0 || processed < options.max_frames)) {
+    const auto loop_start = std::chrono::steady_clock::now();
+    const auto serial_rx_start = loop_start;
     if (!options.dry_run) {
       hfut::io::SerialFeedback feedback;
       if (serial.readFeedback(feedback)) {
@@ -852,6 +857,8 @@ int run(const Options& options) {
         last_feedback_time = std::chrono::steady_clock::now();
       }
     }
+    const auto serial_rx_end = std::chrono::steady_clock::now();
+    const double serial_rx_ms = elapsedMs(serial_rx_start, serial_rx_end);
 
     const auto feedback_age = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - last_feedback_time);
@@ -884,11 +891,13 @@ int run(const Options& options) {
     }
 
     hfut::CameraFrame frame;
+    const auto capture_start = std::chrono::steady_clock::now();
     if (!camera->read(frame, std::chrono::milliseconds(200))) {
       std::fprintf(stderr, "[bringup_real] camera read timeout: %s\n",
                    camera->errorMessage().c_str());
       continue;
     }
+    const auto capture_end = std::chrono::steady_clock::now();
 
     const auto adapted_calibration = hfut::video::adaptCalibration(
         source_calibration, frame.image.cols, frame.image.rows, calibration_mode);
@@ -899,38 +908,46 @@ int run(const Options& options) {
                   (2.0 * frame.intrinsics.fx)),
         std::atan(static_cast<double>(frame.intrinsics.height) /
                   (2.0 * frame.intrinsics.fy)));
+    const auto setup_end = std::chrono::steady_clock::now();
 
     const auto processing_start = std::chrono::steady_clock::now();
     auto detections = detector.detectBatch({frame.image}, {makeHeader(frame.sim_time_s)});
     std::vector<ArmorDetection> dets;
     if (!detections.empty()) dets = detections.front().detections;
+    const auto detect_end = std::chrono::steady_clock::now();
 
     const auto poses = pose_estimator.estimateBatch(
         dets, toCameraInfo(frame.intrinsics), frame.R_cam2world());
     const auto armors = buildValidArmors(dets, poses);
+    const auto pnp_end = std::chrono::steady_clock::now();
     pipeline.updateTracking(armors, frame.R_cam2world(), frame.t_cam2world,
                             frame.sim_time_s);
+    const auto track_end = std::chrono::steady_clock::now();
 
-    const double latency_s = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - processing_start).count();
+    const double latency_s = std::chrono::duration<double>(track_end - processing_start).count();
     auto command_deg = pipeline.computeCommand(
         frame.gimbal_yaw, frame.gimbal_pitch, frame.sim_time_s + latency_s);
     const hfut::GimbalCommand algorithm_command = toRadiansCommand(command_deg);
     hfut::GimbalCommand command = algorithm_command;
     if (!options.enable_fire) command.fire_advice = false;
+    const auto control_end = std::chrono::steady_clock::now();
 
+    const auto serial_tx_start = control_end;
     if (!options.dry_run) {
       serial.sendCommand(command);
     }
+    const auto serial_tx_end = std::chrono::steady_clock::now();
+    const double serial_tx_ms = elapsedMs(serial_tx_start, serial_tx_end);
 
     ++frames;
     ++processed;
 
     const auto now = std::chrono::steady_clock::now();
+    const double elapsed_s = std::chrono::duration<double>(now - run_start).count();
+    const double runtime_fps = elapsed_s > 0.0 ? static_cast<double>(frames) / elapsed_s : 0.0;
     const auto& debug = pipeline.lastDebug();
     hfut::io::DebugMjpegStatus web_status;
     if (web_server) {
-      const double elapsed_s = std::chrono::duration<double>(now - run_start).count();
       double target_distance_m = 0.0;
       if (!armors.armors.empty()) {
         const auto& position = armors.armors.front().pose.position;
@@ -939,7 +956,7 @@ int run(const Options& options) {
                                       position.z * position.z);
       }
       web_status.frames = frames;
-      web_status.fps = elapsed_s > 0.0 ? static_cast<double>(frames) / elapsed_s : 0.0;
+      web_status.fps = runtime_fps;
       web_status.latency_ms = latency_s * 1000.0;
       web_status.detections = static_cast<int>(dets.size());
       web_status.poses = static_cast<int>(poses.size());
@@ -975,6 +992,7 @@ int run(const Options& options) {
       web_status.serial_rx = hfut::io::infantryPacketLayoutName(serial_config.rx_layout);
     }
 
+    const auto visual_start = std::chrono::steady_clock::now();
     if (drawer && (options.display || web_server)) {
       cv::Mat visual = frame.image.clone();
       drawer->drawDetections(visual, dets, true);
@@ -991,15 +1009,24 @@ int run(const Options& options) {
         if (key == 27 || key == 'q') break;
       }
     }
+    const auto visual_end = std::chrono::steady_clock::now();
+    const double setup_ms = elapsedMs(capture_end, setup_end);
+    const double detect_ms = elapsedMs(processing_start, detect_end);
+    const double pnp_ms = elapsedMs(detect_end, pnp_end);
+    const double track_ms = elapsedMs(pnp_end, track_end);
+    const double control_ms = elapsedMs(track_end, control_end);
+    const double visual_ms = elapsedMs(visual_start, visual_end);
+    const double total_ms = elapsedMs(loop_start, visual_end);
 
-    if (now - last_log > std::chrono::seconds(1)) {
+    if (visual_end - last_log > std::chrono::seconds(1)) {
       std::printf(
-          "[bringup_real] frames=%llu det=%zu poses=%zu armors=%zu "
+          "[bringup_real] frames=%llu fps=%.1f det=%zu poses=%zu armors=%zu "
           "first=%s pose0=%s tracked=%d selected=%s state=%s mode=%d "
           "yaw=%.2f pitch=%.2f yaw_vel=%.3f pitch_vel=%.3f "
           "yaw_acc=%.3f pitch_acc=%.3f distance=%.3f fire=%d "
           "latency=%.1fms reason=%s\n",
-          static_cast<unsigned long long>(frames), dets.size(), poses.size(),
+          static_cast<unsigned long long>(frames), runtime_fps,
+          dets.size(), poses.size(),
           armors.armors.size(), firstArmorSummary(armors).c_str(),
           firstPoseSummary(dets, poses).c_str(),
           debug.num_tracked,
@@ -1014,8 +1041,15 @@ int run(const Options& options) {
           debug.tracker_decision_reason.empty()
               ? "none"
               : debug.tracker_decision_reason.c_str());
+      std::printf(
+          "[bringup_real] timing_ms total=%.1f serial_rx=%.2f capture=%.2f "
+          "setup=%.2f detect=%.2f pnp=%.2f track=%.2f control=%.2f "
+          "serial_tx=%.2f visual=%.2f\n",
+          total_ms, serial_rx_ms, elapsedMs(capture_start, capture_end),
+          setup_ms, detect_ms, pnp_ms, track_ms, control_ms,
+          serial_tx_ms, visual_ms);
       std::fflush(stdout);
-      last_log = now;
+      last_log = visual_end;
     }
   }
 
