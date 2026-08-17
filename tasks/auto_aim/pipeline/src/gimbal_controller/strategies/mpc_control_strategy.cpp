@@ -21,6 +21,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -792,6 +793,7 @@ rm_interfaces::msg::GimbalCmd MpcControlStrategy::solve(
   markDelayAuditValid(audit);
 
   Eigen::VectorXd X_ref;
+  std::optional<Eigen::Vector3d> command_target_position;
   if (use_delayed_reference) {
     mpc::DelayCompConfig delay_cfg;
     delay_cfg.base_delay_s = mpc_delay.base_reference_delay_s;
@@ -801,12 +803,29 @@ rm_interfaces::msg::GimbalCmd MpcControlStrategy::solve(
     X_ref = ref_generator_.generateWithDelay(
       target_robot, context.current_yaw, context.current_pitch,
       N_, dt_, delay_cfg);
+    command_target_position = ref_generator_.firstTargetPositionWithDelay(
+      target_robot, context.current_yaw, context.current_pitch, delay_cfg);
   } else {
     X_ref = ref_generator_.generate(
       target_robot, context.current_yaw, context.current_pitch, N_, dt_);
+    command_target_position = ref_generator_.firstTargetPosition(
+      target_robot, context.current_yaw, context.current_pitch);
   }
   fillTrajectoryDebug(x0, X_ref);
   fillControlTargetDebug(context, target_robot, mpc_delay.base_reference_delay_s);
+  if (command_target_position) {
+    last_control_target_debug_.control_target_position = *command_target_position;
+  }
+  const auto commandTargetDistance = [&]() {
+    const double control_target_distance = command_target_position
+      ? command_target_position->norm()
+      : last_control_target_debug_.control_target_position.norm();
+    if (std::isfinite(control_target_distance) &&
+        control_target_distance > 1e-6) {
+      return control_target_distance;
+    }
+    return target_distance;
+  };
 
   Eigen::Vector4d state_rms = Eigen::Vector4d::Ones();
   Eigen::Vector2d control_rms = Eigen::Vector2d::Ones();
@@ -952,7 +971,7 @@ rm_interfaces::msg::GimbalCmd MpcControlStrategy::solve(
     double yaw_diff   = angles::normalize_angle(cmd_yaw   - context.current_yaw);
     double pitch_diff = cmd_pitch - context.current_pitch;
 
-    const double distance = target_distance;
+    const double distance = commandTargetDistance();
 
     rm_interfaces::msg::GimbalCmd cmd;
     cmd.yaw        = cmd_yaw   * 180.0 / M_PI;
@@ -1070,7 +1089,7 @@ rm_interfaces::msg::GimbalCmd MpcControlStrategy::solve(
   //           << " rad. Command diff: yaw_diff=" << yaw_diff << " rad, pitch_diff=" << pitch_diff
   //           << " rad." << std::endl;
 
-  const double distance = target_distance;
+  const double distance = commandTargetDistance();
 
   // 11) 填充 GimbalCmd (角度以度为单位)
   rm_interfaces::msg::GimbalCmd cmd;
@@ -1171,6 +1190,11 @@ rm_interfaces::msg::GimbalCmd MpcControlStrategy::fallbackDirectAim(
 
   double distance =
     fyt::auto_aim::robot_description::TrackedRobotUsage::centerDistance(target_robot);
+  const double control_target_distance = last_control_target_debug_.control_target_position.norm();
+  if (last_control_target_debug_.valid && std::isfinite(control_target_distance) &&
+      control_target_distance > 1e-6) {
+    distance = control_target_distance;
+  }
 
   rm_interfaces::msg::GimbalCmd cmd;
   cmd.yaw = ref_yaw * 180.0 / M_PI;

@@ -65,11 +65,10 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"command_pitch_vel_rad_s\":" << finiteOrZero(status.command_pitch_vel_rad_s)
       << ",\"command_yaw_acc_rad_s2\":" << finiteOrZero(status.command_yaw_acc_rad_s2)
       << ",\"command_pitch_acc_rad_s2\":" << finiteOrZero(status.command_pitch_acc_rad_s2)
-      << ",\"target_distance_m\":" << finiteOrZero(status.target_distance_m)
-      << ",\"command_distance_m\":" << finiteOrZero(status.command_distance_m)
+      << ",\"distance_m\":" << finiteOrZero(status.distance_m)
+      << ",\"pnp_first_distance_m\":" << finiteOrZero(status.pnp_first_distance_m)
       << ",\"yaw_error_deg\":" << finiteOrZero(status.yaw_error_deg)
       << ",\"pitch_error_deg\":" << finiteOrZero(status.pitch_error_deg)
-      << ",\"distance_error_m\":" << finiteOrZero(status.distance_error_m)
       << ",\"feedback_age_ms\":" << finiteOrZero(status.feedback_age_ms)
       << ",\"fire_advice\":" << (status.fire_advice ? "true" : "false")
       << ",\"fire\":" << (status.fire ? "true" : "false")
@@ -298,7 +297,7 @@ std::string indexHtml() {
       <div class="card">
         <div class="label">Distance</div>
         <div id="value-distance" class="value">--</div>
-        <div id="meta-distance" class="meta">target / command</div>
+        <div id="meta-distance" class="meta">command target</div>
       </div>
       <div class="card">
         <div class="label">Fire Advice</div>
@@ -403,11 +402,12 @@ const TELEMETRY = [
   ['serial rx', 'serial_rx', null, ''],
   ['dry run', 'dry_run', null, ''],
   ['fire enabled', 'fire_enabled', null, ''],
+  ['distance', 'distance_m', 3, ' m'],
+  ['pnp first dist', 'pnp_first_distance_m', 3, ' m'],
   ['cmd yaw vel', 'command_yaw_vel_rad_s', 3, ' rad/s'],
   ['cmd pitch vel', 'command_pitch_vel_rad_s', 3, ' rad/s'],
   ['cmd yaw acc', 'command_yaw_acc_rad_s2', 3, ' rad/s^2'],
-  ['cmd pitch acc', 'command_pitch_acc_rad_s2', 3, ' rad/s^2'],
-  ['distance error', 'distance_error_m', 3, ' m']
+  ['cmd pitch acc', 'command_pitch_acc_rad_s2', 3, ' rad/s^2']
 ];
 
 const defaultVisible = CHARTS.flatMap(chart => chart.series.map(series => series.key));
@@ -448,9 +448,8 @@ function normalizeStatus(status) {
   status.pitch_error_deg = finite(
       status.pitch_error_deg,
       finite(status.command_pitch_deg) - finite(status.feedback_pitch_deg));
-  status.distance_error_m = finite(
-      status.distance_error_m,
-      finite(status.command_distance_m) - finite(status.target_distance_m));
+  status.distance_m = finite(status.distance_m);
+  status.pnp_first_distance_m = finite(status.pnp_first_distance_m);
   return status;
 }
 
@@ -489,9 +488,9 @@ function updateCards(status) {
       `latency=${fmt(finite(status.latency_ms), 1, ' ms')} fb_age=${fmt(finite(status.feedback_age_ms), 0, ' ms')}`;
 
   document.getElementById('value-distance').textContent =
-      `${fmt(finite(status.target_distance_m), 2, ' m')} / ${fmt(finite(status.command_distance_m), 2, ' m')}`;
+      `${fmt(finite(status.distance_m), 2, ' m')}`;
   document.getElementById('meta-distance').textContent =
-      `target / cmd, delta=${fmt(finite(status.distance_error_m), 2, ' m')}`;
+      `pnp_first=${fmt(finite(status.pnp_first_distance_m), 2, ' m')}`;
 
   document.getElementById('value-fire').textContent = status.fire_advice ? 'YES' : 'HOLD';
   document.getElementById('meta-fire').textContent =

@@ -17,6 +17,7 @@
 #include "gimbal_pipeline/common/robot_description/robot_description_facade.hpp"
 
 #include <angles/angles.h>
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 
@@ -269,6 +270,90 @@ Eigen::VectorXd MpcReferenceGenerator::generateWithDelay(
   }
 
   return X_ref;
+}
+
+std::optional<Eigen::Vector3d> MpcReferenceGenerator::firstTargetPosition(
+  const rm_interfaces::msg::TrackedRobot & target_robot,
+  double current_yaw,
+  double current_pitch) const
+{
+  if (!position_calculator_ || !armor_selector_ || !local_compensator_) {
+    return std::nullopt;
+  }
+
+  const auto clamped_robot = applyVelocityClamp(target_robot);
+  auto future_robot = propagateRobot(clamped_robot, 0.0);
+  auto armor_positions = position_calculator_->calculatePredicted(future_robot, 0.0);
+  if (armor_positions.empty()) {
+    return std::nullopt;
+  }
+
+  const Eigen::Vector3d target_center =
+    fyt::auto_aim::robot_description::TrackedRobotUsage::centerPosition(future_robot);
+  const double future_yaw =
+    fyt::auto_aim::robot_description::TrackedRobotUsage::yaw(future_robot);
+  const double future_yaw_velocity =
+    fyt::auto_aim::robot_description::TrackedRobotUsage::yawVelocity(future_robot);
+
+  auto selection = armor_selector_->selectBest(
+    armor_positions,
+    target_center,
+    future_yaw,
+    future_robot.num_armors,
+    future_yaw_velocity,
+    current_yaw,
+    current_pitch);
+
+  return selection.is_center_fallback ? target_center : selection.position;
+}
+
+std::optional<Eigen::Vector3d> MpcReferenceGenerator::firstTargetPositionWithDelay(
+  const rm_interfaces::msg::TrackedRobot & target_robot,
+  double current_yaw,
+  double current_pitch,
+  const DelayCompConfig & delay_config) const
+{
+  if (!position_calculator_ || !armor_selector_ || !local_compensator_) {
+    return std::nullopt;
+  }
+
+  const auto clamped_robot = applyVelocityClamp(target_robot);
+  const double t_predict = delay_config.base_delay_s;
+  auto future_robot = propagateRobot(clamped_robot, t_predict);
+  Eigen::Vector3d pred_center =
+    fyt::auto_aim::robot_description::TrackedRobotUsage::centerPosition(future_robot);
+
+  double t_flight = 0.0;
+  for (int iter = 0; iter < delay_config.flight_time_iters; ++iter) {
+    t_flight = local_compensator_->getFlyingTime(pred_center);
+    auto flight_robot = propagateRobot(clamped_robot, t_predict + t_flight);
+    pred_center =
+      fyt::auto_aim::robot_description::TrackedRobotUsage::centerPosition(flight_robot);
+  }
+
+  auto compensated_robot = propagateRobot(clamped_robot, t_predict + t_flight);
+  auto armor_positions = position_calculator_->calculatePredicted(compensated_robot, 0.0);
+  if (armor_positions.empty()) {
+    return std::nullopt;
+  }
+
+  const Eigen::Vector3d target_center =
+    fyt::auto_aim::robot_description::TrackedRobotUsage::centerPosition(compensated_robot);
+  const double compensated_yaw =
+    fyt::auto_aim::robot_description::TrackedRobotUsage::yaw(compensated_robot);
+  const double compensated_yaw_velocity =
+    fyt::auto_aim::robot_description::TrackedRobotUsage::yawVelocity(compensated_robot);
+
+  auto selection = armor_selector_->selectBest(
+    armor_positions,
+    target_center,
+    compensated_yaw,
+    compensated_robot.num_armors,
+    compensated_yaw_velocity,
+    current_yaw,
+    current_pitch);
+
+  return selection.is_center_fallback ? target_center : selection.position;
 }
 
 rm_interfaces::msg::TrackedRobot MpcReferenceGenerator::applyVelocityClamp(

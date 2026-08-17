@@ -265,7 +265,7 @@ rm_interfaces::msg::GimbalCmd PredictedPositionStrategy::solve(
   cmd.pitch = cmd_pitch * 180.0 / M_PI;
   cmd.yaw_diff = yaw_diff * 180.0 / M_PI;
   cmd.pitch_diff = pitch_diff * 180.0 / M_PI;
-  cmd.distance = std::max(current_selection.distance, 0.0);
+  cmd.distance = std::max(control_target_position.norm(), 0.0);
 
   DelayAuditSnapshot audit;
   audit.strategy_name = getName();
@@ -404,7 +404,6 @@ rm_interfaces::msg::GimbalCmd PredictedPositionStrategy::solveWithPlanner(
   std::vector<double> ref_yaw(N, 0.0), ref_pitch(N, 0.0);
   double yaw0 = 0.0;
   Eigen::Vector3d follow_position = Eigen::Vector3d::Zero();
-  double best_dist = 0.0;
   for (int k = 0; k < N; ++k) {
     const double t_pred = total_prediction_time + (k - H) * pcfg.dt;
     auto plates = position_calculator_->calculatePredicted(robot, t_pred);
@@ -436,7 +435,6 @@ rm_interfaces::msg::GimbalCmd PredictedPositionStrategy::solveWithPlanner(
     if (k == H) {
       yaw0 = best_yaw;
       follow_position = best_pos;
-      best_dist = best_pos.norm();
     }
   }
   for (int k = 0; k < N; ++k) {
@@ -464,7 +462,7 @@ rm_interfaces::msg::GimbalCmd PredictedPositionStrategy::solveWithPlanner(
   cmd.pitch_v = plan.pitch_rate * 180.0 / M_PI;
   cmd.yaw_a = plan.yaw_acc * 180.0 / M_PI;
   cmd.pitch_a = plan.pitch_acc * 180.0 / M_PI;
-  cmd.distance = std::max(best_dist, 0.0);
+  cmd.distance = std::max(follow_position.norm(), 0.0);
 
   DelayAuditSnapshot audit;
   audit.strategy_name = getName();

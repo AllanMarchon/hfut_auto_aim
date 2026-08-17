@@ -17,6 +17,7 @@
 
 #include <Eigen/Dense>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "gimbal_controller/armor_position_calculator.hpp"
@@ -140,6 +141,17 @@ public:
     double current_pitch,
     int N,
     double dt,
+    const DelayCompConfig & delay_config) const;
+
+  std::optional<Eigen::Vector3d> firstTargetPosition(
+    const rm_interfaces::msg::TrackedRobot & target_robot,
+    double current_yaw,
+    double current_pitch) const;
+
+  std::optional<Eigen::Vector3d> firstTargetPositionWithDelay(
+    const rm_interfaces::msg::TrackedRobot & target_robot,
+    double current_yaw,
+    double current_pitch,
     const DelayCompConfig & delay_config) const;
 
 private:

@@ -714,8 +714,8 @@ void drawWebOverlay(cv::Mat& image, const hfut::io::DebugMjpegStatus& status) {
   drawDebugLine(image, y, buffer, cv::Scalar(255, 220, 120));
 
   std::snprintf(buffer, sizeof(buffer),
-                "target_dist=%.2fm cmd_dist=%.2fm fire_advice=%d",
-                status.target_distance_m, status.command_distance_m,
+                "distance=%.2fm fire_advice=%d",
+                status.distance_m,
                 status.fire_advice ? 1 : 0);
   drawDebugLine(image, y, buffer, cv::Scalar(120, 220, 255));
 
@@ -948,12 +948,12 @@ int run(const Options& options) {
     const auto& debug = pipeline.lastDebug();
     hfut::io::DebugMjpegStatus web_status;
     if (web_server) {
-      double target_distance_m = 0.0;
+      double pnp_first_distance_m = 0.0;
       if (!armors.armors.empty()) {
         const auto& position = armors.armors.front().pose.position;
-        target_distance_m = std::sqrt(position.x * position.x +
-                                      position.y * position.y +
-                                      position.z * position.z);
+        pnp_first_distance_m = std::sqrt(position.x * position.x +
+                                         position.y * position.y +
+                                         position.z * position.z);
       }
       web_status.frames = frames;
       web_status.fps = runtime_fps;
@@ -976,11 +976,10 @@ int run(const Options& options) {
       web_status.command_pitch_vel_rad_s = command.pitch_vel;
       web_status.command_yaw_acc_rad_s2 = command.yaw_acc;
       web_status.command_pitch_acc_rad_s2 = command.pitch_acc;
-      web_status.target_distance_m = target_distance_m;
-      web_status.command_distance_m = command.distance;
+      web_status.distance_m = command.distance;
+      web_status.pnp_first_distance_m = pnp_first_distance_m;
       web_status.yaw_error_deg = web_status.command_yaw_deg - web_status.feedback_yaw_deg;
       web_status.pitch_error_deg = web_status.command_pitch_deg - web_status.feedback_pitch_deg;
-      web_status.distance_error_m = web_status.command_distance_m - web_status.target_distance_m;
       web_status.feedback_age_ms = options.dry_run ? 0.0 : static_cast<double>(feedback_age.count());
       web_status.fire_advice = algorithm_command.fire_advice;
       web_status.fire = command.fire_advice;

@@ -387,6 +387,7 @@ rm_interfaces::msg::GimbalCmd StateMachineStrategy::buildCommand(
 {
   (void)force_fire;
   (void)fire_target;
+  (void)fire_distance;
 
   const Eigen::Vector3d target_velocity =
     fyt::auto_aim::robot_description::TrackedRobotUsage::linearVelocity(context.target_robot);
@@ -418,7 +419,7 @@ rm_interfaces::msg::GimbalCmd StateMachineStrategy::buildCommand(
   cmd.pitch = cmd_pitch * 180.0 / M_PI;
   cmd.yaw_diff = yaw_diff * 180.0 / M_PI;
   cmd.pitch_diff = pitch_diff * 180.0 / M_PI;
-  cmd.distance = std::max(fire_distance, 0.0);
+  cmd.distance = std::max(control_target.norm(), 0.0);
 
   DelayAuditSnapshot audit;
   audit.strategy_name = getName();

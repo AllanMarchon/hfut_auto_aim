@@ -83,7 +83,6 @@ rm_interfaces::msg::GimbalCmd CurrentPositionStrategy::solve(
   // 并在 processing_delay 基础上额外预测 controller_delay 作为云台控制目标，
   // 开火判断仍使用当前位置。若启用自适应模式，则使用 adaptive_ctrl_ 的当前 delay 替代静态值
   Eigen::Vector3d control_position = fire_selection.position;
-  double control_distance = fire_selection.distance;
   auto applied_selection = fire_selection;
   auto applied_armor_positions = armor_positions;
   Eigen::Vector3d applied_predicted_center = target_center;
@@ -123,7 +122,6 @@ rm_interfaces::msg::GimbalCmd CurrentPositionStrategy::solve(
         context.current_yaw,
         context.current_pitch);
       control_position = ctrl_selection.position;
-      control_distance = ctrl_selection.distance;
       applied_selection = ctrl_selection;
       applied_armor_positions = std::move(predicted_positions);
       applied_predicted_center = predicted_center;
@@ -171,7 +169,7 @@ rm_interfaces::msg::GimbalCmd CurrentPositionStrategy::solve(
   cmd.pitch = cmd_pitch * 180.0 / M_PI;
   cmd.yaw_diff = yaw_diff * 180.0 / M_PI;
   cmd.pitch_diff = pitch_diff * 180.0 / M_PI;
-  cmd.distance = std::max(control_distance, 0.0);
+  cmd.distance = std::max(control_position.norm(), 0.0);
 
   DelayAuditSnapshot audit;
   audit.strategy_name = getName();
