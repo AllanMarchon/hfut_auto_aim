@@ -9,7 +9,7 @@ detector:
   # impl 已移至总控 gimbal_pipeline.yaml global.detector_impl
   backend:
     type: "openvino"
-    device: "CPU"       # Intel NUC 默认先测 CPU；GPU 跑通后可改为 "GPU"
+    device: "GPU"       # Intel NUC 默认先测 CPU；GPU 跑通后可改为 "GPU"
     precision: "fp32"
     model_path: "package://armor_detector_nn/model/RobotDetectionModel/0708.onnx"
     engine_path: "package://armor_detector_nn/model/RobotDetectionModel/0708.onnx"

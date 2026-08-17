@@ -67,5 +67,5 @@ gimbal_pipeline:
     # 控制策略选择（详细参数见 controller.yaml）
     # =========================
     controller:
-      strategy: "predicted" # "current" | "predicted" | "mpc" | "state_machine"
+      strategy: "mpc" # "current" | "predicted" | "mpc" | "state_machine"
       ballistic_mode: "local" # "service" | "local"
