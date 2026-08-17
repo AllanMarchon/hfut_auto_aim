@@ -1016,6 +1016,7 @@ int run(const Options& options) {
     const double control_ms = elapsedMs(track_end, control_end);
     const double visual_ms = elapsedMs(visual_start, visual_end);
     const double total_ms = elapsedMs(loop_start, visual_end);
+    const auto& detector_profile = detector.lastProfiler();
 
     if (visual_end - last_log > std::chrono::seconds(1)) {
       std::printf(
@@ -1043,10 +1044,15 @@ int run(const Options& options) {
       std::printf(
           "[bringup_real] timing_ms total=%.1f serial_rx=%.2f capture=%.2f "
           "setup=%.2f detect=%.2f pnp=%.2f track=%.2f control=%.2f "
-          "serial_tx=%.2f visual=%.2f\n",
+          "serial_tx=%.2f visual=%.2f det_pre=%.2f det_infer=%.2f "
+          "det_decode=%.2f det_nms=%.2f det_raw=%d det_nms_out=%d det_pub=%d\n",
           total_ms, serial_rx_ms, elapsedMs(capture_start, capture_end),
           setup_ms, detect_ms, pnp_ms, track_ms, control_ms,
-          serial_tx_ms, visual_ms);
+          serial_tx_ms, visual_ms,
+          detector_profile.preprocess_ms, detector_profile.infer_ms,
+          detector_profile.decode_ms, detector_profile.nms_ms,
+          detector_profile.raw_candidates, detector_profile.after_nms,
+          detector_profile.published);
       std::fflush(stdout);
       last_log = visual_end;
     }
