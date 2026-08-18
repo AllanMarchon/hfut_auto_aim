@@ -79,6 +79,8 @@ Web 可视化默认开启，地址为 `http://<小电脑IP>:8080/`。只想看�
 python3 scripts/visualize.py --host <小电脑IP>
 ```
 
+默认只输出 info 及以上级别日志；需要排查 SP25 内部细节时可临时加 `HFUT_LOG_LEVEL=debug`，避免平时刷屏和写盘影响 FPS。
+
 ## 配置
 
 - `configs/standard3.yaml`：SP25 算法参数、模型路径、OpenVINO device、ROI、传统检测、tracker/aimer/shooter 参数。

@@ -41,6 +41,7 @@ private:
   int normal_temp_lost_count_;
   std::string state_, pre_state_;
   Target target_;
+  cv::Point2f image_center_;
   std::chrono::steady_clock::time_point last_timestamp_;
   ArmorPriority omni_target_priority_;
 

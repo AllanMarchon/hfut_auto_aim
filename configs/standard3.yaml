@@ -52,6 +52,8 @@ judge_distance: 2
 auto_fire: true
 
 #####-----启动时会被 hardware.yaml 覆盖的实车标定参数-----#####
+image_width: 1280
+image_height: 1024
 R_gimbal2imubody: [1, 0, 0, 0, 1, 0, 0, 0, 1]
 camera_matrix: [1762.22864, 0.0, 513.82984, 0.0, 1763.58882, 478.72438, 0.0, 0.0, 1.0]
 distort_coeffs: [-0.069163, 0.078039, 0.001264, -0.000786, 0.0]

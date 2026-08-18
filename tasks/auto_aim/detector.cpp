@@ -178,7 +178,7 @@ bool Detector::detect(Armor & armor, const cv::Mat & bgr_img)
 
     if (!check_geometry(lightbar)) continue;
 
-    lightbar.color = get_color(bgr_img, contour);
+    lightbar.color = get_color(armor_roi, contour);
     // lightbar_points_corrector(lightbar, gray_img); //关闭PCA
     lightbars.emplace_back(lightbar);
     lightbar_id += 1;

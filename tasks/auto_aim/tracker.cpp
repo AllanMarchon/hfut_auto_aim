@@ -21,6 +21,9 @@ Tracker::Tracker(const std::string & config_path, Solver & solver)
 {
   auto yaml = YAML::LoadFile(config_path);
   enemy_color_ = (yaml["enemy_color"].as<std::string>() == "red") ? Color::red : Color::blue;
+  const float image_width = yaml["image_width"] ? yaml["image_width"].as<float>() : 1440.0F;
+  const float image_height = yaml["image_height"] ? yaml["image_height"].as<float>() : 1080.0F;
+  image_center_ = cv::Point2f(image_width * 0.5F, image_height * 0.5F);
   min_detect_count_ = yaml["min_detect_count"].as<int>();
   max_temp_lost_count_ = yaml["max_temp_lost_count"].as<int>();
   outpost_max_temp_lost_count_ = yaml["outpost_max_temp_lost_count"].as<int>();
@@ -51,10 +54,10 @@ std::list<Target> Tracker::track(
   // });
 
   // 优先选择靠近图像中心的装甲板
-  armors.sort([](const Armor & a, const Armor & b) {
-    cv::Point2f img_center(1440 / 2, 1080 / 2);  // TODO
-    auto distance_1 = cv::norm(a.center - img_center);
-    auto distance_2 = cv::norm(b.center - img_center);
+  const cv::Point2f image_center = image_center_;
+  armors.sort([image_center](const Armor & a, const Armor & b) {
+    auto distance_1 = cv::norm(a.center - image_center);
+    auto distance_2 = cv::norm(b.center - image_center);
     return distance_1 < distance_2;
   });
 
@@ -116,10 +119,10 @@ std::tuple<omniperception::DetectionResult, std::list<Target>> Tracker::track(
   }
 
   // 优先选择靠近图像中心的装甲板
-  armors.sort([](const Armor & a, const Armor & b) {
-    cv::Point2f img_center(1440 / 2, 1080 / 2);  // TODO
-    auto distance_1 = cv::norm(a.center - img_center);
-    auto distance_2 = cv::norm(b.center - img_center);
+  const cv::Point2f image_center = image_center_;
+  armors.sort([image_center](const Armor & a, const Armor & b) {
+    auto distance_1 = cv::norm(a.center - image_center);
+    auto distance_2 = cv::norm(b.center - image_center);
     return distance_1 < distance_2;
   });
 

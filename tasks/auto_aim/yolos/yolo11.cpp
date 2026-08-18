@@ -52,6 +52,7 @@ YOLO11::YOLO11(const std::string & config_path, bool debug)
   model = ppp.build();
   compiled_model_ = core_.compile_model(
     model, device_, ov::hint::performance_mode(ov::hint::PerformanceMode::LATENCY));
+  infer_request_ = compiled_model_.create_infer_request();
 }
 
 std::list<Armor> YOLO11::detect(const cv::Mat & raw_img, int frame_count)
@@ -88,12 +89,11 @@ std::list<Armor> YOLO11::detect(const cv::Mat & raw_img, int frame_count)
   ov::Tensor input_tensor(ov::element::u8, {1, 640, 640, 3}, input.data);
 
   /// infer
-  auto infer_request = compiled_model_.create_infer_request();
-  infer_request.set_input_tensor(input_tensor);
-  infer_request.infer();
+  infer_request_.set_input_tensor(input_tensor);
+  infer_request_.infer();
 
   // postprocess
-  auto output_tensor = infer_request.get_output_tensor();
+  auto output_tensor = infer_request_.get_output_tensor();
   auto output_shape = output_tensor.get_shape();
   cv::Mat output(output_shape[1], output_shape[2], CV_32F, output_tensor.data());
 

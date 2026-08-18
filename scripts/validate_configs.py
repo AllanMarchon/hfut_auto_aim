@@ -271,6 +271,8 @@ def validate_standard3(report: Report, repo_root: Path, config: Any) -> None:
     for field in ["min_detect_count", "max_temp_lost_count", "outpost_max_temp_lost_count"]:
         require_int(report, config.get(field), f"standard3.{field}", positive=True)
     require_bool(report, config.get("auto_fire"), "standard3.auto_fire")
+    require_int(report, config.get("image_width"), "standard3.image_width", positive=True)
+    require_int(report, config.get("image_height"), "standard3.image_height", positive=True)
     require_vector(report, config.get("R_gimbal2imubody"), "standard3.R_gimbal2imubody", 9)
     require_vector(report, config.get("R_camera2gimbal"), "standard3.R_camera2gimbal", 9)
     require_vector(report, config.get("t_camera2gimbal"), "standard3.t_camera2gimbal", 3)

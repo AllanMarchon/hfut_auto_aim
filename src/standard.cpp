@@ -618,6 +618,8 @@ std::string writeRuntimeSp25Config(
   YAML::Node yaml = YAML::LoadFile(options.sp25_config);
   yaml["enemy_color"] = options.enemy_color;
   if (!options.sp25_device.empty()) yaml["device"] = options.sp25_device;
+  yaml["image_width"] = calibration.width;
+  yaml["image_height"] = calibration.height;
   yaml["camera_matrix"] = std::vector<double>(calibration.k.begin(), calibration.k.end());
   std::vector<double> distort = calibration.d;
   distort.resize(5, 0.0);
