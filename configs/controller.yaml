@@ -36,6 +36,15 @@ gimbal_pipeline:
         # max_yaw_acc_rad_s2: 80.0
         # max_pitch_acc_rad_s2: 80.0
 
+      # 目标 yaw 稳定器：先稳住 SP25 输出的目标 yaw，再进入 command_limiter。
+      # 用来挡近距离 PnP/整车模型/短暂扰动造成的 sp_yaw 瞬跳，避免闭环把跳变放大成震荡。
+      target_stabilizer:
+        enable: true
+        max_yaw_jump: 4.0      # deg；单次目标 yaw 超过该变化视为跳变，先禁火并限速跟随
+        max_yaw_rate: 120.0    # deg/s；目标 yaw 自身限速，不是串口 yaw_vel 上限
+        hold_frames: 3         # 跳变后连续几帧禁止开火建议
+        freeze_on_unstable_state: true  # detecting/temp_lost 时先保持上一帧目标 yaw
+
       # 限幅后开火门控：SP25 先给出原始瞄准角和开火建议，standard 再检查
       # 最终串口下发角是否已经追到原始瞄准角。没有追到就只发角度，不发开火位。
       # 单位：度；默认对齐 standard3.yaml 的 first_tolerance / second_tolerance。

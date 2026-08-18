@@ -331,6 +331,21 @@ def validate_controller(report: Report, config: Any) -> None:
         require_bool(report, limiter.get("enable"), "controller.command_limiter.enable")
         require_number(report, limiter.get("reset_timeout_s"), "controller.command_limiter.reset_timeout_s", positive=True)
 
+    stabilizer = controller.get("target_stabilizer")
+    if stabilizer is not None:
+        if not isinstance(stabilizer, dict):
+            report.error("controller.target_stabilizer 必须是对象")
+        else:
+            require_bool(report, stabilizer.get("enable"), "controller.target_stabilizer.enable")
+            require_number(report, stabilizer.get("max_yaw_jump"), "controller.target_stabilizer.max_yaw_jump", positive=True)
+            require_number(report, stabilizer.get("max_yaw_rate"), "controller.target_stabilizer.max_yaw_rate", positive=True)
+            require_int(report, stabilizer.get("hold_frames"), "controller.target_stabilizer.hold_frames")
+            require_bool(
+                report,
+                stabilizer.get("freeze_on_unstable_state"),
+                "controller.target_stabilizer.freeze_on_unstable_state",
+            )
+
     fire_gate = controller.get("fire_gate")
     if not isinstance(fire_gate, dict):
         report.error("controller.fire_gate 缺失或不是对象")

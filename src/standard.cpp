@@ -103,6 +103,8 @@ struct CommandLimiterConfig {
   bool enable_clamping{true};
   bool enable_rate_limiter{true};
   bool enable_fire_gate{true};
+  bool enable_target_stabilizer{true};
+  bool target_stabilizer_freeze_on_unstable_state{true};
   double max_yaw_diff_rad{15.0 * kPi / 180.0};
   double max_pitch_diff_rad{10.0 * kPi / 180.0};
   double max_yaw_rate_rad_s{1.5 * 250.0 * kPi / 180.0};
@@ -115,6 +117,9 @@ struct CommandLimiterConfig {
   double reset_timeout_s{0.25};
   double sp_pitch_to_command_sign{-1.0};
   double feedback_yaw_to_world_sign{-1.0};
+  double target_stabilizer_max_yaw_jump_rad{4.0 * kPi / 180.0};
+  double target_stabilizer_max_yaw_rate_rad_s{120.0 * kPi / 180.0};
+  int target_stabilizer_hold_frames{3};
 };
 
 struct FireGateResult {
@@ -241,6 +246,82 @@ class CommandLimiter {
   std::chrono::steady_clock::time_point last_time_{};
 };
 
+class TargetCommandStabilizer {
+ public:
+  explicit TargetCommandStabilizer(CommandLimiterConfig config) : config_(config) {}
+
+  void apply(hfut::GimbalCommand& command, const std::string& track_state,
+             std::chrono::steady_clock::time_point now) {
+    if (!config_.enable_target_stabilizer || command.mode != hfut::GimbalMode::normal_measurement) {
+      reset();
+      return;
+    }
+
+    if (!have_last_) {
+      last_yaw_ = command.yaw;
+      last_time_ = now;
+      have_last_ = true;
+      return;
+    }
+
+    double dt = std::chrono::duration<double>(now - last_time_).count();
+    if (!std::isfinite(dt) || dt <= 0.0 || dt > config_.reset_timeout_s) {
+      last_yaw_ = command.yaw;
+      last_time_ = now;
+      hold_frames_left_ = 0;
+      have_last_ = true;
+      return;
+    }
+
+    const bool unstable_state = track_state != "tracking";
+    if (config_.target_stabilizer_freeze_on_unstable_state && unstable_state) {
+      freezeCommand(command, now);
+      return;
+    }
+
+    const double yaw_delta = tools::limit_rad(command.yaw - last_yaw_);
+    if (hold_frames_left_ > 0) {
+      --hold_frames_left_;
+      command.fire_advice = false;
+    }
+
+    if (config_.target_stabilizer_max_yaw_jump_rad > 0.0 &&
+        std::abs(yaw_delta) > config_.target_stabilizer_max_yaw_jump_rad) {
+      hold_frames_left_ = std::max(hold_frames_left_, config_.target_stabilizer_hold_frames);
+      command.fire_advice = false;
+    }
+
+    double limited_delta = yaw_delta;
+    const double max_step = config_.target_stabilizer_max_yaw_rate_rad_s * dt;
+    if (max_step > 0.0 && std::isfinite(max_step) && std::abs(yaw_delta) > max_step) {
+      limited_delta = std::clamp(yaw_delta, -max_step, max_step);
+      command.fire_advice = false;
+    }
+
+    command.yaw = tools::limit_rad(last_yaw_ + limited_delta);
+    last_yaw_ = command.yaw;
+    last_time_ = now;
+  }
+
+ private:
+  void reset() {
+    have_last_ = false;
+    hold_frames_left_ = 0;
+  }
+
+  void freezeCommand(hfut::GimbalCommand& command, std::chrono::steady_clock::time_point now) {
+    command.yaw = last_yaw_;
+    command.fire_advice = false;
+    last_time_ = now;
+  }
+
+  CommandLimiterConfig config_;
+  bool have_last_{false};
+  int hold_frames_left_{0};
+  double last_yaw_{0.0};
+  std::chrono::steady_clock::time_point last_time_{};
+};
+
 FireGateResult applyFireGate(hfut::GimbalCommand& command,
                              double desired_yaw,
                              double desired_pitch,
@@ -314,6 +395,7 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   const YAML::Node output = controller["output_filter"];
   const YAML::Node planner = controller["aim_planner"];
   const YAML::Node limiter = controller["command_limiter"];
+  const YAML::Node stabilizer = controller["target_stabilizer"];
   const YAML::Node fire_gate = controller["fire_gate"];
   const YAML::Node adapter = controller["output_adapter"];
 
@@ -344,6 +426,18 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
     config.max_pitch_acc_rad_s2 = parseDouble(limiter["max_pitch_acc_rad_s2"], config.max_pitch_acc_rad_s2);
   }
 
+  if (stabilizer) {
+    config.enable_target_stabilizer = parseBool(stabilizer["enable"], config.enable_target_stabilizer);
+    config.target_stabilizer_max_yaw_jump_rad = degToRad(
+        parseDouble(stabilizer["max_yaw_jump"], config.target_stabilizer_max_yaw_jump_rad * kRadToDeg));
+    config.target_stabilizer_max_yaw_rate_rad_s = degToRad(
+        parseDouble(stabilizer["max_yaw_rate"], config.target_stabilizer_max_yaw_rate_rad_s * kRadToDeg));
+    config.target_stabilizer_hold_frames =
+        parseInt(stabilizer["hold_frames"], config.target_stabilizer_hold_frames);
+    config.target_stabilizer_freeze_on_unstable_state = parseBool(
+        stabilizer["freeze_on_unstable_state"], config.target_stabilizer_freeze_on_unstable_state);
+  }
+
   if (fire_gate) {
     config.enable_fire_gate = parseBool(fire_gate["enable"], config.enable_fire_gate);
     config.fire_yaw_tolerance_rad = degToRad(
@@ -363,6 +457,15 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   if (config.reset_timeout_s <= 0.0) throw std::invalid_argument("controller reset_timeout_s 必须 > 0");
   if (config.fire_yaw_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire yaw tolerance 必须 > 0");
   if (config.fire_pitch_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire pitch tolerance 必须 > 0");
+  if (config.target_stabilizer_max_yaw_jump_rad <= 0.0) {
+    throw std::invalid_argument("controller.target_stabilizer.max_yaw_jump 必须 > 0");
+  }
+  if (config.target_stabilizer_max_yaw_rate_rad_s <= 0.0) {
+    throw std::invalid_argument("controller.target_stabilizer.max_yaw_rate 必须 > 0");
+  }
+  if (config.target_stabilizer_hold_frames < 0) {
+    throw std::invalid_argument("controller.target_stabilizer.hold_frames 必须 >= 0");
+  }
   if (std::abs(std::abs(config.sp_pitch_to_command_sign) - 1.0) > 1e-6) {
     throw std::invalid_argument("controller.output_adapter.sp_pitch_to_command_sign 必须是 1 或 -1");
   }
@@ -830,6 +933,7 @@ int run(const Options& options) {
   }
   const auto command_limiter_config = loadCommandLimiterConfig(options.controller_config);
   CommandLimiter command_limiter(command_limiter_config);
+  TargetCommandStabilizer target_stabilizer(command_limiter_config);
 
   auto_aim::YOLO detector(adapted_config_path, false);
   auto_aim::Solver solver(adapted_config_path);
@@ -870,7 +974,7 @@ int run(const Options& options) {
   std::printf(
       "[standard] controller_config=%s limiter=%s yaw_rate=%.2f pitch_rate=%.2f "
       "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg "
-      "sp_pitch_to_cmd=%.0f yaw_world_sign=%.0f\n",
+      "sp_pitch_to_cmd=%.0f yaw_world_sign=%.0f target_stabilizer=%s jump=%.1fdeg rate=%.1fdeg/s hold=%d\n",
       options.controller_config.c_str(), command_limiter_config.enable ? "on" : "off",
       command_limiter_config.max_yaw_rate_rad_s,
       command_limiter_config.max_pitch_rate_rad_s,
@@ -880,7 +984,11 @@ int run(const Options& options) {
       command_limiter_config.fire_yaw_tolerance_rad * kRadToDeg,
       command_limiter_config.fire_pitch_tolerance_rad * kRadToDeg,
       command_limiter_config.sp_pitch_to_command_sign,
-      command_limiter_config.feedback_yaw_to_world_sign);
+      command_limiter_config.feedback_yaw_to_world_sign,
+      command_limiter_config.enable_target_stabilizer ? "on" : "off",
+      command_limiter_config.target_stabilizer_max_yaw_jump_rad * kRadToDeg,
+      command_limiter_config.target_stabilizer_max_yaw_rate_rad_s * kRadToDeg,
+      command_limiter_config.target_stabilizer_hold_frames);
 
   hfut::io::SerialFeedback latest_feedback;
   latest_feedback.bullet_speed = options.bullet_speed;
@@ -971,6 +1079,7 @@ int run(const Options& options) {
     sp_command.shoot = shooter.shoot(sp_command, aimer, targets, gimbal_pos);
     hfut::GimbalCommand command = convertCommand(
         sp_command, aimer, latest_feedback, options.enable_fire, command_limiter_config);
+    target_stabilizer.apply(command, tracker.state(), std::chrono::steady_clock::now());
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
     command_limiter.apply(command, latest_feedback, std::chrono::steady_clock::now());
