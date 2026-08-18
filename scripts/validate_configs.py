@@ -347,6 +347,11 @@ def validate_controller(report: Report, config: Any) -> None:
             output_adapter.get("sp_pitch_to_command_sign"),
             "controller.output_adapter.sp_pitch_to_command_sign",
         )
+        require_sign(
+            report,
+            output_adapter.get("feedback_yaw_to_world_sign"),
+            "controller.output_adapter.feedback_yaw_to_world_sign",
+        )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

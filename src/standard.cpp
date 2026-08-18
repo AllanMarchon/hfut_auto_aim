@@ -114,6 +114,7 @@ struct CommandLimiterConfig {
   double reference_rate_hz{250.0};
   double reset_timeout_s{0.25};
   double sp_pitch_to_command_sign{-1.0};
+  double feedback_yaw_to_world_sign{-1.0};
 };
 
 struct FireGateResult {
@@ -354,6 +355,8 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   if (adapter) {
     config.sp_pitch_to_command_sign =
         parseDouble(adapter["sp_pitch_to_command_sign"], config.sp_pitch_to_command_sign);
+    config.feedback_yaw_to_world_sign =
+        parseDouble(adapter["feedback_yaw_to_world_sign"], config.feedback_yaw_to_world_sign);
   }
 
   if (config.reference_rate_hz <= 0.0) throw std::invalid_argument("controller reference_rate_hz 必须 > 0");
@@ -362,6 +365,9 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   if (config.fire_pitch_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire pitch tolerance 必须 > 0");
   if (std::abs(std::abs(config.sp_pitch_to_command_sign) - 1.0) > 1e-6) {
     throw std::invalid_argument("controller.output_adapter.sp_pitch_to_command_sign 必须是 1 或 -1");
+  }
+  if (std::abs(std::abs(config.feedback_yaw_to_world_sign) - 1.0) > 1e-6) {
+    throw std::invalid_argument("controller.output_adapter.feedback_yaw_to_world_sign 必须是 1 或 -1");
   }
   return config;
 }
@@ -705,9 +711,11 @@ hfut::io::InfantrySerialConfig makeSerialConfig(const Options& options) {
   return config;
 }
 
-Eigen::Quaterniond feedbackQuaternion(const hfut::io::SerialFeedback& feedback) {
+Eigen::Quaterniond feedbackQuaternion(
+    const hfut::io::SerialFeedback& feedback, const CommandLimiterConfig& config) {
   const Eigen::Matrix3d gimbal_to_world =
-      (Eigen::AngleAxisd(feedback.yaw_rad, Eigen::Vector3d::UnitZ()) *
+      (Eigen::AngleAxisd(
+           config.feedback_yaw_to_world_sign * feedback.yaw_rad, Eigen::Vector3d::UnitZ()) *
        Eigen::AngleAxisd(-feedback.pitch_rad, Eigen::Vector3d::UnitY()) *
        Eigen::AngleAxisd(feedback.roll_rad, Eigen::Vector3d::UnitX()))
           .toRotationMatrix();
@@ -860,7 +868,7 @@ int run(const Options& options) {
   std::printf(
       "[standard] controller_config=%s limiter=%s yaw_rate=%.2f pitch_rate=%.2f "
       "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg "
-      "sp_pitch_to_cmd=%.0f\n",
+      "sp_pitch_to_cmd=%.0f feedback_yaw_to_world=%.0f\n",
       options.controller_config.c_str(), command_limiter_config.enable ? "on" : "off",
       command_limiter_config.max_yaw_rate_rad_s,
       command_limiter_config.max_pitch_rate_rad_s,
@@ -869,7 +877,8 @@ int run(const Options& options) {
       command_limiter_config.enable_fire_gate ? "on" : "off",
       command_limiter_config.fire_yaw_tolerance_rad * kRadToDeg,
       command_limiter_config.fire_pitch_tolerance_rad * kRadToDeg,
-      command_limiter_config.sp_pitch_to_command_sign);
+      command_limiter_config.sp_pitch_to_command_sign,
+      command_limiter_config.feedback_yaw_to_world_sign);
 
   hfut::io::SerialFeedback latest_feedback;
   latest_feedback.bullet_speed = options.bullet_speed;
@@ -940,7 +949,7 @@ int run(const Options& options) {
     frame.gimbal_yaw = latest_feedback.yaw_rad;
     frame.gimbal_pitch = latest_feedback.pitch_rad;
     const auto timestamp = capture_end;
-    solver.set_R_gimbal2world(feedbackQuaternion(latest_feedback));
+    solver.set_R_gimbal2world(feedbackQuaternion(latest_feedback, command_limiter_config));
 
     const auto detect_start = std::chrono::steady_clock::now();
     auto armors = detector.detect(frame.image, static_cast<int>(frame.seq));

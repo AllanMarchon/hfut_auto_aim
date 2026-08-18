@@ -44,9 +44,13 @@ gimbal_pipeline:
         yaw_tolerance: 3.0
         pitch_tolerance: 2.0
 
-      # SP25 内部约定 pitch“向上为负”，旧电控绝对角度约定 pitch“向上为正”。
-      # 因此这里默认把 SP25 算出的 pitch 取反后再进入限幅器和串口下发。
-      # 如果手动云台测试确认 cmd_pitch 增大时 fb_pitch 也同向增大，但自瞄 pitch
-      # 仍反向，再临时改成 1.0 复测。
+      # SP25 与旧电控的坐标适配。这里不改变串口反馈显示和 cmd-fb 误差，只改变
+      # SP25 输出到旧电控、以及旧电控反馈到 SP25 世界坐标补偿的边界符号。
       output_adapter:
+        # SP25 内部约定 pitch“向上为负”，旧电控绝对角度约定 pitch“向上为正”。
+        # 因此这里默认把 SP25 算出的 pitch 取反后再进入限幅器和串口下发。
         sp_pitch_to_command_sign: -1.0
+
+        # 旧电控反馈 yaw 进入 SP25 的 R_gimbal2world 时使用的符号。
+        # 若目标静止、云台 yaw 转动时 sp_yaw 跟随 fb_yaw 反向或大幅跳变，优先试 -1.0。
+        feedback_yaw_to_world_sign: -1.0
