@@ -44,6 +44,7 @@ gimbal_pipeline:
         max_yaw_rate: 120.0    # deg/s；目标 yaw 自身限速，不是串口 yaw_vel 上限
         hold_frames: 3         # 跳变后连续几帧禁止开火建议
         freeze_on_unstable_state: true  # detecting/temp_lost 时先保持上一帧目标 yaw
+        lost_target_hold_s: 0.25  # s；短暂丢目标时继续保持上一帧稳定瞄准角，避免视野被拉走
 
       # 限幅后开火门控：SP25 先给出原始瞄准角和开火建议，standard 再检查
       # 最终串口下发角是否已经追到原始瞄准角。没有追到就只发角度，不发开火位。

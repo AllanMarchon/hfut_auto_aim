@@ -340,6 +340,9 @@ def validate_controller(report: Report, config: Any) -> None:
             require_number(report, stabilizer.get("max_yaw_jump"), "controller.target_stabilizer.max_yaw_jump", positive=True)
             require_number(report, stabilizer.get("max_yaw_rate"), "controller.target_stabilizer.max_yaw_rate", positive=True)
             require_int(report, stabilizer.get("hold_frames"), "controller.target_stabilizer.hold_frames")
+            require_number(report, stabilizer.get("lost_target_hold_s"), "controller.target_stabilizer.lost_target_hold_s")
+            if is_finite_number(stabilizer.get("lost_target_hold_s")) and float(stabilizer["lost_target_hold_s"]) < 0.0:
+                report.error("controller.target_stabilizer.lost_target_hold_s 必须大于等于 0")
             require_bool(
                 report,
                 stabilizer.get("freeze_on_unstable_state"),
