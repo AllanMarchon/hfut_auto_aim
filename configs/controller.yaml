@@ -45,6 +45,12 @@ gimbal_pipeline:
         max_sample_age_ms: 50.0   # 历史里找不到足够近的反馈时退回 latest fb
         history_size: 1000        # 保存最近反馈样本，用于按图像时间插值
 
+      # 串口下发字段开关。默认保持与电控约定一致，仍发送速度和加速度。
+      # 上车排查抖动时可临时关掉某一项，让 32 字节包格式不变但对应字段发 0。
+      serial_command:
+        send_velocity: true
+        send_acceleration: true
+
       # SP25 raw 输出外点保护：挡近距离 PnP/整车模型/短暂扰动造成的 raw yaw 瞬跳。
       # 注意：这里只 hold/限单帧变化，不再生成一条新的二阶控制轨迹。
       target_stabilizer:

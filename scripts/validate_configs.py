@@ -344,6 +344,13 @@ def validate_controller(report: Report, config: Any) -> None:
         if isinstance(feedback_alignment.get("history_size"), int) and feedback_alignment["history_size"] < 2:
             report.error("controller.feedback_alignment.history_size 必须大于等于 2")
 
+    serial_command = controller.get("serial_command")
+    if not isinstance(serial_command, dict):
+        report.error("controller.serial_command 缺失或不是对象")
+    else:
+        require_bool(report, serial_command.get("send_velocity"), "controller.serial_command.send_velocity")
+        require_bool(report, serial_command.get("send_acceleration"), "controller.serial_command.send_acceleration")
+
     stabilizer = controller.get("target_stabilizer")
     if stabilizer is not None:
         if not isinstance(stabilizer, dict):

@@ -8,7 +8,6 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <list>
@@ -33,6 +32,7 @@
 #include "io/camera/hik_camera_source.hpp"
 #endif
 #include "io/camera/opencv_camera_source.hpp"
+#include "io/serial/hfut_serial_gimbal.hpp"
 #include "io/serial/infantry_serial.hpp"
 #include "io/web/debug_mjpeg_server.hpp"
 
@@ -122,6 +122,8 @@ struct CommandLimiterConfig {
   double feedback_alignment_offset_s{0.001};
   double feedback_alignment_max_sample_age_s{0.05};
   int feedback_alignment_history_size{1000};
+  bool serial_command_send_velocity{true};
+  bool serial_command_send_acceleration{true};
   double target_stabilizer_max_yaw_jump_rad{4.0 * kPi / 180.0};
   double target_stabilizer_max_yaw_rate_rad_s{120.0 * kPi / 180.0};
   double lost_target_hold_s{0.25};
@@ -132,81 +134,6 @@ struct FireGateResult {
   double yaw_error_rad{0.0};
   double pitch_error_rad{0.0};
   bool blocked{false};
-};
-
-class FeedbackHistory {
- public:
-  using Clock = std::chrono::steady_clock;
-  using TimePoint = Clock::time_point;
-
- private:
-  struct Sample {
-    TimePoint time;
-    hfut::io::SerialFeedback feedback;
-  };
-
- public:
-
-  explicit FeedbackHistory(std::size_t max_size) : max_size_(std::max<std::size_t>(max_size, 2U)) {}
-
-  void push(TimePoint receive_time, const hfut::io::SerialFeedback& feedback) {
-    history_.push_back({receive_time, feedback});
-    while (history_.size() > max_size_) history_.pop_front();
-  }
-
-  bool sampleAt(TimePoint target_time, double max_sample_age_s,
-                hfut::io::SerialFeedback& feedback, TimePoint* sample_time) const {
-    if (history_.empty()) return false;
-    if (!std::isfinite(max_sample_age_s) || max_sample_age_s <= 0.0) return false;
-
-    const auto tooFar = [&](TimePoint a, TimePoint b) {
-      return std::chrono::duration<double>(a > b ? a - b : b - a).count() > max_sample_age_s;
-    };
-
-    if (history_.size() == 1 || target_time <= history_.front().time) {
-      if (tooFar(target_time, history_.front().time)) return false;
-      feedback = history_.front().feedback;
-      if (sample_time) *sample_time = history_.front().time;
-      return true;
-    }
-    if (target_time >= history_.back().time) {
-      if (tooFar(target_time, history_.back().time)) return false;
-      feedback = history_.back().feedback;
-      if (sample_time) *sample_time = history_.back().time;
-      return true;
-    }
-
-    const auto upper = std::upper_bound(
-        history_.begin(), history_.end(), target_time,
-        [](TimePoint time, const Sample& sample) { return time < sample.time; });
-    if (upper == history_.begin() || upper == history_.end()) return false;
-    auto lower = upper;
-    --lower;
-    const double duration_s = std::chrono::duration<double>(upper->time - lower->time).count();
-    const double alpha = duration_s > 1e-9
-                             ? std::clamp(std::chrono::duration<double>(target_time - lower->time).count() /
-                                              duration_s,
-                                          0.0, 1.0)
-                             : 0.0;
-
-    feedback = lower->feedback;
-    feedback.roll_rad = lerp(lower->feedback.roll_rad, upper->feedback.roll_rad, alpha);
-    feedback.yaw_rad = lower->feedback.yaw_rad +
-                       alpha * tools::limit_rad(upper->feedback.yaw_rad - lower->feedback.yaw_rad);
-    feedback.pitch_rad = lerp(lower->feedback.pitch_rad, upper->feedback.pitch_rad, alpha);
-    feedback.bullet_speed = lerp(lower->feedback.bullet_speed, upper->feedback.bullet_speed, alpha);
-    feedback.chassis_vx = lerp(lower->feedback.chassis_vx, upper->feedback.chassis_vx, alpha);
-    feedback.chassis_vy = lerp(lower->feedback.chassis_vy, upper->feedback.chassis_vy, alpha);
-    feedback.chassis_wz = lerp(lower->feedback.chassis_wz, upper->feedback.chassis_wz, alpha);
-    if (sample_time) *sample_time = target_time;
-    return true;
-  }
-
- private:
-  static double lerp(double a, double b, double alpha) { return a + alpha * (b - a); }
-
-  std::size_t max_size_;
-  std::deque<Sample> history_;
 };
 
 class SimpleCommandGuard {
@@ -478,6 +405,7 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   const YAML::Node fire_gate = controller["fire_gate"];
   const YAML::Node adapter = controller["output_adapter"];
   const YAML::Node feedback_alignment = controller["feedback_alignment"];
+  const YAML::Node serial_command = controller["serial_command"];
 
   if (output) {
     config.enable_clamping = parseBool(output["enable_clamping"], config.enable_clamping);
@@ -554,6 +482,13 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
                     config.feedback_alignment_max_sample_age_s * 1000.0) / 1000.0;
     config.feedback_alignment_history_size =
         parseInt(feedback_alignment["history_size"], config.feedback_alignment_history_size);
+  }
+
+  if (serial_command) {
+    config.serial_command_send_velocity =
+        parseBool(serial_command["send_velocity"], config.serial_command_send_velocity);
+    config.serial_command_send_acceleration =
+        parseBool(serial_command["send_acceleration"], config.serial_command_send_acceleration);
   }
 
   if (config.reference_rate_hz <= 0.0) throw std::invalid_argument("controller reference_rate_hz 必须 > 0");
@@ -1045,11 +980,18 @@ int run(const Options& options) {
   if (!camera->open()) throw std::runtime_error("相机打开失败: " + camera->errorMessage());
 
   const auto serial_config = makeSerialConfig(options);
-  hfut::io::InfantrySerialTransport serial(serial_config);
-  if (!options.dry_run && !serial.open()) {
-    throw std::runtime_error("串口打开失败: " + serial.errorMessage());
-  }
   const auto command_limiter_config = loadCommandLimiterConfig(options.controller_config);
+  hfut::io::HfutSerialGimbalConfig gimbal_config;
+  gimbal_config.serial = serial_config;
+  gimbal_config.history_size = static_cast<std::size_t>(command_limiter_config.feedback_alignment_history_size);
+  gimbal_config.timestamp_offset_s = command_limiter_config.feedback_alignment_offset_s;
+  gimbal_config.max_sample_age_s = command_limiter_config.feedback_alignment_max_sample_age_s;
+  gimbal_config.send_velocity = command_limiter_config.serial_command_send_velocity;
+  gimbal_config.send_acceleration = command_limiter_config.serial_command_send_acceleration;
+  hfut::io::HfutSerialGimbal gimbal(gimbal_config);
+  if (!options.dry_run && !gimbal.open()) {
+    throw std::runtime_error("串口打开失败: " + gimbal.errorMessage());
+  }
   SimpleCommandGuard command_guard(command_limiter_config);
 
   auto_aim::YOLO detector(adapted_config_path, false);
@@ -1092,7 +1034,8 @@ int run(const Options& options) {
       "[standard] controller_config=%s guard=%s yaw_step=%.2fdeg pitch_step=%.2fdeg "
       "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg "
       "sp_pitch_to_cmd=%.0f yaw_world_sign=%.0f outlier_guard=%s jump=%.1fdeg "
-      "target_rate=%.1fdeg/s hold=%d lost_hold=%.2fs fb_align=%s offset=%.1fms max_age=%.1fms\n",
+      "target_rate=%.1fdeg/s hold=%d lost_hold=%.2fs fb_align=%s offset=%.1fms max_age=%.1fms "
+      "send_v=%s send_acc=%s\n",
       options.controller_config.c_str(), command_limiter_config.enable ? "on" : "off",
       command_limiter_config.max_yaw_step_rad * kRadToDeg,
       command_limiter_config.max_pitch_step_rad * kRadToDeg,
@@ -1110,12 +1053,12 @@ int run(const Options& options) {
       command_limiter_config.lost_target_hold_s,
       command_limiter_config.enable_feedback_alignment ? "on" : "off",
       command_limiter_config.feedback_alignment_offset_s * 1000.0,
-      command_limiter_config.feedback_alignment_max_sample_age_s * 1000.0);
+      command_limiter_config.feedback_alignment_max_sample_age_s * 1000.0,
+      command_limiter_config.serial_command_send_velocity ? "on" : "off",
+      command_limiter_config.serial_command_send_acceleration ? "on" : "off");
 
   hfut::io::SerialFeedback latest_feedback;
   latest_feedback.bullet_speed = options.bullet_speed;
-  FeedbackHistory feedback_history(
-      static_cast<std::size_t>(command_limiter_config.feedback_alignment_history_size));
   bool have_feedback = options.dry_run || !options.require_feedback;
   auto last_feedback_time = std::chrono::steady_clock::now();
   auto last_feedback_wait_log = std::chrono::steady_clock::now();
@@ -1127,21 +1070,15 @@ int run(const Options& options) {
   const auto elapsedMs = [](const auto& start, const auto& end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
   };
-  const auto feedbackTargetTime = [&](std::chrono::steady_clock::time_point capture_time) {
-    return capture_time - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                              std::chrono::duration<double>(
-                                  command_limiter_config.feedback_alignment_offset_s));
-  };
-  const auto drainFeedback = [&]() {
+  const auto refreshLatestFeedback = [&]() {
     if (options.dry_run) return false;
     hfut::io::SerialFeedback feedback;
-    if (!serial.readFeedback(feedback)) return false;
-    const auto receive_time = std::chrono::steady_clock::now();
+    auto feedback_time = std::chrono::steady_clock::now();
+    if (!gimbal.latest(feedback, &feedback_time)) return false;
     latest_feedback = feedback;
     if (latest_feedback.bullet_speed < 14.0) latest_feedback.bullet_speed = options.bullet_speed;
     have_feedback = true;
-    last_feedback_time = receive_time;
-    feedback_history.push(receive_time, latest_feedback);
+    last_feedback_time = feedback_time;
     return true;
   };
 
@@ -1149,7 +1086,7 @@ int run(const Options& options) {
     const auto loop_start = std::chrono::steady_clock::now();
 
     const auto serial_rx_start = loop_start;
-    drainFeedback();
+    refreshLatestFeedback();
     const auto serial_rx_end = std::chrono::steady_clock::now();
 
     const auto feedback_age = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1164,7 +1101,7 @@ int run(const Options& options) {
         heartbeat.pitch = latest_feedback.pitch_rad;
         heartbeat.fire_advice = false;
         heartbeat.mode = hfut::GimbalMode::no_valid_measurement;
-        serial.sendCommand(heartbeat);
+        gimbal.send(heartbeat);
         last_feedback_heartbeat_time = now;
       }
       if (now - last_feedback_wait_log > std::chrono::seconds(1)) {
@@ -1185,16 +1122,13 @@ int run(const Options& options) {
       continue;
     }
     const auto capture_end = std::chrono::steady_clock::now();
-    drainFeedback();
+    refreshLatestFeedback();
 
     hfut::io::SerialFeedback aligned_feedback = latest_feedback;
     auto aligned_feedback_time = last_feedback_time;
     bool used_aligned_feedback = false;
     if (!options.dry_run && command_limiter_config.enable_feedback_alignment) {
-      used_aligned_feedback = feedback_history.sampleAt(
-          feedbackTargetTime(capture_end),
-          command_limiter_config.feedback_alignment_max_sample_age_s,
-          aligned_feedback, &aligned_feedback_time);
+      used_aligned_feedback = gimbal.sampleAt(capture_end, aligned_feedback, &aligned_feedback_time);
       if (!used_aligned_feedback) {
         aligned_feedback = latest_feedback;
         aligned_feedback_time = last_feedback_time;
@@ -1245,7 +1179,7 @@ int run(const Options& options) {
     const auto aim_end = std::chrono::steady_clock::now();
 
     const auto serial_tx_start = aim_end;
-    if (!options.dry_run) serial.sendCommand(command);
+    if (!options.dry_run) gimbal.send(command);
     const auto serial_tx_end = std::chrono::steady_clock::now();
 
     ++frames;
