@@ -1042,13 +1042,6 @@ int run(const Options& options) {
           fire_gate.yaw_error_rad * kRadToDeg, fire_gate.pitch_error_rad * kRadToDeg,
           command.distance, sp_command.shoot ? 1 : 0, command.fire_advice ? 1 : 0,
           fire_gate.blocked ? 1 : 0, elapsedMs(detect_start, aim_end));
-      std::printf(
-          "[standard] timing_ms total=%.1f serial_rx=%.2f capture=%.2f "
-          "detect=%.2f track=%.2f aim=%.2f serial_tx=%.2f visual=%.2f\n",
-          elapsedMs(loop_start, visual_end), elapsedMs(serial_rx_start, serial_rx_end),
-          elapsedMs(capture_start, capture_end), elapsedMs(detect_start, detect_end),
-          elapsedMs(track_start, track_end), elapsedMs(aim_start, aim_end),
-          elapsedMs(serial_tx_start, serial_tx_end), elapsedMs(visual_start, visual_end));
       std::fflush(stdout);
       last_log = visual_end;
     }
