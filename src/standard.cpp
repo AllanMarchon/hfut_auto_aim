@@ -249,8 +249,12 @@ FireGateResult applyFireGate(hfut::GimbalCommand& command,
   result.pitch_error_rad = std::abs(desired_pitch - command.pitch);
   if (!command.fire_advice || !config.enable_fire_gate) return result;
 
+  const double feedback_yaw_error_rad = std::abs(command.yaw_diff);
+  const double feedback_pitch_error_rad = std::abs(command.pitch_diff);
   if (result.yaw_error_rad > config.fire_yaw_tolerance_rad ||
-      result.pitch_error_rad > config.fire_pitch_tolerance_rad) {
+      result.pitch_error_rad > config.fire_pitch_tolerance_rad ||
+      feedback_yaw_error_rad > config.fire_yaw_tolerance_rad ||
+      feedback_pitch_error_rad > config.fire_pitch_tolerance_rad) {
     command.fire_advice = false;
     result.blocked = true;
   }

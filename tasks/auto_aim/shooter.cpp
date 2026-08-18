@@ -27,10 +27,16 @@ bool Shooter::shoot(
   auto tolerance = std::sqrt(tools::square(target_x) + tools::square(target_y)) > judge_distance_
                      ? second_tolerance_
                      : first_tolerance_;
-  // tools::logger()->debug("d(command.yaw) is {:.4f}", std::abs(last_command_.yaw - command.yaw));
+  const double command_yaw_delta = std::abs(tools::limit_rad(last_command_.yaw - command.yaw));
+  const double command_pitch_delta = std::abs(last_command_.pitch - command.pitch);
+  const double gimbal_yaw_error = std::abs(tools::limit_rad(gimbal_pos[0] - last_command_.yaw));
+  const double gimbal_pitch_error = std::abs(gimbal_pos[1] - last_command_.pitch);
+
   if (
-    std::abs(last_command_.yaw - command.yaw) < tolerance * 2 &&  //此时认为command突变不应该射击
-    std::abs(gimbal_pos[0] - last_command_.yaw) < tolerance &&    //应该减去上一次command的yaw值
+    command_yaw_delta < tolerance * 2 &&    // command 突变时不应该射击
+    command_pitch_delta < tolerance * 2 &&
+    gimbal_yaw_error < tolerance &&         // 云台实际角度需要追到上一帧瞄准角
+    gimbal_pitch_error < tolerance &&
     aimer.debug_aim_point.valid) {
     last_command_ = command;
     return true;
