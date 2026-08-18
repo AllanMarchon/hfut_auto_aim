@@ -735,7 +735,9 @@ hfut::GimbalCommand convertCommand(
     const hfut::io::SerialFeedback& feedback, bool enable_fire,
     const CommandLimiterConfig& command_config) {
   hfut::GimbalCommand command;
-  command.yaw = sp_command.control ? sp_command.yaw : feedback.yaw_rad;
+  command.yaw = sp_command.control
+                    ? tools::limit_rad(command_config.feedback_yaw_to_world_sign * sp_command.yaw)
+                    : feedback.yaw_rad;
   command.pitch = sp_command.control
                       ? command_config.sp_pitch_to_command_sign * sp_command.pitch
                       : feedback.pitch_rad;
@@ -868,7 +870,7 @@ int run(const Options& options) {
   std::printf(
       "[standard] controller_config=%s limiter=%s yaw_rate=%.2f pitch_rate=%.2f "
       "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg "
-      "sp_pitch_to_cmd=%.0f feedback_yaw_to_world=%.0f\n",
+      "sp_pitch_to_cmd=%.0f yaw_world_sign=%.0f\n",
       options.controller_config.c_str(), command_limiter_config.enable ? "on" : "off",
       command_limiter_config.max_yaw_rate_rad_s,
       command_limiter_config.max_pitch_rate_rad_s,

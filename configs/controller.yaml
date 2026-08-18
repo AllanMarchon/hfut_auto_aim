@@ -51,6 +51,8 @@ gimbal_pipeline:
         # 因此这里默认把 SP25 算出的 pitch 取反后再进入限幅器和串口下发。
         sp_pitch_to_command_sign: -1.0
 
-        # 旧电控反馈 yaw 进入 SP25 的 R_gimbal2world 时使用的符号。
+        # 旧电控 yaw 与 SP25 world yaw 的边界符号。它同时用于：
+        # 1) 旧电控反馈 yaw 进入 SP25 的 R_gimbal2world；
+        # 2) SP25 算出的 world yaw 转回旧电控串口命令 yaw。
         # 若目标静止、云台 yaw 转动时 sp_yaw 跟随 fb_yaw 反向或大幅跳变，优先试 -1.0。
         feedback_yaw_to_world_sign: -1.0
