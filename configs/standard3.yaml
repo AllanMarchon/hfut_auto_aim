@@ -38,7 +38,7 @@ outpost_max_temp_lost_count: 75
 
 #####-----aimer参数-----#####
 yaw_offset: 2
-pitch_offset: 6.5
+pitch_offset: 0.0
 comming_angle: 55
 leaving_angle: 20
 decision_speed: 7

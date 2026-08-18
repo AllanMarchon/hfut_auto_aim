@@ -43,3 +43,10 @@ gimbal_pipeline:
         enable: true
         yaw_tolerance: 3.0
         pitch_tolerance: 2.0
+
+      # SP25 内部约定 pitch“向上为负”，旧电控绝对角度约定 pitch“向上为正”。
+      # 因此这里默认把 SP25 算出的 pitch 取反后再进入限幅器和串口下发。
+      # 如果手动云台测试确认 cmd_pitch 增大时 fb_pitch 也同向增大，但自瞄 pitch
+      # 仍反向，再临时改成 1.0 复测。
+      output_adapter:
+        sp_pitch_to_command_sign: -1.0

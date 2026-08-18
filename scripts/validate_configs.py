@@ -92,6 +92,14 @@ def require_bool(report: Report, value: Any, name: str) -> None:
         report.error(f"{name} 必须是 true/false")
 
 
+def require_sign(report: Report, value: Any, name: str) -> None:
+    if not is_finite_number(value):
+        report.error(f"{name} 必须是有限数字")
+        return
+    if abs(abs(float(value)) - 1.0) > 1e-6:
+        report.error(f"{name} 必须是 1 或 -1")
+
+
 def require_false(report: Report, value: Any, name: str, reason: str) -> None:
     require_bool(report, value, name)
     if isinstance(value, bool) and value:
@@ -329,6 +337,16 @@ def validate_controller(report: Report, config: Any) -> None:
         require_bool(report, fire_gate.get("enable"), "controller.fire_gate.enable")
         require_number(report, fire_gate.get("yaw_tolerance"), "controller.fire_gate.yaw_tolerance", positive=True)
         require_number(report, fire_gate.get("pitch_tolerance"), "controller.fire_gate.pitch_tolerance", positive=True)
+
+    output_adapter = controller.get("output_adapter")
+    if not isinstance(output_adapter, dict):
+        report.error("controller.output_adapter 缺失或不是对象")
+    else:
+        require_sign(
+            report,
+            output_adapter.get("sp_pitch_to_command_sign"),
+            "controller.output_adapter.sp_pitch_to_command_sign",
+        )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

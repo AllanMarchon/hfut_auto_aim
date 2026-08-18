@@ -113,6 +113,7 @@ struct CommandLimiterConfig {
   double fire_pitch_tolerance_rad{2.0 * kPi / 180.0};
   double reference_rate_hz{250.0};
   double reset_timeout_s{0.25};
+  double sp_pitch_to_command_sign{-1.0};
 };
 
 struct FireGateResult {
@@ -309,6 +310,7 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   const YAML::Node planner = controller["aim_planner"];
   const YAML::Node limiter = controller["command_limiter"];
   const YAML::Node fire_gate = controller["fire_gate"];
+  const YAML::Node adapter = controller["output_adapter"];
 
   if (output) {
     config.enable_clamping = parseBool(output["enable_clamping"], config.enable_clamping);
@@ -345,10 +347,18 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
         parseDouble(fire_gate["pitch_tolerance"], config.fire_pitch_tolerance_rad * kRadToDeg));
   }
 
+  if (adapter) {
+    config.sp_pitch_to_command_sign =
+        parseDouble(adapter["sp_pitch_to_command_sign"], config.sp_pitch_to_command_sign);
+  }
+
   if (config.reference_rate_hz <= 0.0) throw std::invalid_argument("controller reference_rate_hz 必须 > 0");
   if (config.reset_timeout_s <= 0.0) throw std::invalid_argument("controller reset_timeout_s 必须 > 0");
   if (config.fire_yaw_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire yaw tolerance 必须 > 0");
   if (config.fire_pitch_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire pitch tolerance 必须 > 0");
+  if (std::abs(std::abs(config.sp_pitch_to_command_sign) - 1.0) > 1e-6) {
+    throw std::invalid_argument("controller.output_adapter.sp_pitch_to_command_sign 必须是 1 或 -1");
+  }
   return config;
 }
 
@@ -710,10 +720,13 @@ double aimDistance(const auto_aim::Aimer& aimer, const io::Command& command) {
 
 hfut::GimbalCommand convertCommand(
     const io::Command& sp_command, const auto_aim::Aimer& aimer,
-    const hfut::io::SerialFeedback& feedback, bool enable_fire) {
+    const hfut::io::SerialFeedback& feedback, bool enable_fire,
+    const CommandLimiterConfig& command_config) {
   hfut::GimbalCommand command;
   command.yaw = sp_command.control ? sp_command.yaw : feedback.yaw_rad;
-  command.pitch = sp_command.control ? sp_command.pitch : feedback.pitch_rad;
+  command.pitch = sp_command.control
+                      ? command_config.sp_pitch_to_command_sign * sp_command.pitch
+                      : feedback.pitch_rad;
   command.yaw_diff = tools::limit_rad(command.yaw - feedback.yaw_rad);
   command.pitch_diff = command.pitch - feedback.pitch_rad;
   command.distance = aimDistance(aimer, sp_command);
@@ -842,7 +855,8 @@ int run(const Options& options) {
               hfut::video::calibrationModeName(calibration_mode));
   std::printf(
       "[standard] controller_config=%s limiter=%s yaw_rate=%.2f pitch_rate=%.2f "
-      "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg\n",
+      "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg "
+      "sp_pitch_to_cmd=%.0f\n",
       options.controller_config.c_str(), command_limiter_config.enable ? "on" : "off",
       command_limiter_config.max_yaw_rate_rad_s,
       command_limiter_config.max_pitch_rate_rad_s,
@@ -850,7 +864,8 @@ int run(const Options& options) {
       command_limiter_config.max_pitch_acc_rad_s2,
       command_limiter_config.enable_fire_gate ? "on" : "off",
       command_limiter_config.fire_yaw_tolerance_rad * kRadToDeg,
-      command_limiter_config.fire_pitch_tolerance_rad * kRadToDeg);
+      command_limiter_config.fire_pitch_tolerance_rad * kRadToDeg,
+      command_limiter_config.sp_pitch_to_command_sign);
 
   hfut::io::SerialFeedback latest_feedback;
   latest_feedback.bullet_speed = options.bullet_speed;
@@ -939,7 +954,8 @@ int run(const Options& options) {
     io::Command sp_command = aimer.aim(targets, timestamp, bullet_speed);
     const Eigen::Vector3d gimbal_pos = tools::eulers(solver.R_gimbal2world(), 2, 1, 0);
     sp_command.shoot = shooter.shoot(sp_command, aimer, targets, gimbal_pos);
-    hfut::GimbalCommand command = convertCommand(sp_command, aimer, latest_feedback, options.enable_fire);
+    hfut::GimbalCommand command = convertCommand(
+        sp_command, aimer, latest_feedback, options.enable_fire, command_limiter_config);
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
     command_limiter.apply(command, latest_feedback, std::chrono::steady_clock::now());
