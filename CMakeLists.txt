@@ -146,3 +146,30 @@ target_link_libraries(standard PRIVATE
   yaml-cpp
   Threads::Threads
 )
+
+# 上车前硬件验证工具，不依赖旧自瞄核心。
+add_executable(serial_transport_test apps/serial_transport_test.cpp)
+target_include_directories(serial_transport_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(serial_transport_test PRIVATE hfut_real_io Threads::Threads)
+
+add_executable(manual_gimbal_test apps/manual_gimbal_test.cpp)
+target_include_directories(manual_gimbal_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(manual_gimbal_test PRIVATE hfut_real_io ${OpenCV_LIBS} Threads::Threads)
+
+add_executable(capture_calibration_images apps/capture_calibration_images.cpp)
+target_include_directories(capture_calibration_images PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(capture_calibration_images PRIVATE
+  hfut_real_io
+  ${OpenCV_LIBS}
+  yaml-cpp
+  Threads::Threads
+)

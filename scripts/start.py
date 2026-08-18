@@ -30,6 +30,9 @@ CONFLICT_PATTERNS = [
     "bringup_real",
     "bringup_sp25_real",
     "standard",
+    "serial_transport_test",
+    "manual_gimbal_test",
+    "capture_calibration_images",
 ]
 
 
@@ -164,7 +167,7 @@ def build_project(args: argparse.Namespace, env: dict[str, str]) -> int:
     status = run(configure, env=env).returncode
     if status != 0:
         return status
-    return run(["cmake", "--build", str(BUILD_DIR), "--target", "standard", f"-j{args.jobs}"], env=env).returncode
+    return run(["cmake", "--build", str(BUILD_DIR), f"-j{args.jobs}"], env=env).returncode
 
 
 def build_standard_command(args: argparse.Namespace) -> list[str]:
@@ -220,9 +223,125 @@ def run_standard(args: argparse.Namespace, env: dict[str, str]) -> int:
     return run(build_standard_command(args), env=env).returncode
 
 
+def run_serial_test(args: argparse.Namespace, env: dict[str, str]) -> int:
+    exe = BUILD_DIR / "serial_transport_test"
+    if not exe.exists():
+        status = build_project(args, env)
+        if status != 0:
+            return status
+    require_file(exe, "请先运行：python3 scripts/start.py --mode build")
+    cmd = [
+        str(exe),
+        args.serial_port,
+        str(args.baudrate),
+        args.serial_tx_protocol,
+        args.serial_rx_protocol,
+        args.infantry32_tail_fields,
+    ]
+    return run(cmd, env=env).returncode
+
+
+def run_manual_gimbal_test(args: argparse.Namespace, env: dict[str, str]) -> int:
+    exe = BUILD_DIR / "manual_gimbal_test"
+    if not exe.exists():
+        status = build_project(args, env)
+        if status != 0:
+            return status
+    require_file(exe, "请先运行：python3 scripts/start.py --mode build")
+    if args.stop_conflicts:
+        stop_conflicting_processes()
+    cmd = [
+        str(exe),
+        "--port", args.serial_port,
+        "--baudrate", str(args.baudrate),
+        "--yaw-range-deg", str(args.manual_yaw_range_deg),
+        "--pitch-range-deg", str(args.manual_pitch_range_deg),
+        "--hz", str(args.manual_hz),
+        "--distance", str(args.manual_distance),
+        "--max-rate-rad-s", str(args.manual_max_rate_rad_s),
+        "--max-acc-rad-s2", str(args.manual_max_acc_rad_s2),
+    ]
+    if args.manual_no_feedback:
+        cmd.append("--no-feedback")
+    return run(cmd, env=env).returncode
+
+
+def run_capture_calibration(args: argparse.Namespace, env: dict[str, str]) -> int:
+    exe = BUILD_DIR / "capture_calibration_images"
+    if not exe.exists():
+        status = build_project(args, env)
+        if status != 0:
+            return status
+    require_file(exe, "请先运行：python3 scripts/start.py --mode build")
+    if args.stop_conflicts:
+        stop_conflicting_processes()
+    print_camera_owners()
+    cmd = [
+        str(exe),
+        "--hardware-config", str(args.hardware_config),
+        "--camera-backend", args.camera_backend,
+        "--output-dir", str(args.calibration_output_dir),
+        "--prefix", args.calibration_prefix,
+        "--save-interval", str(args.calibration_save_interval),
+        "--max-images", str(args.calibration_max_images),
+    ]
+    if args.exposure_time_us is not None:
+        cmd += ["--exposure-time-us", str(args.exposure_time_us)]
+    if args.gain is not None:
+        cmd += ["--gain", str(args.gain)]
+    if args.display:
+        cmd.append("--display")
+    return run(cmd, env=env).returncode
+
+
+def run_calibrate_camera(args: argparse.Namespace, env: dict[str, str]) -> int:
+    script = PROJECT_DIR / "calibration" / "calibrate_camera.py"
+    require_file(script, "缺少内参标定脚本。")
+    cmd = [
+        sys.executable,
+        str(script),
+        "--images", args.calibration_images,
+        "--pattern-cols", str(args.pattern_cols),
+        "--pattern-rows", str(args.pattern_rows),
+        "--square-size", str(args.square_size),
+        "--output", str(args.calibration_output),
+    ]
+    if args.show_corners:
+        cmd.append("--show")
+    return run(cmd, env=env).returncode
+
+
+def run_install_udev(args: argparse.Namespace, env: dict[str, str]) -> int:
+    script = PROJECT_DIR / "scripts" / "install_udev.py"
+    require_file(script, "缺少 udev 安装脚本。")
+    cmd = [
+        sys.executable,
+        str(script),
+        "--device", args.udev_device,
+        "--name", args.udev_name,
+    ]
+    if args.udev_vendor_id:
+        cmd += ["--vendor-id", args.udev_vendor_id]
+    if args.udev_product_id:
+        cmd += ["--product-id", args.udev_product_id]
+    if args.udev_serial:
+        cmd += ["--serial", args.udev_serial]
+    if args.udev_dry_run:
+        cmd.append("--dry-run")
+    return run(cmd, env=env).returncode
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="启动 HFUT 适配版 SP25 实车主链。")
-    parser.add_argument("--mode", choices=("dry", "live", "build", "check"), default="live")
+    parser.add_argument(
+        "--mode",
+        choices=(
+            "dry", "live", "build", "check",
+            "serial-test", "manual-gimbal",
+            "capture-calibration", "calibrate-camera", "install-udev",
+        ),
+        default="live",
+    )
     parser.add_argument("--config", type=pathlib.Path, default=PROJECT_DIR / "configs" / "standard3.yaml")
     parser.add_argument("--hardware-config", type=pathlib.Path, default=PROJECT_DIR / "configs" / "hardware.yaml")
     parser.add_argument("--controller-config", type=pathlib.Path, default=PROJECT_DIR / "configs" / "controller.yaml")
@@ -249,6 +368,34 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--no-stop-conflicts", dest="stop_conflicts", action="store_false")
     parser.set_defaults(stop_conflicts=True)
     parser.add_argument("--allow-fire", action="store_true")
+    parser.add_argument("--serial-port", default="/dev/ttyACM0")
+    parser.add_argument("--baudrate", type=int, default=115200)
+    parser.add_argument("--serial-tx-protocol", default="infantry_32")
+    parser.add_argument("--serial-rx-protocol", default="infantry")
+    parser.add_argument("--infantry32-tail-fields", default="acceleration")
+    parser.add_argument("--manual-yaw-range-deg", type=float, default=20.0)
+    parser.add_argument("--manual-pitch-range-deg", type=float, default=15.0)
+    parser.add_argument("--manual-hz", type=float, default=100.0)
+    parser.add_argument("--manual-distance", type=float, default=1.0)
+    parser.add_argument("--manual-max-rate-rad-s", type=float, default=5.0)
+    parser.add_argument("--manual-max-acc-rad-s2", type=float, default=80.0)
+    parser.add_argument("--manual-no-feedback", action="store_true")
+    parser.add_argument("--calibration-output-dir", type=pathlib.Path, default=PROJECT_DIR / "calibration" / "images")
+    parser.add_argument("--calibration-prefix", default="calib")
+    parser.add_argument("--calibration-save-interval", type=int, default=20)
+    parser.add_argument("--calibration-max-images", type=int, default=40)
+    parser.add_argument("--calibration-images", default="calibration/images/*.png")
+    parser.add_argument("--pattern-cols", type=int, default=9)
+    parser.add_argument("--pattern-rows", type=int, default=6)
+    parser.add_argument("--square-size", type=float, default=0.025)
+    parser.add_argument("--calibration-output", type=pathlib.Path, default=PROJECT_DIR / "configs" / "camera_info.yaml")
+    parser.add_argument("--show-corners", action="store_true")
+    parser.add_argument("--udev-device", default="/dev/ttyACM0")
+    parser.add_argument("--udev-name", default="gimbal")
+    parser.add_argument("--udev-vendor-id", default="")
+    parser.add_argument("--udev-product-id", default="")
+    parser.add_argument("--udev-serial", default="")
+    parser.add_argument("--udev-dry-run", action="store_true")
     parser.add_argument("extra", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.extra and args.extra[0] == "--":
@@ -261,12 +408,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.hik_include = args.hik_include.expanduser().resolve()
     args.hik_library = args.hik_library.expanduser().resolve()
     args.mvs_lib_dir = args.mvs_lib_dir.expanduser().resolve()
+    args.calibration_output_dir = args.calibration_output_dir.expanduser().resolve()
+    args.calibration_output = args.calibration_output.expanduser().resolve()
     if args.allow_fire and args.mode != "live":
         raise SystemExit("--allow-fire 只能配合 --mode live 使用")
     if args.web_port <= 0 or args.web_port > 65535:
         raise SystemExit("--web-port 必须在 1..65535")
     if args.web_frame_step <= 0:
         raise SystemExit("--web-frame-step 必须大于 0")
+    if args.calibration_save_interval < 0:
+        raise SystemExit("--calibration-save-interval 必须 >= 0")
+    if args.calibration_max_images == 0:
+        raise SystemExit("--calibration-max-images 不能为 0")
+    if args.pattern_cols <= 0 or args.pattern_rows <= 0 or args.square_size <= 0.0:
+        raise SystemExit("棋盘格参数必须大于 0")
+    if args.manual_hz <= 0.0:
+        raise SystemExit("--manual-hz 必须大于 0")
     return args
 
 
@@ -277,6 +434,16 @@ def main(argv: list[str]) -> int:
         return check_environment(args)
     if args.mode == "build":
         return build_project(args, env)
+    if args.mode == "serial-test":
+        return run_serial_test(args, env)
+    if args.mode == "manual-gimbal":
+        return run_manual_gimbal_test(args, env)
+    if args.mode == "capture-calibration":
+        return run_capture_calibration(args, env)
+    if args.mode == "calibrate-camera":
+        return run_calibrate_camera(args, env)
+    if args.mode == "install-udev":
+        return run_install_udev(args, env)
     return run_standard(args, env)
 
 

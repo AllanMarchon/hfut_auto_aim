@@ -21,6 +21,8 @@
 | `io/serial/` | HFUT infantry 串口收发协议 |
 | `io/web/` | 实车调试 Web 可视化服务 |
 | `configs/` | SP25 算法、硬件和相机内参配置 |
+| `apps/` | 上车前硬件验证工具：串口、手动云台、标定采图 |
+| `calibration/` | 棋盘格采图说明和内参标定脚本 |
 | `scripts/start.py` | 构建、检查和实车启动脚本 |
 
 ## 小电脑默认环境
@@ -93,6 +95,38 @@ SP25 算出的绝对 yaw/pitch 会再经过 `controller.yaml` 的轻量限幅器
 ```bash
 python3 scripts/start.py --mode check
 python3 scripts/validate_configs.py
+```
+
+## 上车前工具
+
+单独检查串口收发，不启动视觉链路：
+
+```bash
+python3 scripts/start.py --mode serial-test \
+  --serial-port /dev/ttyACM0 \
+  --serial-tx-protocol infantry_32 \
+  --serial-rx-protocol infantry
+```
+
+手动给云台下发 yaw/pitch/vel/acc，确认方向、符号和限幅：
+
+```bash
+python3 scripts/start.py --mode manual-gimbal --serial-port /dev/ttyACM0
+```
+
+生成固定串口名 `/dev/gimbal`：
+
+```bash
+python3 scripts/start.py --mode install-udev --udev-device /dev/ttyACM0 --udev-name gimbal
+```
+
+采集棋盘格并生成内参：
+
+```bash
+python3 scripts/start.py --mode capture-calibration --display
+python3 scripts/start.py --mode calibrate-camera \
+  --calibration-images 'calibration/images/*.png' \
+  --pattern-cols 9 --pattern-rows 6 --square-size 0.025
 ```
 
 ## 上车注意
