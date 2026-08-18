@@ -2,7 +2,9 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <cmath>
+#include <string>
 #include <vector>
 
 #include "tools/logger.hpp"
@@ -22,6 +24,10 @@ Aimer::Aimer(const std::string & config_path)
   high_speed_delay_time_ = yaml["high_speed_delay_time"].as<double>();
   low_speed_delay_time_ = yaml["low_speed_delay_time"].as<double>();
   decision_speed_ = yaml["decision_speed"].as<double>();
+  if (yaml["aim_point_mode"].IsDefined()) {
+    const auto aim_point_mode = yaml["aim_point_mode"].as<std::string>();
+    aim_observed_armor_ = aim_point_mode != "sp25";
+  }
   if (yaml["left_yaw_offset"].IsDefined() && yaml["right_yaw_offset"].IsDefined()) {
     left_yaw_offset_ = yaml["left_yaw_offset"].as<double>() / 57.3;    // degree to rad
     right_yaw_offset_ = yaml["right_yaw_offset"].as<double>() / 57.3;  // degree to rad
@@ -146,6 +152,14 @@ AimPoint Aimer::choose_aim_point(const Target & target)
   Eigen::VectorXd ekf_x = target.ekf_x();
   std::vector<Eigen::Vector4d> armor_xyza_list = target.armor_xyza_list();
   auto armor_num = armor_xyza_list.size();
+  if (armor_xyza_list.empty()) return {false, Eigen::Vector4d::Zero()};
+
+  if (aim_observed_armor_) {
+    const int id = std::clamp(target.last_id, 0, static_cast<int>(armor_num) - 1);
+    lock_id_ = id;
+    return {true, armor_xyza_list[id]};
+  }
+
   // 如果装甲板未发生过跳变，则只有当前装甲板的位置已知
   if (!target.jumped) return {true, armor_xyza_list[0]};
 

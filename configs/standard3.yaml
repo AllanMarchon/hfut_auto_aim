@@ -45,6 +45,10 @@ decision_speed: 7
 high_speed_delay_time: 0.0
 low_speed_delay_time: 0.0
 
+# observed=实车优先稳定：瞄准当前观测到的装甲板，避免近距离扰动后切到整车预测板。
+# sp25=原版 SP25 整车预测选板逻辑，适合目标模型和姿态估计稳定后再打开。
+aim_point_mode: observed
+
 #####-----shooter参数-----#####
 first_tolerance: 3
 second_tolerance: 2

@@ -278,6 +278,7 @@ def validate_standard3(report: Report, repo_root: Path, config: Any) -> None:
         require_number(report, config.get(field), f"standard3.{field}")
     for field in ["min_detect_count", "max_temp_lost_count", "outpost_max_temp_lost_count"]:
         require_int(report, config.get(field), f"standard3.{field}", positive=True)
+    require_choice(report, config.get("aim_point_mode"), "standard3.aim_point_mode", {"observed", "sp25"})
     require_bool(report, config.get("auto_fire"), "standard3.auto_fire")
     require_int(report, config.get("image_width"), "standard3.image_width", positive=True)
     require_int(report, config.get("image_height"), "standard3.image_height", positive=True)
