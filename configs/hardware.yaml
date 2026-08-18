@@ -23,8 +23,8 @@ hardware:
 
     # 相机 optical 坐标系相对枪管坐标系的外参。xyz 单位米，rpy 单位弧度。
     camera_to_barrel:
-      xyz: [0.100, 0.0075, 0.000]
-      rpy: [0.0, 0.137, 0.0]
+      xyz: [0.11593, 0.06429, 0.03250]
+      rpy: [0.0, 0.0, -0.05]
 
   serial:
     port: "/dev/ttyACM0"
