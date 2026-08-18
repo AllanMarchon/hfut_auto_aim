@@ -65,6 +65,7 @@ bool OpenCvCameraSource::read(CameraFrame& frame,
   cv::Mat image;
   for (;;) {
     if (capture_.read(image) && !image.empty()) {
+      const auto timestamp = std::chrono::steady_clock::now();
       if (image.channels() == 1) {
         cv::cvtColor(image, frame.image, cv::COLOR_GRAY2BGR);
       } else if (image.channels() == 4) {
@@ -72,7 +73,7 @@ bool OpenCvCameraSource::read(CameraFrame& frame,
       } else {
         frame.image = std::move(image);
       }
-      fillFrameMetadata(frame);
+      fillFrameMetadata(frame, timestamp);
       return true;
     }
 
@@ -84,12 +85,12 @@ bool OpenCvCameraSource::read(CameraFrame& frame,
   }
 }
 
-void OpenCvCameraSource::fillFrameMetadata(CameraFrame& frame) {
+void OpenCvCameraSource::fillFrameMetadata(
+    CameraFrame& frame, std::chrono::steady_clock::time_point timestamp) {
   frame.input_mode = FrameInputMode::vision;
   frame.seq = ++seq_;
-  frame.sim_time_s =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                    start_time_).count();
+  frame.timestamp = timestamp;
+  frame.sim_time_s = std::chrono::duration<double>(timestamp - start_time_).count();
   frame.direct_armors.clear();
   frame.direct_position_noise_std_m = 0.0;
   frame.direct_yaw_noise_std_rad = 0.0;

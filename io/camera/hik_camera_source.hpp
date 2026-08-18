@@ -1,9 +1,13 @@
 #ifndef HFUT_AUTO_AIM_HIK_CAMERA_SOURCE_HPP
 #define HFUT_AUTO_AIM_HIK_CAMERA_SOURCE_HPP
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "io/camera/camera_source.hpp"
@@ -33,13 +37,16 @@ class HikCameraSource final : public CameraSource {
             std::chrono::milliseconds timeout =
                 std::chrono::milliseconds(200)) override;
 
-  const std::string& errorMessage() const override { return error_message_; }
+  const std::string& errorMessage() const override;
 
  private:
   bool selectAndOpenDevice();
   bool applyOptions();
   bool updatePayloadBuffer();
-  void fillFrameMetadata(CameraFrame& frame);
+  void captureLoop();
+  bool captureOnce(CameraFrame& frame);
+  void fillFrameMetadata(CameraFrame& frame,
+                         std::chrono::steady_clock::time_point timestamp);
   void setError(const std::string& action, int status);
 
   HikCameraSourceConfig config_;
@@ -47,8 +54,15 @@ class HikCameraSource final : public CameraSource {
   std::vector<std::uint8_t> frame_buffer_;
   std::vector<std::uint8_t> bgr_buffer_;
   std::string error_message_;
+  mutable std::string error_message_snapshot_;
   std::chrono::steady_clock::time_point start_time_;
   std::uint64_t seq_ = 0;
+  std::thread capture_thread_;
+  std::atomic<bool> running_{false};
+  mutable std::mutex frame_mutex_;
+  std::condition_variable frame_cv_;
+  CameraFrame latest_frame_;
+  bool has_frame_ = false;
 };
 
 }  // namespace hfut::io

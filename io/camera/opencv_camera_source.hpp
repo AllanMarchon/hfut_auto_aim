@@ -45,7 +45,8 @@ class OpenCvCameraSource final : public CameraSource {
 
  private:
   void applyCaptureOptions();
-  void fillFrameMetadata(CameraFrame& frame);
+  void fillFrameMetadata(CameraFrame& frame,
+                         std::chrono::steady_clock::time_point timestamp);
 
   OpenCvCameraSourceConfig config_;
   cv::VideoCapture capture_;

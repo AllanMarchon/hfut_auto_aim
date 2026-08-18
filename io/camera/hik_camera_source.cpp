@@ -42,11 +42,19 @@ HikCameraSource::HikCameraSource(HikCameraSourceConfig config)
 HikCameraSource::~HikCameraSource() { close(); }
 
 void HikCameraSource::setError(const std::string& action, int status) {
+  std::lock_guard<std::mutex> lock(frame_mutex_);
   error_message_ = action + " failed, status=" + hexStatus(status);
 }
 
+const std::string& HikCameraSource::errorMessage() const {
+  std::lock_guard<std::mutex> lock(frame_mutex_);
+  error_message_snapshot_ = error_message_;
+  return error_message_snapshot_;
+}
+
 bool HikCameraSource::open() {
-  if (isOpen()) return true;
+  if (isOpen() && running_.load()) return true;
+  if (isOpen()) close();
   if (!selectAndOpenDevice()) return false;
   if (!applyOptions()) {
     close();
@@ -67,13 +75,24 @@ bool HikCameraSource::open() {
     close();
     return false;
   }
-  start_time_ = std::chrono::steady_clock::now();
-  seq_ = 0;
-  error_message_.clear();
+  {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    start_time_ = std::chrono::steady_clock::now();
+    seq_ = 0;
+    has_frame_ = false;
+    latest_frame_ = CameraFrame{};
+    error_message_.clear();
+  }
+  running_.store(true);
+  capture_thread_ = std::thread(&HikCameraSource::captureLoop, this);
   return true;
 }
 
 void HikCameraSource::close() {
+  running_.store(false);
+  frame_cv_.notify_all();
+  if (capture_thread_.joinable()) capture_thread_.join();
+
   if (handle_ != nullptr) {
     MV_CC_StopGrabbing(handle_);
     MV_CC_CloseDevice(handle_);
@@ -82,6 +101,11 @@ void HikCameraSource::close() {
   }
   frame_buffer_.clear();
   bgr_buffer_.clear();
+  {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    has_frame_ = false;
+    latest_frame_ = CameraFrame{};
+  }
 }
 
 bool HikCameraSource::isOpen() const { return handle_ != nullptr; }
@@ -185,15 +209,59 @@ bool HikCameraSource::read(CameraFrame& frame,
                            std::chrono::milliseconds timeout) {
   if (!isOpen() && !open()) return false;
 
+  std::unique_lock<std::mutex> lock(frame_mutex_);
+  const bool ready = frame_cv_.wait_for(lock, timeout, [&] {
+    return has_frame_ || !running_.load();
+  });
+  if (!ready) {
+    if (error_message_.empty()) {
+      error_message_ = "timed out waiting for Hik camera frame";
+    }
+    return false;
+  }
+  if (!has_frame_) {
+    error_message_ = "Hik camera capture thread stopped";
+    return false;
+  }
+
+  frame = latest_frame_;
+  has_frame_ = false;
+  error_message_.clear();
+  return true;
+}
+
+void HikCameraSource::captureLoop() {
+  while (running_.load()) {
+    CameraFrame frame;
+    if (captureOnce(frame)) {
+      {
+        std::lock_guard<std::mutex> lock(frame_mutex_);
+        latest_frame_ = std::move(frame);
+        has_frame_ = true;
+        error_message_.clear();
+      }
+      frame_cv_.notify_one();
+    } else {
+      frame_cv_.notify_all();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+}
+
+bool HikCameraSource::captureOnce(CameraFrame& frame) {
+  if (!isOpen()) return false;
+
   MV_FRAME_OUT_INFO_EX frame_info{};
   const int status = MV_CC_GetOneFrameTimeout(
       handle_, frame_buffer_.data(), static_cast<unsigned int>(frame_buffer_.size()),
-      &frame_info, static_cast<unsigned int>(timeout.count()));
+      &frame_info, 50);
+  const auto timestamp = std::chrono::steady_clock::now();
   if (status != MV_OK) {
     setError("MV_CC_GetOneFrameTimeout", status);
     return false;
   }
   if (frame_info.nWidth == 0 || frame_info.nHeight == 0 || frame_info.nFrameLen == 0) {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
     error_message_ = "Hik returned an empty frame";
     return false;
   }
@@ -225,18 +293,16 @@ bool HikCameraSource::read(CameraFrame& frame,
   } else {
     frame.image = image.clone();
   }
-  fillFrameMetadata(frame);
-  error_message_.clear();
+  fillFrameMetadata(frame, timestamp);
   return true;
 }
 
-void HikCameraSource::fillFrameMetadata(CameraFrame& frame) {
+void HikCameraSource::fillFrameMetadata(
+    CameraFrame& frame, std::chrono::steady_clock::time_point timestamp) {
   frame.input_mode = FrameInputMode::vision;
   frame.seq = ++seq_;
-  frame.sim_time_s =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                    start_time_)
-          .count();
+  frame.timestamp = timestamp;
+  frame.sim_time_s = std::chrono::duration<double>(timestamp - start_time_).count();
   frame.direct_armors.clear();
   frame.direct_position_noise_std_m = 0.0;
   frame.direct_yaw_noise_std_rad = 0.0;

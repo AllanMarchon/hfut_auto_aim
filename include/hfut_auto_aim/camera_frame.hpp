@@ -5,6 +5,7 @@
 #ifndef HFUT_AUTO_AIM_CAMERA_FRAME_HPP
 #define HFUT_AUTO_AIM_CAMERA_FRAME_HPP
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -77,6 +78,7 @@ struct CameraFrame {
   FrameInputMode input_mode = FrameInputMode::vision;
   uint64_t seq = 0;
   double sim_time_s = 0.0;
+  std::chrono::steady_clock::time_point timestamp{};
 
   cv::Mat image;  // BGR8, decoded from the wire encoding
   std::vector<DirectArmorPose> direct_armors;

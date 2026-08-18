@@ -1122,13 +1122,16 @@ int run(const Options& options) {
       continue;
     }
     const auto capture_end = std::chrono::steady_clock::now();
+    const auto frame_time = frame.timestamp == std::chrono::steady_clock::time_point{}
+                                ? capture_end
+                                : frame.timestamp;
     refreshLatestFeedback();
 
     hfut::io::SerialFeedback aligned_feedback = latest_feedback;
     auto aligned_feedback_time = last_feedback_time;
     bool used_aligned_feedback = false;
     if (!options.dry_run && command_limiter_config.enable_feedback_alignment) {
-      used_aligned_feedback = gimbal.sampleAt(capture_end, aligned_feedback, &aligned_feedback_time);
+      used_aligned_feedback = gimbal.sampleAt(frame_time, aligned_feedback, &aligned_feedback_time);
       if (!used_aligned_feedback) {
         aligned_feedback = latest_feedback;
         aligned_feedback_time = last_feedback_time;
@@ -1139,7 +1142,7 @@ int run(const Options& options) {
         std::chrono::steady_clock::now() - last_feedback_time);
     const double aligned_feedback_age_ms = options.dry_run
                                                ? 0.0
-                                               : elapsedMs(aligned_feedback_time, capture_end);
+                                               : elapsedMs(aligned_feedback_time, frame_time);
     const double aligned_delta_yaw = tools::limit_rad(latest_feedback.yaw_rad - aligned_feedback.yaw_rad);
     const double aligned_delta_pitch = latest_feedback.pitch_rad - aligned_feedback.pitch_rad;
 
@@ -1148,7 +1151,7 @@ int run(const Options& options) {
     frame.intrinsics = toIntrinsics(adapted_calibration);
     frame.gimbal_yaw = aligned_feedback.yaw_rad;
     frame.gimbal_pitch = aligned_feedback.pitch_rad;
-    const auto timestamp = capture_end;
+    const auto timestamp = frame_time;
     solver.set_R_gimbal2world(feedbackQuaternion(aligned_feedback, command_limiter_config));
 
     const auto detect_start = std::chrono::steady_clock::now();
