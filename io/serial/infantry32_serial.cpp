@@ -54,7 +54,7 @@ bool Infantry32SerialTransport::sendCommand(const GimbalCommand& command) {
 bool Infantry32SerialTransport::readFeedback(SerialFeedback& feedback) {
   if (!isOpen() && !open()) return false;
 
-  std::uint8_t tmp[64]{};
+  std::uint8_t tmp[256]{};
   const int n = uart_->readSome(tmp, sizeof(tmp), config_.read_timeout_ms);
   if (n < 0) {
     rx_buffer_.clear();
@@ -62,26 +62,29 @@ bool Infantry32SerialTransport::readFeedback(SerialFeedback& feedback) {
     return false;
   }
   for (int i = 0; i < n; ++i) rx_buffer_.push_back(tmp[i]);
-  if (rx_buffer_.size() > 32 * 16) rx_buffer_.clear();
+  if (rx_buffer_.size() > 32 * 32) rx_buffer_.clear();
 
   FixedPacket32 packet;
-  if (!FixedPacket32::takeFromBuffer(rx_buffer_, packet)) return false;
+  bool got_latest = false;
+  while (FixedPacket32::takeFromBuffer(rx_buffer_, packet)) {
+    std::uint8_t mode = 0;
+    float roll = 0.0F;
+    float pitch = 0.0F;
+    float yaw = 0.0F;
+    packet.unload(mode, 1);
+    packet.unload(roll, 2);
+    packet.unload(pitch, 6);
+    packet.unload(yaw, 10);
 
-  std::uint8_t mode = 0;
-  float roll = 0.0F;
-  float pitch = 0.0F;
-  float yaw = 0.0F;
-  packet.unload(mode, 1);
-  packet.unload(roll, 2);
-  packet.unload(pitch, 6);
-  packet.unload(yaw, 10);
+    feedback.received = true;
+    feedback.mode = mode;
+    feedback.roll_rad = feedbackAngleToRad(roll);
+    feedback.pitch_rad = feedbackAngleToRad(pitch);
+    feedback.yaw_rad = feedbackAngleToRad(yaw);
+    got_latest = true;
+  }
 
-  feedback.received = true;
-  feedback.mode = mode;
-  feedback.roll_rad = feedbackAngleToRad(roll);
-  feedback.pitch_rad = feedbackAngleToRad(pitch);
-  feedback.yaw_rad = feedbackAngleToRad(yaw);
-  return true;
+  return got_latest;
 }
 
 }  // namespace hfut::io

@@ -166,7 +166,7 @@ bool InfantrySerialTransport::readFeedbackPacket(SerialFeedback& feedback) {
 bool InfantrySerialTransport::readFeedback(SerialFeedback& feedback) {
   if (!isOpen() && !open()) return false;
 
-  std::uint8_t tmp[64]{};
+  std::uint8_t tmp[256]{};
   const int n = uart_->readSome(tmp, sizeof(tmp), config_.read_timeout_ms);
   if (n < 0) {
     rx_buffer_.clear();
@@ -174,15 +174,36 @@ bool InfantrySerialTransport::readFeedback(SerialFeedback& feedback) {
     return false;
   }
   for (int i = 0; i < n; ++i) rx_buffer_.push_back(tmp[i]);
-  if (rx_buffer_.size() > 32 * 16) rx_buffer_.clear();
+  if (rx_buffer_.size() > 32 * 32) rx_buffer_.clear();
 
   switch (config_.rx_layout) {
-    case InfantryPacketLayout::kInfantry16:
-      return readFeedbackPacket<16>(feedback);
-    case InfantryPacketLayout::kInfantry24:
-      return readFeedbackPacket<24>(feedback);
-    case InfantryPacketLayout::kInfantry32:
-      return readFeedbackPacket<32>(feedback);
+    case InfantryPacketLayout::kInfantry16: {
+      bool got_latest = false;
+      SerialFeedback parsed;
+      while (readFeedbackPacket<16>(parsed)) {
+        feedback = parsed;
+        got_latest = true;
+      }
+      return got_latest;
+    }
+    case InfantryPacketLayout::kInfantry24: {
+      bool got_latest = false;
+      SerialFeedback parsed;
+      while (readFeedbackPacket<24>(parsed)) {
+        feedback = parsed;
+        got_latest = true;
+      }
+      return got_latest;
+    }
+    case InfantryPacketLayout::kInfantry32: {
+      bool got_latest = false;
+      SerialFeedback parsed;
+      while (readFeedbackPacket<32>(parsed)) {
+        feedback = parsed;
+        got_latest = true;
+      }
+      return got_latest;
+    }
   }
   return false;
 }

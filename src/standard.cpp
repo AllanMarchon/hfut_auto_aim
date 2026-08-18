@@ -1079,6 +1079,8 @@ int run(const Options& options) {
     sp_command.shoot = shooter.shoot(sp_command, aimer, targets, gimbal_pos);
     hfut::GimbalCommand command = convertCommand(
         sp_command, aimer, latest_feedback, options.enable_fire, command_limiter_config);
+    const double raw_desired_yaw = command.yaw;
+    const double raw_desired_pitch = command.pitch;
     target_stabilizer.apply(command, tracker.state(), std::chrono::steady_clock::now());
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
@@ -1114,6 +1116,8 @@ int run(const Options& options) {
     web_status.command_pitch_vel_rad_s = command.pitch_vel;
     web_status.command_yaw_acc_rad_s2 = command.yaw_acc;
     web_status.command_pitch_acc_rad_s2 = command.pitch_acc;
+    web_status.raw_target_yaw_deg = raw_desired_yaw * kRadToDeg;
+    web_status.raw_target_pitch_deg = raw_desired_pitch * kRadToDeg;
     web_status.target_yaw_deg = desired_yaw * kRadToDeg;
     web_status.target_pitch_deg = desired_pitch * kRadToDeg;
     web_status.yaw_error_deg = command.yaw_diff * kRadToDeg;

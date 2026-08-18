@@ -65,6 +65,8 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"command_pitch_vel_rad_s\":" << finiteOrZero(status.command_pitch_vel_rad_s)
       << ",\"command_yaw_acc_rad_s2\":" << finiteOrZero(status.command_yaw_acc_rad_s2)
       << ",\"command_pitch_acc_rad_s2\":" << finiteOrZero(status.command_pitch_acc_rad_s2)
+      << ",\"raw_target_yaw_deg\":" << finiteOrZero(status.raw_target_yaw_deg)
+      << ",\"raw_target_pitch_deg\":" << finiteOrZero(status.raw_target_pitch_deg)
       << ",\"target_yaw_deg\":" << finiteOrZero(status.target_yaw_deg)
       << ",\"target_pitch_deg\":" << finiteOrZero(status.target_pitch_deg)
       << ",\"limiter_yaw_error_deg\":" << finiteOrZero(status.limiter_yaw_error_deg)
@@ -371,7 +373,8 @@ const CHARTS = [
     unit: 'deg',
     series: [
       {key: 'feedback_yaw_deg', label: 'fb_yaw', color: COLORS.feedback, digits: 2},
-      {key: 'target_yaw_deg', label: 'sp_yaw', color: COLORS.target, digits: 2},
+      {key: 'raw_target_yaw_deg', label: 'raw_sp', color: COLORS.target, digits: 2},
+      {key: 'target_yaw_deg', label: 'stable_sp', color: '#d3b7ff', digits: 2},
       {key: 'command_yaw_deg', label: 'cmd_yaw', color: COLORS.command, digits: 2},
       {key: 'limiter_yaw_error_deg', label: 'lim_err', color: COLORS.error, digits: 2}
     ]
@@ -383,7 +386,8 @@ const CHARTS = [
     unit: 'deg',
     series: [
       {key: 'feedback_pitch_deg', label: 'fb_pitch', color: COLORS.feedback, digits: 2},
-      {key: 'target_pitch_deg', label: 'sp_pitch', color: COLORS.target, digits: 2},
+      {key: 'raw_target_pitch_deg', label: 'raw_sp', color: COLORS.target, digits: 2},
+      {key: 'target_pitch_deg', label: 'stable_sp', color: '#d3b7ff', digits: 2},
       {key: 'command_pitch_deg', label: 'cmd_pitch', color: COLORS.command, digits: 2},
       {key: 'limiter_pitch_error_deg', label: 'lim_err', color: COLORS.error, digits: 2}
     ]
@@ -460,6 +464,8 @@ function normalizeStatus(status) {
   status.pitch_error_deg = finite(
       status.pitch_error_deg,
       finite(status.command_pitch_deg) - finite(status.feedback_pitch_deg));
+  status.raw_target_yaw_deg = finite(status.raw_target_yaw_deg, finite(status.target_yaw_deg, finite(status.command_yaw_deg)));
+  status.raw_target_pitch_deg = finite(status.raw_target_pitch_deg, finite(status.target_pitch_deg, finite(status.command_pitch_deg)));
   status.target_yaw_deg = finite(status.target_yaw_deg, finite(status.command_yaw_deg));
   status.target_pitch_deg = finite(status.target_pitch_deg, finite(status.command_pitch_deg));
   status.limiter_yaw_error_deg = finite(

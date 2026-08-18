@@ -40,6 +40,8 @@ struct DebugMjpegStatus {
   double command_pitch_vel_rad_s{0.0};
   double command_yaw_acc_rad_s2{0.0};
   double command_pitch_acc_rad_s2{0.0};
+  double raw_target_yaw_deg{0.0};
+  double raw_target_pitch_deg{0.0};
   double target_yaw_deg{0.0};
   double target_pitch_deg{0.0};
   double limiter_yaw_error_deg{0.0};
