@@ -18,7 +18,7 @@ except ImportError as exc:
     sys.exit(2)
 
 
-REQUIRED_CONFIGS = ["hardware.yaml", "camera_info.yaml", "standard3.yaml"]
+REQUIRED_CONFIGS = ["hardware.yaml", "camera_info.yaml", "standard3.yaml", "controller.yaml"]
 YOLO_MODELS = {
     "yolov5": "yolov5_model_path",
     "yolov8": "yolov8_model_path",
@@ -262,6 +262,57 @@ def validate_standard3(report: Report, repo_root: Path, config: Any) -> None:
     require_vector(report, config.get("distort_coeffs"), "standard3.distort_coeffs", 5)
 
 
+def controller_root(config: Any) -> Any:
+    if not isinstance(config, dict):
+        return None
+    nested = config.get("gimbal_pipeline", {}).get("ros__parameters", {}).get("controller")
+    if isinstance(nested, dict):
+        return nested
+    return config.get("controller", config)
+
+
+def validate_controller(report: Report, config: Any) -> None:
+    controller = controller_root(config)
+    if not isinstance(controller, dict):
+        report.error("controller.yaml 缺少 controller 配置")
+        return
+
+    planner = controller.get("aim_planner")
+    if not isinstance(planner, dict):
+        report.error("controller.aim_planner 缺失或不是对象")
+    else:
+        require_bool(report, planner.get("enable"), "controller.aim_planner.enable")
+        require_number(report, planner.get("max_yaw_acc"), "controller.aim_planner.max_yaw_acc", positive=True)
+        require_number(report, planner.get("max_pitch_acc"), "controller.aim_planner.max_pitch_acc", positive=True)
+
+    output = controller.get("output_filter")
+    if not isinstance(output, dict):
+        report.error("controller.output_filter 缺失或不是对象")
+    else:
+        require_bool(report, output.get("enable_clamping"), "controller.output_filter.enable_clamping")
+        require_number(report, output.get("max_yaw_diff"), "controller.output_filter.max_yaw_diff", positive=True)
+        require_number(report, output.get("max_pitch_diff"), "controller.output_filter.max_pitch_diff", positive=True)
+        require_bool(report, output.get("enable_rate_limiter"), "controller.output_filter.enable_rate_limiter")
+        require_number(report, output.get("max_yaw_rate"), "controller.output_filter.max_yaw_rate", positive=True)
+        require_number(report, output.get("max_pitch_rate"), "controller.output_filter.max_pitch_rate", positive=True)
+        require_number(report, output.get("one_euro_freq"), "controller.output_filter.one_euro_freq", positive=True)
+
+    limiter = controller.get("command_limiter")
+    if not isinstance(limiter, dict):
+        report.error("controller.command_limiter 缺失或不是对象")
+    else:
+        require_bool(report, limiter.get("enable"), "controller.command_limiter.enable")
+        require_number(report, limiter.get("reset_timeout_s"), "controller.command_limiter.reset_timeout_s", positive=True)
+
+    fire_gate = controller.get("fire_gate")
+    if not isinstance(fire_gate, dict):
+        report.error("controller.fire_gate 缺失或不是对象")
+    else:
+        require_bool(report, fire_gate.get("enable"), "controller.fire_gate.enable")
+        require_number(report, fire_gate.get("yaw_tolerance"), "controller.fire_gate.yaw_tolerance", positive=True)
+        require_number(report, fire_gate.get("pitch_tolerance"), "controller.fire_gate.pitch_tolerance", positive=True)
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="校验 HFUT 适配版 SP25 配置。")
     parser.add_argument("--config-dir", type=Path, default=Path("configs"))
@@ -283,6 +334,8 @@ def main(argv: list[str]) -> int:
         validate_hardware(report, repo_root, configs["hardware.yaml"], configs["camera_info.yaml"])
     if configs.get("standard3.yaml") is not None:
         validate_standard3(report, repo_root, configs["standard3.yaml"])
+    if configs.get("controller.yaml") is not None:
+        validate_controller(report, configs["controller.yaml"])
 
     report.info("配置校验目标：SP25 核心 + HFUT 海康相机/串口/Web 可视化适配")
     report.print()

@@ -54,6 +54,7 @@ constexpr double kRadToDeg = 180.0 / kPi;
 struct Options {
   std::string hardware_config{"configs/hardware.yaml"};
   std::string sp25_config{"configs/standard3.yaml"};
+  std::string controller_config{"configs/controller.yaml"};
   std::string runtime_sp25_config{"build/sp25_runtime.yaml"};
   std::string sp25_device;
 
@@ -97,6 +98,164 @@ struct Options {
   int max_frames{-1};
 };
 
+struct CommandLimiterConfig {
+  bool enable{true};
+  bool enable_clamping{true};
+  bool enable_rate_limiter{true};
+  bool enable_fire_gate{true};
+  double max_yaw_diff_rad{15.0 * kPi / 180.0};
+  double max_pitch_diff_rad{10.0 * kPi / 180.0};
+  double max_yaw_rate_rad_s{1.5 * 250.0 * kPi / 180.0};
+  double max_pitch_rate_rad_s{1.0 * 250.0 * kPi / 180.0};
+  double max_yaw_acc_rad_s2{80.0};
+  double max_pitch_acc_rad_s2{80.0};
+  double fire_yaw_tolerance_rad{3.0 * kPi / 180.0};
+  double fire_pitch_tolerance_rad{2.0 * kPi / 180.0};
+  double reference_rate_hz{250.0};
+  double reset_timeout_s{0.25};
+};
+
+struct FireGateResult {
+  double yaw_error_rad{0.0};
+  double pitch_error_rad{0.0};
+  bool blocked{false};
+};
+
+class CommandLimiter {
+ public:
+  explicit CommandLimiter(CommandLimiterConfig config) : config_(config) {}
+
+  void apply(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
+             std::chrono::steady_clock::time_point now) {
+    if (!config_.enable || command.mode != hfut::GimbalMode::normal_measurement) {
+      command.yaw_vel = 0.0;
+      command.pitch_vel = 0.0;
+      command.yaw_acc = 0.0;
+      command.pitch_acc = 0.0;
+      have_last_ = false;
+      return;
+    }
+
+    double target_yaw = command.yaw;
+    double target_pitch = command.pitch;
+    if (config_.enable_clamping) {
+      const double yaw_diff = std::clamp(
+          tools::limit_rad(target_yaw - feedback.yaw_rad),
+          -config_.max_yaw_diff_rad, config_.max_yaw_diff_rad);
+      const double pitch_diff = std::clamp(
+          target_pitch - feedback.pitch_rad,
+          -config_.max_pitch_diff_rad, config_.max_pitch_diff_rad);
+      target_yaw = feedback.yaw_rad + yaw_diff;
+      target_pitch = feedback.pitch_rad + pitch_diff;
+    }
+
+    double dt = 1.0 / std::max(config_.reference_rate_hz, 1.0);
+    if (have_last_) {
+      dt = std::chrono::duration<double>(now - last_time_).count();
+      if (!std::isfinite(dt) || dt <= 0.0 || dt > config_.reset_timeout_s) {
+        have_last_ = false;
+        dt = 1.0 / std::max(config_.reference_rate_hz, 1.0);
+      }
+    }
+    if (!have_last_) {
+      last_yaw_ = feedback.yaw_rad;
+      last_pitch_ = feedback.pitch_rad;
+      last_yaw_vel_ = 0.0;
+      last_pitch_vel_ = 0.0;
+      have_last_ = true;
+    }
+
+    const AxisState yaw = stepAxis(
+        tools::limit_rad(target_yaw - last_yaw_), last_yaw_vel_, dt,
+        config_.max_yaw_rate_rad_s, config_.max_yaw_acc_rad_s2, true);
+    const AxisState pitch = stepAxis(
+        target_pitch - last_pitch_, last_pitch_vel_, dt,
+        config_.max_pitch_rate_rad_s, config_.max_pitch_acc_rad_s2, false);
+
+    command.yaw = last_yaw_ + yaw.step;
+    command.pitch = last_pitch_ + pitch.step;
+    command.yaw_diff = tools::limit_rad(command.yaw - feedback.yaw_rad);
+    command.pitch_diff = command.pitch - feedback.pitch_rad;
+    command.yaw_vel = yaw.velocity;
+    command.pitch_vel = pitch.velocity;
+    command.yaw_acc = yaw.acceleration;
+    command.pitch_acc = pitch.acceleration;
+
+    last_yaw_ = command.yaw;
+    last_pitch_ = command.pitch;
+    last_yaw_vel_ = command.yaw_vel;
+    last_pitch_vel_ = command.pitch_vel;
+    last_time_ = now;
+  }
+
+ private:
+  struct AxisState {
+    double step{0.0};
+    double velocity{0.0};
+    double acceleration{0.0};
+  };
+
+  AxisState stepAxis(double desired_delta, double previous_velocity, double dt,
+                     double max_rate, double max_acc, bool wrap_yaw) const {
+    AxisState state;
+    if (!std::isfinite(desired_delta) || !std::isfinite(dt) || dt <= 0.0) return state;
+
+    double desired_velocity = desired_delta / dt;
+    if (config_.enable_rate_limiter && std::isfinite(max_rate) && max_rate > 0.0) {
+      desired_velocity = std::clamp(desired_velocity, -max_rate, max_rate);
+    }
+
+    double velocity = desired_velocity;
+    if (std::isfinite(max_acc) && max_acc > 0.0) {
+      velocity = std::clamp(
+          desired_velocity,
+          previous_velocity - max_acc * dt,
+          previous_velocity + max_acc * dt);
+    }
+
+    double step = velocity * dt;
+    const bool same_direction =
+        (desired_delta >= 0.0 && step >= 0.0) || (desired_delta <= 0.0 && step <= 0.0);
+    if (same_direction && std::abs(step) > std::abs(desired_delta)) {
+      step = desired_delta;
+      velocity = step / dt;
+    }
+
+    state.step = wrap_yaw ? tools::limit_rad(step) : step;
+    state.velocity = velocity;
+    state.acceleration = (velocity - previous_velocity) / dt;
+    if (std::isfinite(max_acc) && max_acc > 0.0) {
+      state.acceleration = std::clamp(state.acceleration, -max_acc, max_acc);
+    }
+    return state;
+  }
+
+  CommandLimiterConfig config_;
+  bool have_last_{false};
+  double last_yaw_{0.0};
+  double last_pitch_{0.0};
+  double last_yaw_vel_{0.0};
+  double last_pitch_vel_{0.0};
+  std::chrono::steady_clock::time_point last_time_{};
+};
+
+FireGateResult applyFireGate(hfut::GimbalCommand& command,
+                             double desired_yaw,
+                             double desired_pitch,
+                             const CommandLimiterConfig& config) {
+  FireGateResult result;
+  result.yaw_error_rad = std::abs(tools::limit_rad(desired_yaw - command.yaw));
+  result.pitch_error_rad = std::abs(desired_pitch - command.pitch);
+  if (!command.fire_advice || !config.enable_fire_gate) return result;
+
+  if (result.yaw_error_rad > config.fire_yaw_tolerance_rad ||
+      result.pitch_error_rad > config.fire_pitch_tolerance_rad) {
+    command.fire_advice = false;
+    result.blocked = true;
+  }
+  return result;
+}
+
 std::string optionValue(int argc, char** argv, int& index,
                         const std::string& arg, const std::string& name) {
   const std::string prefix = name + "=";
@@ -131,6 +290,66 @@ Eigen::Vector3d readVector3(const YAML::Node& node,
   Eigen::Vector3d value(node[0].as<double>(), node[1].as<double>(), node[2].as<double>());
   if (!value.allFinite()) throw std::invalid_argument(name + " 里存在非有限数值");
   return value;
+}
+
+YAML::Node controllerNode(const YAML::Node& root) {
+  const YAML::Node nested = root["gimbal_pipeline"]["ros__parameters"]["controller"];
+  if (nested) return nested;
+  if (root["controller"]) return root["controller"];
+  return root;
+}
+
+double degToRad(double degrees) { return degrees * kPi / 180.0; }
+
+CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
+  CommandLimiterConfig config;
+  const YAML::Node root = YAML::LoadFile(path);
+  const YAML::Node controller = controllerNode(root);
+  const YAML::Node output = controller["output_filter"];
+  const YAML::Node planner = controller["aim_planner"];
+  const YAML::Node limiter = controller["command_limiter"];
+  const YAML::Node fire_gate = controller["fire_gate"];
+
+  if (output) {
+    config.enable_clamping = parseBool(output["enable_clamping"], config.enable_clamping);
+    config.enable_rate_limiter = parseBool(output["enable_rate_limiter"], config.enable_rate_limiter);
+    config.max_yaw_diff_rad = degToRad(parseDouble(output["max_yaw_diff"], 15.0));
+    config.max_pitch_diff_rad = degToRad(parseDouble(output["max_pitch_diff"], 10.0));
+    config.reference_rate_hz = parseDouble(output["one_euro_freq"], config.reference_rate_hz);
+    const double yaw_rate_deg_per_frame = parseDouble(output["max_yaw_rate"], 1.5);
+    const double pitch_rate_deg_per_frame = parseDouble(output["max_pitch_rate"], 1.0);
+    config.max_yaw_rate_rad_s = degToRad(yaw_rate_deg_per_frame * config.reference_rate_hz);
+    config.max_pitch_rate_rad_s = degToRad(pitch_rate_deg_per_frame * config.reference_rate_hz);
+  }
+
+  if (planner) {
+    config.max_yaw_acc_rad_s2 = parseDouble(planner["max_yaw_acc"], config.max_yaw_acc_rad_s2);
+    config.max_pitch_acc_rad_s2 = parseDouble(planner["max_pitch_acc"], config.max_pitch_acc_rad_s2);
+  }
+
+  if (limiter) {
+    config.enable = parseBool(limiter["enable"], config.enable);
+    config.reset_timeout_s = parseDouble(limiter["reset_timeout_s"], config.reset_timeout_s);
+    config.reference_rate_hz = parseDouble(limiter["reference_rate_hz"], config.reference_rate_hz);
+    config.max_yaw_rate_rad_s = parseDouble(limiter["max_yaw_rate_rad_s"], config.max_yaw_rate_rad_s);
+    config.max_pitch_rate_rad_s = parseDouble(limiter["max_pitch_rate_rad_s"], config.max_pitch_rate_rad_s);
+    config.max_yaw_acc_rad_s2 = parseDouble(limiter["max_yaw_acc_rad_s2"], config.max_yaw_acc_rad_s2);
+    config.max_pitch_acc_rad_s2 = parseDouble(limiter["max_pitch_acc_rad_s2"], config.max_pitch_acc_rad_s2);
+  }
+
+  if (fire_gate) {
+    config.enable_fire_gate = parseBool(fire_gate["enable"], config.enable_fire_gate);
+    config.fire_yaw_tolerance_rad = degToRad(
+        parseDouble(fire_gate["yaw_tolerance"], config.fire_yaw_tolerance_rad * kRadToDeg));
+    config.fire_pitch_tolerance_rad = degToRad(
+        parseDouble(fire_gate["pitch_tolerance"], config.fire_pitch_tolerance_rad * kRadToDeg));
+  }
+
+  if (config.reference_rate_hz <= 0.0) throw std::invalid_argument("controller reference_rate_hz 必须 > 0");
+  if (config.reset_timeout_s <= 0.0) throw std::invalid_argument("controller reset_timeout_s 必须 > 0");
+  if (config.fire_yaw_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire yaw tolerance 必须 > 0");
+  if (config.fire_pitch_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire pitch tolerance 必须 > 0");
+  return config;
 }
 
 void loadHardwareConfig(Options& options) {
@@ -220,6 +439,7 @@ Options parseOptions(int argc, char** argv) {
           "Usage: standard [options]\n"
           "  --hardware-config PATH   硬件 YAML，默认 configs/hardware.yaml\n"
           "  --sp25-config PATH       SP25 算法 YAML，默认 configs/standard3.yaml\n"
+          "  --controller-config PATH 控制输出 YAML，默认 configs/controller.yaml\n"
           "  --sp25-device NAME       覆盖 OpenVINO device，例如 GPU 或 CPU\n"
           "  --camera-backend NAME    hik | opencv\n"
           "  --camera-source PATH     OpenCV 视频文件、流地址或设备路径\n"
@@ -261,6 +481,8 @@ Options parseOptions(int argc, char** argv) {
       continue;
     } else if (auto value = optionValue(argc, argv, i, arg, "--sp25-config"); !value.empty()) {
       options.sp25_config = value;
+    } else if (auto value = optionValue(argc, argv, i, arg, "--controller-config"); !value.empty()) {
+      options.controller_config = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--sp25-device"); !value.empty()) {
       options.sp25_device = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--camera-backend"); !value.empty()) {
@@ -577,6 +799,8 @@ int run(const Options& options) {
   if (!options.dry_run && !serial.open()) {
     throw std::runtime_error("串口打开失败: " + serial.errorMessage());
   }
+  const auto command_limiter_config = loadCommandLimiterConfig(options.controller_config);
+  CommandLimiter command_limiter(command_limiter_config);
 
   auto_aim::YOLO detector(adapted_config_path, false);
   auto_aim::Solver solver(adapted_config_path);
@@ -614,6 +838,17 @@ int run(const Options& options) {
   std::printf("[standard] sp25_config=%s runtime_config=%s calibration_mode=%s\n",
               options.sp25_config.c_str(), adapted_config_path.c_str(),
               hfut::video::calibrationModeName(calibration_mode));
+  std::printf(
+      "[standard] controller_config=%s limiter=%s yaw_rate=%.2f pitch_rate=%.2f "
+      "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg\n",
+      options.controller_config.c_str(), command_limiter_config.enable ? "on" : "off",
+      command_limiter_config.max_yaw_rate_rad_s,
+      command_limiter_config.max_pitch_rate_rad_s,
+      command_limiter_config.max_yaw_acc_rad_s2,
+      command_limiter_config.max_pitch_acc_rad_s2,
+      command_limiter_config.enable_fire_gate ? "on" : "off",
+      command_limiter_config.fire_yaw_tolerance_rad * kRadToDeg,
+      command_limiter_config.fire_pitch_tolerance_rad * kRadToDeg);
 
   hfut::io::SerialFeedback latest_feedback;
   latest_feedback.bullet_speed = options.bullet_speed;
@@ -703,6 +938,11 @@ int run(const Options& options) {
     const Eigen::Vector3d gimbal_pos = tools::eulers(solver.R_gimbal2world(), 2, 1, 0);
     sp_command.shoot = shooter.shoot(sp_command, aimer, targets, gimbal_pos);
     hfut::GimbalCommand command = convertCommand(sp_command, aimer, latest_feedback, options.enable_fire);
+    const double desired_yaw = command.yaw;
+    const double desired_pitch = command.pitch;
+    command_limiter.apply(command, latest_feedback, std::chrono::steady_clock::now());
+    const FireGateResult fire_gate = applyFireGate(
+        command, desired_yaw, desired_pitch, command_limiter_config);
     const auto aim_end = std::chrono::steady_clock::now();
 
     const auto serial_tx_start = aim_end;
@@ -728,10 +968,21 @@ int run(const Options& options) {
     web_status.feedback_pitch_deg = latest_feedback.pitch_rad * kRadToDeg;
     web_status.command_yaw_deg = command.yaw * kRadToDeg;
     web_status.command_pitch_deg = command.pitch * kRadToDeg;
+    web_status.command_yaw_vel_rad_s = command.yaw_vel;
+    web_status.command_pitch_vel_rad_s = command.pitch_vel;
+    web_status.command_yaw_acc_rad_s2 = command.yaw_acc;
+    web_status.command_pitch_acc_rad_s2 = command.pitch_acc;
+    web_status.target_yaw_deg = desired_yaw * kRadToDeg;
+    web_status.target_pitch_deg = desired_pitch * kRadToDeg;
+    web_status.yaw_error_deg = command.yaw_diff * kRadToDeg;
+    web_status.pitch_error_deg = command.pitch_diff * kRadToDeg;
+    web_status.limiter_yaw_error_deg = fire_gate.yaw_error_rad * kRadToDeg;
+    web_status.limiter_pitch_error_deg = fire_gate.pitch_error_rad * kRadToDeg;
     web_status.distance_m = command.distance;
     web_status.feedback_age_ms = options.dry_run ? 0.0 : static_cast<double>(feedback_age.count());
     web_status.fire_advice = sp_command.shoot;
     web_status.fire = command.fire_advice;
+    web_status.fire_blocked_by_limiter = fire_gate.blocked;
     web_status.dry_run = options.dry_run;
     web_status.fire_enabled = options.enable_fire;
     web_status.enemy_color = options.enemy_color;
@@ -759,10 +1010,15 @@ int run(const Options& options) {
     if (visual_end - last_log > std::chrono::seconds(1)) {
       std::printf(
           "[standard] frames=%llu fps=%.1f armors=%zu tracked=%zu state=%s "
-          "yaw=%.2f pitch=%.2f distance=%.3f fire=%d latency=%.1fms\n",
+          "yaw=%.2f pitch=%.2f yaw_vel=%.3f pitch_vel=%.3f "
+          "yaw_acc=%.3f pitch_acc=%.3f lim_err=%.2f/%.2fdeg distance=%.3f "
+          "sp_fire=%d fire=%d gate=%d latency=%.1fms\n",
           static_cast<unsigned long long>(frames), runtime_fps, armors.size(), targets.size(),
           tracker.state().c_str(), command.yaw * kRadToDeg, command.pitch * kRadToDeg,
-          command.distance, command.fire_advice ? 1 : 0, elapsedMs(detect_start, aim_end));
+          command.yaw_vel, command.pitch_vel, command.yaw_acc, command.pitch_acc,
+          fire_gate.yaw_error_rad * kRadToDeg, fire_gate.pitch_error_rad * kRadToDeg,
+          command.distance, sp_command.shoot ? 1 : 0, command.fire_advice ? 1 : 0,
+          fire_gate.blocked ? 1 : 0, elapsedMs(detect_start, aim_end));
       std::printf(
           "[standard] timing_ms total=%.1f serial_rx=%.2f capture=%.2f "
           "detect=%.2f track=%.2f aim=%.2f serial_tx=%.2f visual=%.2f\n",

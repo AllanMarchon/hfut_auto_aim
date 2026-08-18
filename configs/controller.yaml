@@ -1,0 +1,45 @@
+# SP25 实车入口 standard 的控制输出配置。
+#
+# 这个文件保留旧工程 controller.yaml 的存放习惯，但当前只读取与串口输出
+# 直接相关的参数：角度限幅、速度限幅、角加速度限幅和限幅器复位时间。
+# 串口打包格式仍由 hardware.yaml 的 serial 段决定。
+gimbal_pipeline:
+  ros__parameters:
+    controller:
+      # 与旧工程一致：云台能力上限放在 aim_planner 下。
+      # 单位：rad/s²。standard 会用它生成 yaw_acc / pitch_acc 字段。
+      aim_planner:
+        enable: true
+        max_yaw_acc: 80.0
+        max_pitch_acc: 80.0
+
+      # 保留旧 output_filter 的常调字段。
+      # max_yaw_diff / max_pitch_diff 单位：度，表示相对当前反馈角的最大单帧目标偏差。
+      # max_yaw_rate / max_pitch_rate 沿用旧语义：度/帧；standard 会乘 one_euro_freq
+      # 转成 rad/s，用于限制串口输出的 yaw_vel / pitch_vel。
+      output_filter:
+        enable_clamping: true
+        max_yaw_diff: 15.0
+        max_pitch_diff: 10.0
+        enable_rate_limiter: true
+        max_yaw_rate: 1.5
+        max_pitch_rate: 1.0
+        one_euro_freq: 250.0
+
+      # SP25 实车入口新增的轻量限幅器开关。
+      # 一般只需要改上面的旧字段；这里用于特殊情况下覆盖换算后的 rad/s / rad/s²。
+      command_limiter:
+        enable: true
+        reset_timeout_s: 0.25
+        # max_yaw_rate_rad_s: 6.545
+        # max_pitch_rate_rad_s: 4.363
+        # max_yaw_acc_rad_s2: 80.0
+        # max_pitch_acc_rad_s2: 80.0
+
+      # 限幅后开火门控：SP25 先给出原始瞄准角和开火建议，standard 再检查
+      # 最终串口下发角是否已经追到原始瞄准角。没有追到就只发角度，不发开火位。
+      # 单位：度；默认对齐 standard3.yaml 的 first_tolerance / second_tolerance。
+      fire_gate:
+        enable: true
+        yaw_tolerance: 3.0
+        pitch_tolerance: 2.0

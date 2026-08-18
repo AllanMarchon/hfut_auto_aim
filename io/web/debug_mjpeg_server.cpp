@@ -65,6 +65,10 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"command_pitch_vel_rad_s\":" << finiteOrZero(status.command_pitch_vel_rad_s)
       << ",\"command_yaw_acc_rad_s2\":" << finiteOrZero(status.command_yaw_acc_rad_s2)
       << ",\"command_pitch_acc_rad_s2\":" << finiteOrZero(status.command_pitch_acc_rad_s2)
+      << ",\"target_yaw_deg\":" << finiteOrZero(status.target_yaw_deg)
+      << ",\"target_pitch_deg\":" << finiteOrZero(status.target_pitch_deg)
+      << ",\"limiter_yaw_error_deg\":" << finiteOrZero(status.limiter_yaw_error_deg)
+      << ",\"limiter_pitch_error_deg\":" << finiteOrZero(status.limiter_pitch_error_deg)
       << ",\"distance_m\":" << finiteOrZero(status.distance_m)
       << ",\"pnp_first_distance_m\":" << finiteOrZero(status.pnp_first_distance_m)
       << ",\"yaw_error_deg\":" << finiteOrZero(status.yaw_error_deg)
@@ -72,6 +76,7 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"feedback_age_ms\":" << finiteOrZero(status.feedback_age_ms)
       << ",\"fire_advice\":" << (status.fire_advice ? "true" : "false")
       << ",\"fire\":" << (status.fire ? "true" : "false")
+      << ",\"fire_blocked_by_limiter\":" << (status.fire_blocked_by_limiter ? "true" : "false")
       << ",\"dry_run\":" << (status.dry_run ? "true" : "false")
       << ",\"fire_enabled\":" << (status.fire_enabled ? "true" : "false")
       << ",\"enemy_color\":\"" << escapeJson(status.enemy_color) << "\""
@@ -101,6 +106,7 @@ std::string indexHtml() {
       --green: #31d07d;
       --blue: #5cb7ff;
       --orange: #ff9f43;
+      --violet: #b78cff;
       --red: #ff5c70;
       --yellow: #ffd166;
     }
@@ -348,6 +354,7 @@ const POLL_MS = 200;
 const COLORS = {
   feedback: '#5cb7ff',
   command: '#ff9f43',
+  target: '#b78cff',
   error: '#ff5c70',
   fire: '#31d07d',
   grid: '#2d3440',
@@ -363,8 +370,9 @@ const CHARTS = [
     unit: 'deg',
     series: [
       {key: 'feedback_yaw_deg', label: 'fb_yaw', color: COLORS.feedback, digits: 2},
+      {key: 'target_yaw_deg', label: 'sp_yaw', color: COLORS.target, digits: 2},
       {key: 'command_yaw_deg', label: 'cmd_yaw', color: COLORS.command, digits: 2},
-      {key: 'yaw_error_deg', label: 'error', color: COLORS.error, digits: 2}
+      {key: 'limiter_yaw_error_deg', label: 'lim_err', color: COLORS.error, digits: 2}
     ]
   },
   {
@@ -374,8 +382,9 @@ const CHARTS = [
     unit: 'deg',
     series: [
       {key: 'feedback_pitch_deg', label: 'fb_pitch', color: COLORS.feedback, digits: 2},
+      {key: 'target_pitch_deg', label: 'sp_pitch', color: COLORS.target, digits: 2},
       {key: 'command_pitch_deg', label: 'cmd_pitch', color: COLORS.command, digits: 2},
-      {key: 'pitch_error_deg', label: 'error', color: COLORS.error, digits: 2}
+      {key: 'limiter_pitch_error_deg', label: 'lim_err', color: COLORS.error, digits: 2}
     ]
   },
   {
@@ -403,6 +412,9 @@ const TELEMETRY = [
   ['dry run', 'dry_run', null, ''],
   ['fire enabled', 'fire_enabled', null, ''],
   ['distance', 'distance_m', 3, ' m'],
+  ['lim yaw err', 'limiter_yaw_error_deg', 2, ' deg'],
+  ['lim pitch err', 'limiter_pitch_error_deg', 2, ' deg'],
+  ['fire blocked', 'fire_blocked_by_limiter', null, ''],
   ['cmd yaw vel', 'command_yaw_vel_rad_s', 3, ' rad/s'],
   ['cmd pitch vel', 'command_pitch_vel_rad_s', 3, ' rad/s'],
   ['cmd yaw acc', 'command_yaw_acc_rad_s2', 3, ' rad/s^2'],
@@ -447,6 +459,14 @@ function normalizeStatus(status) {
   status.pitch_error_deg = finite(
       status.pitch_error_deg,
       finite(status.command_pitch_deg) - finite(status.feedback_pitch_deg));
+  status.target_yaw_deg = finite(status.target_yaw_deg, finite(status.command_yaw_deg));
+  status.target_pitch_deg = finite(status.target_pitch_deg, finite(status.command_pitch_deg));
+  status.limiter_yaw_error_deg = finite(
+      status.limiter_yaw_error_deg,
+      finite(status.target_yaw_deg) - finite(status.command_yaw_deg));
+  status.limiter_pitch_error_deg = finite(
+      status.limiter_pitch_error_deg,
+      finite(status.target_pitch_deg) - finite(status.command_pitch_deg));
   status.distance_m = finite(status.distance_m);
   status.pnp_first_distance_m = finite(status.pnp_first_distance_m);
   return status;
@@ -491,14 +511,17 @@ function updateCards(status) {
   document.getElementById('meta-distance').textContent =
       'yaw/pitch target';
 
-  document.getElementById('value-fire').textContent = status.fire_advice ? 'YES' : 'HOLD';
+  document.getElementById('value-fire').textContent = status.fire ? 'SEND' : (status.fire_advice ? 'BLOCK' : 'HOLD');
   document.getElementById('meta-fire').textContent =
-      `safety=${status.fire_enabled ? 'enabled' : 'disabled'} dry=${status.dry_run ? 1 : 0}`;
+      `sp=${status.fire_advice ? 1 : 0} sent=${status.fire ? 1 : 0} gate=${status.fire_blocked_by_limiter ? 1 : 0}`;
 
   const pill = document.getElementById('track-pill');
-  if (status.fire_advice) {
+  if (status.fire) {
     pill.textContent = 'FIRE';
     pill.className = 'pill ok';
+  } else if (status.fire_advice) {
+    pill.textContent = 'BLOCK';
+    pill.className = 'pill warn';
   } else if ((status.tracked ?? 0) > 0) {
     pill.textContent = 'TRACK';
     pill.className = 'pill ok';

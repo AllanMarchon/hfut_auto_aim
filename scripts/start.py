@@ -174,6 +174,7 @@ def build_standard_command(args: argparse.Namespace) -> list[str]:
         str(exe),
         "--hardware-config", str(args.hardware_config),
         "--sp25-config", str(args.config),
+        "--controller-config", str(args.controller_config),
         "--camera-backend", args.camera_backend,
         "--web-port", str(args.web_port),
     ]
@@ -224,6 +225,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--mode", choices=("dry", "live", "build", "check"), default="live")
     parser.add_argument("--config", type=pathlib.Path, default=PROJECT_DIR / "configs" / "standard3.yaml")
     parser.add_argument("--hardware-config", type=pathlib.Path, default=PROJECT_DIR / "configs" / "hardware.yaml")
+    parser.add_argument("--controller-config", type=pathlib.Path, default=PROJECT_DIR / "configs" / "controller.yaml")
     parser.add_argument("--camera-backend", default="hik", choices=("hik", "opencv"))
     parser.add_argument("--sp25-device", default="", help="覆盖 OpenVINO device，例如 GPU 或 CPU。")
     parser.add_argument("--openvino-dir", type=pathlib.Path, default=default_openvino_dir())
@@ -253,6 +255,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         args.extra = args.extra[1:]
     args.config = args.config.expanduser().resolve()
     args.hardware_config = args.hardware_config.expanduser().resolve()
+    args.controller_config = args.controller_config.expanduser().resolve()
     args.openvino_dir = args.openvino_dir.expanduser().resolve()
     args.openvino_lib_dir = args.openvino_lib_dir.expanduser().resolve()
     args.hik_include = args.hik_include.expanduser().resolve()

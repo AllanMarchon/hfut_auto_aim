@@ -81,9 +81,11 @@ python3 scripts/visualize.py --host <小电脑IP>
 
 - `configs/standard3.yaml`：SP25 算法参数、模型路径、OpenVINO device、ROI、传统检测、tracker/aimer/shooter 参数。
 - `configs/hardware.yaml`：HFUT 实车硬件参数，包括海康相机、串口协议、弹速、安全开火开关。
+- `configs/controller.yaml`：串口输出前的云台命令限幅，包括 yaw/pitch 最大角速度、角加速度和限幅后开火门控。
 - `configs/camera_info.yaml`：相机内参和畸变参数。
 
 启动时 `src/standard.cpp` 会把 `hardware.yaml` 和 `camera_info.yaml` 中的实车内外参同步到 `build/sp25_runtime.yaml`，SP25 各模块实际读取这个运行时配置。
+SP25 算出的绝对 yaw/pitch 会再经过 `controller.yaml` 的轻量限幅器，生成串口包里的 `yaw_vel/pitch_vel/yaw_acc/pitch_acc`；如果限幅后串口下发角还没追到 SP25 原始瞄准角，开火位会被强制关掉。
 
 校验配置：
 
