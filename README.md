@@ -86,6 +86,7 @@ python3 scripts/visualize.py --host <小电脑IP>
 
 启动时 `src/standard.cpp` 会把 `hardware.yaml` 和 `camera_info.yaml` 中的实车内外参同步到 `build/sp25_runtime.yaml`，SP25 各模块实际读取这个运行时配置。
 SP25 算出的绝对 yaw/pitch 会再经过 `controller.yaml` 的轻量限幅器，生成串口包里的 `yaw_vel/pitch_vel/yaw_acc/pitch_acc`；如果限幅后串口下发角还没追到 SP25 原始瞄准角，开火位会被强制关掉。
+串口收发单位统一保持 rad / rad/s / rad/s²；Web 可视化和控制台日志为了观察方便显示为角度、deg/s 和 deg/s²。
 
 校验配置：
 

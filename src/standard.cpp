@@ -78,8 +78,8 @@ struct Options {
   std::string serial_tx_protocol{"infantry"};
   std::string serial_rx_protocol{"infantry"};
   std::string infantry32_tail_fields{"duplicate_velocity"};
-  bool command_angles_in_degrees{true};
-  bool feedback_angles_in_degrees{true};
+  bool command_angles_in_degrees{false};
+  bool feedback_angles_in_degrees{false};
   int serial_read_timeout_ms{2};
   int feedback_timeout_ms{100};
   bool require_feedback{true};
@@ -1010,12 +1010,13 @@ int run(const Options& options) {
     if (visual_end - last_log > std::chrono::seconds(1)) {
       std::printf(
           "[standard] frames=%llu fps=%.1f armors=%zu tracked=%zu state=%s "
-          "yaw=%.2f pitch=%.2f yaw_vel=%.3f pitch_vel=%.3f "
-          "yaw_acc=%.3f pitch_acc=%.3f lim_err=%.2f/%.2fdeg distance=%.3f "
+          "yaw=%.2fdeg pitch=%.2fdeg yaw_vel=%.1fdeg/s pitch_vel=%.1fdeg/s "
+          "yaw_acc=%.1fdeg/s2 pitch_acc=%.1fdeg/s2 lim_err=%.2f/%.2fdeg distance=%.3f "
           "sp_fire=%d fire=%d gate=%d latency=%.1fms\n",
           static_cast<unsigned long long>(frames), runtime_fps, armors.size(), targets.size(),
           tracker.state().c_str(), command.yaw * kRadToDeg, command.pitch * kRadToDeg,
-          command.yaw_vel, command.pitch_vel, command.yaw_acc, command.pitch_acc,
+          command.yaw_vel * kRadToDeg, command.pitch_vel * kRadToDeg,
+          command.yaw_acc * kRadToDeg, command.pitch_acc * kRadToDeg,
           fire_gate.yaw_error_rad * kRadToDeg, fire_gate.pitch_error_rad * kRadToDeg,
           command.distance, sp_command.shoot ? 1 : 0, command.fire_advice ? 1 : 0,
           fire_gate.blocked ? 1 : 0, elapsedMs(detect_start, aim_end));

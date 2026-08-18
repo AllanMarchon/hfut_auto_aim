@@ -92,6 +92,12 @@ def require_bool(report: Report, value: Any, name: str) -> None:
         report.error(f"{name} 必须是 true/false")
 
 
+def require_false(report: Report, value: Any, name: str, reason: str) -> None:
+    require_bool(report, value, name)
+    if isinstance(value, bool) and value:
+        report.error(f"{name} 必须为 false：{reason}")
+
+
 def require_choice(report: Report, value: Any, name: str, choices: set[str]) -> None:
     if not isinstance(value, str) or not value:
         report.error(f"{name} 必须是非空字符串，可选值：{sorted(choices)}")
@@ -188,8 +194,18 @@ def validate_hardware(report: Report, repo_root: Path, hardware: Any, camera_inf
         require_choice(report, serial.get("tx_protocol", serial.get("protocol")), "hardware.serial.tx_protocol", SERIAL_PROTOCOLS)
         require_choice(report, serial.get("rx_protocol", serial.get("protocol")), "hardware.serial.rx_protocol", SERIAL_PROTOCOLS)
         require_choice(report, serial.get("infantry32_tail_fields"), "hardware.serial.infantry32_tail_fields", {"duplicate_velocity", "acceleration"})
-        require_bool(report, serial.get("command_angles_in_degrees"), "hardware.serial.command_angles_in_degrees")
-        require_bool(report, serial.get("feedback_angles_in_degrees"), "hardware.serial.feedback_angles_in_degrees")
+        require_false(
+            report,
+            serial.get("command_angles_in_degrees"),
+            "hardware.serial.command_angles_in_degrees",
+            "电控串口下发统一使用 rad / rad/s / rad/s²",
+        )
+        require_false(
+            report,
+            serial.get("feedback_angles_in_degrees"),
+            "hardware.serial.feedback_angles_in_degrees",
+            "电控串口反馈统一按 rad 解析",
+        )
         require_number(report, serial.get("read_timeout_ms"), "hardware.serial.read_timeout_ms")
         require_number(report, serial.get("feedback_timeout_ms"), "hardware.serial.feedback_timeout_ms", positive=True)
         require_bool(report, serial.get("require_feedback"), "hardware.serial.require_feedback")

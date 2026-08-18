@@ -351,6 +351,7 @@ std::string indexHtml() {
 <script>
 const HISTORY_SECONDS = 18;
 const POLL_MS = 200;
+const RAD_TO_DEG = 180 / Math.PI;
 const COLORS = {
   feedback: '#5cb7ff',
   command: '#ff9f43',
@@ -415,10 +416,10 @@ const TELEMETRY = [
   ['lim yaw err', 'limiter_yaw_error_deg', 2, ' deg'],
   ['lim pitch err', 'limiter_pitch_error_deg', 2, ' deg'],
   ['fire blocked', 'fire_blocked_by_limiter', null, ''],
-  ['cmd yaw vel', 'command_yaw_vel_rad_s', 3, ' rad/s'],
-  ['cmd pitch vel', 'command_pitch_vel_rad_s', 3, ' rad/s'],
-  ['cmd yaw acc', 'command_yaw_acc_rad_s2', 3, ' rad/s^2'],
-  ['cmd pitch acc', 'command_pitch_acc_rad_s2', 3, ' rad/s^2']
+  ['cmd yaw vel', 'command_yaw_vel_deg_s', 1, ' deg/s'],
+  ['cmd pitch vel', 'command_pitch_vel_deg_s', 1, ' deg/s'],
+  ['cmd yaw acc', 'command_yaw_acc_deg_s2', 1, ' deg/s^2'],
+  ['cmd pitch acc', 'command_pitch_acc_deg_s2', 1, ' deg/s^2']
 ];
 
 const defaultVisible = CHARTS.flatMap(chart => chart.series.map(series => series.key));
@@ -467,6 +468,10 @@ function normalizeStatus(status) {
   status.limiter_pitch_error_deg = finite(
       status.limiter_pitch_error_deg,
       finite(status.target_pitch_deg) - finite(status.command_pitch_deg));
+  status.command_yaw_vel_deg_s = finite(status.command_yaw_vel_rad_s) * RAD_TO_DEG;
+  status.command_pitch_vel_deg_s = finite(status.command_pitch_vel_rad_s) * RAD_TO_DEG;
+  status.command_yaw_acc_deg_s2 = finite(status.command_yaw_acc_rad_s2) * RAD_TO_DEG;
+  status.command_pitch_acc_deg_s2 = finite(status.command_pitch_acc_rad_s2) * RAD_TO_DEG;
   status.distance_m = finite(status.distance_m);
   status.pnp_first_distance_m = finite(status.pnp_first_distance_m);
   return status;

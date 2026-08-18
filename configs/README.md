@@ -24,6 +24,8 @@
 5. 串口无反馈或云台不动：先看 `hardware.serial` 的端口、波特率、收发协议和角度单位。
 6. 不开火：先确认 `hardware.safety.enable_fire`、启动命令是否带 `--allow-fire`，再看 `controller.yaml` 的 `fire_gate`。
 
+串口收发单位固定为 rad / rad/s / rad/s²。Web 可视化和控制台日志会把角度类数据转成度制，方便上车观察。
+
 ## 校验命令
 
 ```bash

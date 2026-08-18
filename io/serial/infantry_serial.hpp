@@ -36,8 +36,8 @@ struct InfantrySerialConfig {
   InfantryPacketLayout rx_layout = InfantryPacketLayout::kInfantry24;
   Infantry32TailFields tail_fields = Infantry32TailFields::kDuplicateVelocity;
   InfantryStatusByte status_byte = InfantryStatusByte::kFireAdvice;
-  bool command_angles_in_degrees = true;
-  bool feedback_angles_in_degrees = true;
+  bool command_angles_in_degrees = false;
+  bool feedback_angles_in_degrees = false;
   bool allow_fire = false;
   int read_timeout_ms = 20;
 };

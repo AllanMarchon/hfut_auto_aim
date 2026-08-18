@@ -14,8 +14,8 @@ namespace hfut::io {
 struct Infantry32SerialConfig {
   std::string port = "/dev/ttyACM0";
   int baudrate = 115200;
-  bool command_angles_in_degrees = true;
-  bool feedback_angles_in_degrees = true;
+  bool command_angles_in_degrees = false;
+  bool feedback_angles_in_degrees = false;
   bool allow_fire = false;
   int read_timeout_ms = 20;
 };
