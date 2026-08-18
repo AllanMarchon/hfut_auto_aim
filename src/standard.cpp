@@ -107,8 +107,8 @@ struct CommandLimiterConfig {
   bool target_stabilizer_freeze_on_unstable_state{true};
   double max_yaw_diff_rad{15.0 * kPi / 180.0};
   double max_pitch_diff_rad{10.0 * kPi / 180.0};
-  double max_yaw_rate_rad_s{1.5 * 250.0 * kPi / 180.0};
-  double max_pitch_rate_rad_s{1.0 * 250.0 * kPi / 180.0};
+  double max_yaw_step_rad{1.5 * kPi / 180.0};
+  double max_pitch_step_rad{1.0 * kPi / 180.0};
   double max_yaw_acc_rad_s2{80.0};
   double max_pitch_acc_rad_s2{80.0};
   double fire_yaw_tolerance_rad{3.0 * kPi / 180.0};
@@ -129,218 +129,178 @@ struct FireGateResult {
   bool blocked{false};
 };
 
-class CommandLimiter {
+class SimpleCommandGuard {
  public:
-  explicit CommandLimiter(CommandLimiterConfig config) : config_(config) {}
+  explicit SimpleCommandGuard(CommandLimiterConfig config) : config_(config) {}
 
   void apply(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
-             std::chrono::steady_clock::time_point now) {
-    if (!config_.enable || command.mode != hfut::GimbalMode::normal_measurement) {
-      command.yaw_vel = 0.0;
-      command.pitch_vel = 0.0;
-      command.yaw_acc = 0.0;
-      command.pitch_acc = 0.0;
-      have_last_ = false;
-      return;
-    }
+             const std::string& track_state, std::chrono::steady_clock::time_point now) {
+    if (!config_.enable) return passThrough(command, feedback, now);
+    if (command.mode != hfut::GimbalMode::normal_measurement) return holdLastAimOnLoss(command, feedback, now);
 
     double target_yaw = command.yaw;
     double target_pitch = command.pitch;
+    bool blocked = false;
+
     if (config_.enable_clamping) {
-      const double yaw_diff = std::clamp(
+      const double clamped_yaw_diff = std::clamp(
           tools::limit_rad(target_yaw - feedback.yaw_rad),
           -config_.max_yaw_diff_rad, config_.max_yaw_diff_rad);
-      const double pitch_diff = std::clamp(
+      const double clamped_pitch_diff = std::clamp(
           target_pitch - feedback.pitch_rad,
           -config_.max_pitch_diff_rad, config_.max_pitch_diff_rad);
-      target_yaw = feedback.yaw_rad + yaw_diff;
-      target_pitch = feedback.pitch_rad + pitch_diff;
+      blocked = blocked || std::abs(tools::limit_rad(target_yaw - feedback.yaw_rad) - clamped_yaw_diff) > 1e-9;
+      blocked = blocked || std::abs((target_pitch - feedback.pitch_rad) - clamped_pitch_diff) > 1e-9;
+      target_yaw = feedback.yaw_rad + clamped_yaw_diff;
+      target_pitch = feedback.pitch_rad + clamped_pitch_diff;
     }
 
     double dt = 1.0 / std::max(config_.reference_rate_hz, 1.0);
     if (have_last_) {
       dt = std::chrono::duration<double>(now - last_time_).count();
       if (!std::isfinite(dt) || dt <= 0.0 || dt > config_.reset_timeout_s) {
-        have_last_ = false;
         dt = 1.0 / std::max(config_.reference_rate_hz, 1.0);
+        have_last_ = false;
       }
     }
-    if (!have_last_) {
-      last_yaw_ = feedback.yaw_rad;
-      last_pitch_ = feedback.pitch_rad;
-      last_yaw_vel_ = 0.0;
-      last_pitch_vel_ = 0.0;
-      have_last_ = true;
-    }
 
-    const AxisState yaw = stepAxis(
-        tools::limit_rad(target_yaw - last_yaw_), last_yaw_vel_, dt,
-        config_.max_yaw_rate_rad_s, config_.max_yaw_acc_rad_s2, true);
-    const AxisState pitch = stepAxis(
-        target_pitch - last_pitch_, last_pitch_vel_, dt,
-        config_.max_pitch_rate_rad_s, config_.max_pitch_acc_rad_s2, false);
-
-    command.yaw = last_yaw_ + yaw.step;
-    command.pitch = last_pitch_ + pitch.step;
-    command.yaw_diff = tools::limit_rad(command.yaw - feedback.yaw_rad);
-    command.pitch_diff = command.pitch - feedback.pitch_rad;
-    command.yaw_vel = yaw.velocity;
-    command.pitch_vel = pitch.velocity;
-    command.yaw_acc = yaw.acceleration;
-    command.pitch_acc = pitch.acceleration;
-
-    last_yaw_ = command.yaw;
-    last_pitch_ = command.pitch;
-    last_yaw_vel_ = command.yaw_vel;
-    last_pitch_vel_ = command.pitch_vel;
-    last_time_ = now;
-  }
-
- private:
-  struct AxisState {
-    double step{0.0};
-    double velocity{0.0};
-    double acceleration{0.0};
-  };
-
-  AxisState stepAxis(double desired_delta, double previous_velocity, double dt,
-                     double max_rate, double max_acc, bool wrap_yaw) const {
-    AxisState state;
-    if (!std::isfinite(desired_delta) || !std::isfinite(dt) || dt <= 0.0) return state;
-
-    double desired_velocity = desired_delta / dt;
-    if (config_.enable_rate_limiter && std::isfinite(max_rate) && max_rate > 0.0) {
-      desired_velocity = std::clamp(desired_velocity, -max_rate, max_rate);
-    }
-
-    double velocity = desired_velocity;
-    if (std::isfinite(max_acc) && max_acc > 0.0) {
-      velocity = std::clamp(
-          desired_velocity,
-          previous_velocity - max_acc * dt,
-          previous_velocity + max_acc * dt);
-    }
-
-    double step = velocity * dt;
-    const bool same_direction =
-        (desired_delta >= 0.0 && step >= 0.0) || (desired_delta <= 0.0 && step <= 0.0);
-    if (same_direction && std::abs(step) > std::abs(desired_delta)) {
-      step = desired_delta;
-      velocity = step / dt;
-    }
-
-    state.step = wrap_yaw ? tools::limit_rad(step) : step;
-    state.velocity = velocity;
-    state.acceleration = (velocity - previous_velocity) / dt;
-    if (std::isfinite(max_acc) && max_acc > 0.0) {
-      state.acceleration = std::clamp(state.acceleration, -max_acc, max_acc);
-    }
-    return state;
-  }
-
-  CommandLimiterConfig config_;
-  bool have_last_{false};
-  double last_yaw_{0.0};
-  double last_pitch_{0.0};
-  double last_yaw_vel_{0.0};
-  double last_pitch_vel_{0.0};
-  std::chrono::steady_clock::time_point last_time_{};
-};
-
-class TargetCommandStabilizer {
- public:
-  explicit TargetCommandStabilizer(CommandLimiterConfig config) : config_(config) {}
-
-  void apply(hfut::GimbalCommand& command, const std::string& track_state,
-             std::chrono::steady_clock::time_point now) {
-    if (!config_.enable_target_stabilizer) {
-      reset();
-      return;
-    }
-
-    if (command.mode != hfut::GimbalMode::normal_measurement) {
-      holdLastAimOnLoss(command, now);
-      return;
-    }
-
-    if (!have_last_) {
-      saveLastAim(command, now);
-      return;
-    }
-
-    double dt = std::chrono::duration<double>(now - last_time_).count();
-    if (!std::isfinite(dt) || dt <= 0.0 || dt > config_.reset_timeout_s) {
-      saveLastAim(command, now);
-      hold_frames_left_ = 0;
-      return;
-    }
-
-    const bool unstable_state = track_state != "tracking";
-    if (config_.target_stabilizer_freeze_on_unstable_state && unstable_state) {
-      freezeCommand(command, now);
-      return;
-    }
-
-    const double yaw_delta = tools::limit_rad(command.yaw - last_yaw_);
-    if (hold_frames_left_ > 0) {
-      --hold_frames_left_;
+    if (have_last_ && config_.target_stabilizer_freeze_on_unstable_state && track_state != "tracking") {
+      command.yaw = last_yaw_;
+      command.pitch = last_pitch_;
+      command.distance = last_distance_;
       command.fire_advice = false;
+      fillDiffAndMotion(command, feedback, now, false);
+      last_time_ = now;
+      return;
     }
 
-    if (config_.target_stabilizer_max_yaw_jump_rad > 0.0 &&
-        std::abs(yaw_delta) > config_.target_stabilizer_max_yaw_jump_rad) {
-      hold_frames_left_ = std::max(hold_frames_left_, config_.target_stabilizer_hold_frames);
-      command.fire_advice = false;
+    if (have_last_ && config_.enable_target_stabilizer) {
+      const double yaw_jump = std::abs(tools::limit_rad(target_yaw - last_yaw_));
+      const double pitch_jump = std::abs(target_pitch - last_pitch_);
+      const bool jump = yaw_jump > config_.target_stabilizer_max_yaw_jump_rad ||
+                        pitch_jump > config_.max_pitch_diff_rad;
+      bool hold_last_target = false;
+      if (jump) {
+        const bool same_candidate = have_jump_candidate_ &&
+                                    std::abs(tools::limit_rad(target_yaw - jump_candidate_yaw_)) <=
+                                        config_.target_stabilizer_max_yaw_jump_rad &&
+                                    std::abs(target_pitch - jump_candidate_pitch_) <= config_.max_pitch_diff_rad;
+        if (!same_candidate) {
+          jump_candidate_yaw_ = target_yaw;
+          jump_candidate_pitch_ = target_pitch;
+          jump_hold_count_ = 0;
+          have_jump_candidate_ = true;
+        }
+        if (jump_hold_count_ < config_.target_stabilizer_hold_frames) {
+          ++jump_hold_count_;
+          hold_last_target = true;
+        }
+        blocked = true;
+      } else {
+        have_jump_candidate_ = false;
+        jump_hold_count_ = 0;
+      }
+      if (hold_last_target) {
+        target_yaw = last_yaw_;
+        target_pitch = last_pitch_;
+        command.distance = last_distance_;
+      }
     }
 
-    double limited_delta = yaw_delta;
-    const double max_step = config_.target_stabilizer_max_yaw_rate_rad_s * dt;
-    if (max_step > 0.0 && std::isfinite(max_step) && std::abs(yaw_delta) > max_step) {
-      limited_delta = std::clamp(yaw_delta, -max_step, max_step);
-      command.fire_advice = false;
+    if (have_last_ && config_.enable_rate_limiter) {
+      double yaw_step_limit = config_.max_yaw_step_rad;
+      const double target_rate_step = config_.target_stabilizer_max_yaw_rate_rad_s * dt;
+      if (std::isfinite(target_rate_step) && target_rate_step > 0.0) {
+        yaw_step_limit = std::min(yaw_step_limit, target_rate_step);
+      }
+      const double yaw_delta = tools::limit_rad(target_yaw - last_yaw_);
+      const double pitch_delta = target_pitch - last_pitch_;
+      const double limited_yaw_delta = std::clamp(yaw_delta, -yaw_step_limit, yaw_step_limit);
+      const double limited_pitch_delta = std::clamp(
+          pitch_delta, -config_.max_pitch_step_rad, config_.max_pitch_step_rad);
+      blocked = blocked || std::abs(yaw_delta - limited_yaw_delta) > 1e-9;
+      blocked = blocked || std::abs(pitch_delta - limited_pitch_delta) > 1e-9;
+      target_yaw = tools::limit_rad(last_yaw_ + limited_yaw_delta);
+      target_pitch = last_pitch_ + limited_pitch_delta;
     }
 
-    command.yaw = tools::limit_rad(last_yaw_ + limited_delta);
+    command.yaw = tools::limit_rad(target_yaw);
+    command.pitch = target_pitch;
+    if (blocked) command.fire_advice = false;
+    fillDiffAndMotion(command, feedback, now, true);
     saveLastAim(command, now);
   }
 
  private:
-  void reset() {
-    have_last_ = false;
-    hold_frames_left_ = 0;
+  void passThrough(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
+                   std::chrono::steady_clock::time_point now) {
+    fillDiffAndMotion(command, feedback, now, true);
+    if (command.mode == hfut::GimbalMode::normal_measurement) saveLastAim(command, now);
+    else reset();
   }
 
-  void freezeCommand(hfut::GimbalCommand& command, std::chrono::steady_clock::time_point now) {
-    command.yaw = last_yaw_;
-    command.pitch = last_pitch_;
-    command.distance = last_distance_;
-    command.fire_advice = false;
-    last_time_ = now;
-  }
-
-  void holdLastAimOnLoss(hfut::GimbalCommand& command, std::chrono::steady_clock::time_point now) {
-    if (!have_last_ || config_.lost_target_hold_s <= 0.0) {
-      reset();
-      return;
-    }
+  void holdLastAimOnLoss(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
+                         std::chrono::steady_clock::time_point now) {
+    if (!have_last_ || config_.lost_target_hold_s <= 0.0) return resetCommand(command);
     const double lost_s = std::chrono::duration<double>(now - last_valid_time_).count();
-    if (!std::isfinite(lost_s) || lost_s > config_.lost_target_hold_s) {
-      reset();
-      return;
-    }
+    if (!std::isfinite(lost_s) || lost_s > config_.lost_target_hold_s) return resetCommand(command);
 
     command.mode = hfut::GimbalMode::normal_measurement;
     command.yaw = last_yaw_;
     command.pitch = last_pitch_;
     command.distance = last_distance_;
     command.fire_advice = false;
+    fillDiffAndMotion(command, feedback, now, false);
     last_time_ = now;
+  }
+
+  void resetCommand(hfut::GimbalCommand& command) {
+    command.yaw_vel = 0.0;
+    command.pitch_vel = 0.0;
+    command.yaw_acc = 0.0;
+    command.pitch_acc = 0.0;
+    reset();
+  }
+
+  void fillDiffAndMotion(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
+                         std::chrono::steady_clock::time_point now, bool derive_motion) {
+    command.yaw_diff = tools::limit_rad(command.yaw - feedback.yaw_rad);
+    command.pitch_diff = command.pitch - feedback.pitch_rad;
+    if (!derive_motion || !have_last_) {
+      command.yaw_vel = 0.0;
+      command.pitch_vel = 0.0;
+      command.yaw_acc = 0.0;
+      command.pitch_acc = 0.0;
+      return;
+    }
+    const double dt = std::chrono::duration<double>(now - last_time_).count();
+    if (!std::isfinite(dt) || dt <= 1e-6 || dt > config_.reset_timeout_s) {
+      command.yaw_vel = 0.0;
+      command.pitch_vel = 0.0;
+      command.yaw_acc = 0.0;
+      command.pitch_acc = 0.0;
+      return;
+    }
+    command.yaw_vel = tools::limit_rad(command.yaw - last_yaw_) / dt;
+    command.pitch_vel = (command.pitch - last_pitch_) / dt;
+    command.yaw_acc = std::clamp((command.yaw_vel - last_yaw_vel_) / dt,
+                                 -config_.max_yaw_acc_rad_s2, config_.max_yaw_acc_rad_s2);
+    command.pitch_acc = std::clamp((command.pitch_vel - last_pitch_vel_) / dt,
+                                   -config_.max_pitch_acc_rad_s2, config_.max_pitch_acc_rad_s2);
+  }
+
+  void reset() {
+    have_last_ = false;
+    have_jump_candidate_ = false;
+    jump_hold_count_ = 0;
   }
 
   void saveLastAim(const hfut::GimbalCommand& command, std::chrono::steady_clock::time_point now) {
     last_yaw_ = command.yaw;
     last_pitch_ = command.pitch;
     last_distance_ = command.distance;
+    last_yaw_vel_ = command.yaw_vel;
+    last_pitch_vel_ = command.pitch_vel;
     last_time_ = now;
     last_valid_time_ = now;
     have_last_ = true;
@@ -348,10 +308,15 @@ class TargetCommandStabilizer {
 
   CommandLimiterConfig config_;
   bool have_last_{false};
-  int hold_frames_left_{0};
+  bool have_jump_candidate_{false};
+  int jump_hold_count_{0};
+  double jump_candidate_yaw_{0.0};
+  double jump_candidate_pitch_{0.0};
   double last_yaw_{0.0};
   double last_pitch_{0.0};
   double last_distance_{0.0};
+  double last_yaw_vel_{0.0};
+  double last_pitch_vel_{0.0};
   std::chrono::steady_clock::time_point last_time_{};
   std::chrono::steady_clock::time_point last_valid_time_{};
 };
@@ -441,8 +406,8 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
     config.reference_rate_hz = parseDouble(output["one_euro_freq"], config.reference_rate_hz);
     const double yaw_rate_deg_per_frame = parseDouble(output["max_yaw_rate"], 1.5);
     const double pitch_rate_deg_per_frame = parseDouble(output["max_pitch_rate"], 1.0);
-    config.max_yaw_rate_rad_s = degToRad(yaw_rate_deg_per_frame * config.reference_rate_hz);
-    config.max_pitch_rate_rad_s = degToRad(pitch_rate_deg_per_frame * config.reference_rate_hz);
+    config.max_yaw_step_rad = degToRad(yaw_rate_deg_per_frame);
+    config.max_pitch_step_rad = degToRad(pitch_rate_deg_per_frame);
   }
 
   if (planner) {
@@ -454,8 +419,16 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
     config.enable = parseBool(limiter["enable"], config.enable);
     config.reset_timeout_s = parseDouble(limiter["reset_timeout_s"], config.reset_timeout_s);
     config.reference_rate_hz = parseDouble(limiter["reference_rate_hz"], config.reference_rate_hz);
-    config.max_yaw_rate_rad_s = parseDouble(limiter["max_yaw_rate_rad_s"], config.max_yaw_rate_rad_s);
-    config.max_pitch_rate_rad_s = parseDouble(limiter["max_pitch_rate_rad_s"], config.max_pitch_rate_rad_s);
+    config.max_yaw_step_rad = parseDouble(limiter["max_yaw_step_rad"], config.max_yaw_step_rad);
+    config.max_pitch_step_rad = parseDouble(limiter["max_pitch_step_rad"], config.max_pitch_step_rad);
+    if (limiter["max_yaw_rate_rad_s"]) {
+      config.max_yaw_step_rad = limiter["max_yaw_rate_rad_s"].as<double>() /
+                                 std::max(config.reference_rate_hz, 1.0);
+    }
+    if (limiter["max_pitch_rate_rad_s"]) {
+      config.max_pitch_step_rad = limiter["max_pitch_rate_rad_s"].as<double>() /
+                                   std::max(config.reference_rate_hz, 1.0);
+    }
     config.max_yaw_acc_rad_s2 = parseDouble(limiter["max_yaw_acc_rad_s2"], config.max_yaw_acc_rad_s2);
     config.max_pitch_acc_rad_s2 = parseDouble(limiter["max_pitch_acc_rad_s2"], config.max_pitch_acc_rad_s2);
   }
@@ -491,6 +464,8 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
 
   if (config.reference_rate_hz <= 0.0) throw std::invalid_argument("controller reference_rate_hz 必须 > 0");
   if (config.reset_timeout_s <= 0.0) throw std::invalid_argument("controller reset_timeout_s 必须 > 0");
+  if (config.max_yaw_step_rad <= 0.0) throw std::invalid_argument("controller.output_filter.max_yaw_rate 必须 > 0");
+  if (config.max_pitch_step_rad <= 0.0) throw std::invalid_argument("controller.output_filter.max_pitch_rate 必须 > 0");
   if (config.fire_yaw_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire yaw tolerance 必须 > 0");
   if (config.fire_pitch_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire pitch tolerance 必须 > 0");
   if (config.target_stabilizer_max_yaw_jump_rad <= 0.0) {
@@ -971,8 +946,7 @@ int run(const Options& options) {
     throw std::runtime_error("串口打开失败: " + serial.errorMessage());
   }
   const auto command_limiter_config = loadCommandLimiterConfig(options.controller_config);
-  CommandLimiter command_limiter(command_limiter_config);
-  TargetCommandStabilizer target_stabilizer(command_limiter_config);
+  SimpleCommandGuard command_guard(command_limiter_config);
 
   auto_aim::YOLO detector(adapted_config_path, false);
   auto_aim::Solver solver(adapted_config_path);
@@ -1011,13 +985,13 @@ int run(const Options& options) {
               options.sp25_config.c_str(), adapted_config_path.c_str(),
               hfut::video::calibrationModeName(calibration_mode));
   std::printf(
-      "[standard] controller_config=%s limiter=%s yaw_rate=%.2f pitch_rate=%.2f "
+      "[standard] controller_config=%s guard=%s yaw_step=%.2fdeg pitch_step=%.2fdeg "
       "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg "
-      "sp_pitch_to_cmd=%.0f yaw_world_sign=%.0f target_stabilizer=%s jump=%.1fdeg "
-      "rate=%.1fdeg/s hold=%d lost_hold=%.2fs\n",
+      "sp_pitch_to_cmd=%.0f yaw_world_sign=%.0f outlier_guard=%s jump=%.1fdeg "
+      "target_rate=%.1fdeg/s hold=%d lost_hold=%.2fs\n",
       options.controller_config.c_str(), command_limiter_config.enable ? "on" : "off",
-      command_limiter_config.max_yaw_rate_rad_s,
-      command_limiter_config.max_pitch_rate_rad_s,
+      command_limiter_config.max_yaw_step_rad * kRadToDeg,
+      command_limiter_config.max_pitch_step_rad * kRadToDeg,
       command_limiter_config.max_yaw_acc_rad_s2,
       command_limiter_config.max_pitch_acc_rad_s2,
       command_limiter_config.enable_fire_gate ? "on" : "off",
@@ -1122,12 +1096,11 @@ int run(const Options& options) {
         sp_command, aimer, latest_feedback, options.enable_fire, command_limiter_config);
     const double raw_desired_yaw = command.yaw;
     const double raw_desired_pitch = command.pitch;
-    target_stabilizer.apply(command, tracker.state(), std::chrono::steady_clock::now());
+    command_guard.apply(command, latest_feedback, tracker.state(), std::chrono::steady_clock::now());
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
-    command_limiter.apply(command, latest_feedback, std::chrono::steady_clock::now());
     const FireGateResult fire_gate = applyFireGate(
-        command, desired_yaw, desired_pitch, command_limiter_config);
+        command, raw_desired_yaw, raw_desired_pitch, command_limiter_config);
     const auto aim_end = std::chrono::steady_clock::now();
 
     const auto serial_tx_start = aim_end;

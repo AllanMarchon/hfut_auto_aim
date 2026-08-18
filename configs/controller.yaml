@@ -1,7 +1,7 @@
 # SP25 实车入口 standard 的控制输出配置。
 #
-# 这个文件保留旧工程 controller.yaml 的存放习惯，但当前只读取与串口输出
-# 直接相关的参数：角度限幅、速度限幅、角加速度限幅和限幅器复位时间。
+# 这个文件保留旧工程 controller.yaml 的存放习惯，但 standard 只在 SP25 输出
+# 到旧电控串口的边界做轻量保护，不再额外规划二阶云台轨迹。
 # 串口打包格式仍由 hardware.yaml 的 serial 段决定。
 gimbal_pipeline:
   ros__parameters:
@@ -15,8 +15,8 @@ gimbal_pipeline:
 
       # 保留旧 output_filter 的常调字段。
       # max_yaw_diff / max_pitch_diff 单位：度，表示相对当前反馈角的最大单帧目标偏差。
-      # max_yaw_rate / max_pitch_rate 沿用旧语义：度/帧；standard 会乘 one_euro_freq
-      # 转成 rad/s，用于限制串口输出的 yaw_vel / pitch_vel。
+      # max_yaw_rate / max_pitch_rate 沿用旧语义：度/帧。
+      # 这里只限制最终 cmd 每帧能从上一帧变化多少，不再积累速度/加速度状态。
       output_filter:
         enable_clamping: true
         max_yaw_diff: 15.0
@@ -26,22 +26,22 @@ gimbal_pipeline:
         max_pitch_rate: 1.0
         one_euro_freq: 250.0
 
-      # SP25 实车入口新增的轻量限幅器开关。
-      # 一般只需要改上面的旧字段；这里用于特殊情况下覆盖换算后的 rad/s / rad/s²。
+      # SP25 实车入口的轻量输出保护开关。
+      # reset_timeout_s 超时后清空历史，重新接受 SP25 当前输出。
       command_limiter:
         enable: true
         reset_timeout_s: 0.25
-        # max_yaw_rate_rad_s: 6.545
-        # max_pitch_rate_rad_s: 4.363
+        # max_yaw_step_rad: 0.02618
+        # max_pitch_step_rad: 0.01745
         # max_yaw_acc_rad_s2: 80.0
         # max_pitch_acc_rad_s2: 80.0
 
-      # 目标 yaw 稳定器：先稳住 SP25 输出的目标 yaw，再进入 command_limiter。
-      # 用来挡近距离 PnP/整车模型/短暂扰动造成的 sp_yaw 瞬跳，避免闭环把跳变放大成震荡。
+      # SP25 raw 输出外点保护：挡近距离 PnP/整车模型/短暂扰动造成的 raw yaw 瞬跳。
+      # 注意：这里只 hold/限单帧变化，不再生成一条新的二阶控制轨迹。
       target_stabilizer:
         enable: true
-        max_yaw_jump: 4.0      # deg；单次目标 yaw 超过该变化视为跳变，先禁火并限速跟随
-        max_yaw_rate: 120.0    # deg/s；目标 yaw 自身限速，不是串口 yaw_vel 上限
+        max_yaw_jump: 4.0      # deg；单次 raw yaw 超过该变化视为外点，先 hold 上一帧
+        max_yaw_rate: 120.0    # deg/s；额外按真实 dt 限制 cmd 单帧变化
         hold_frames: 3         # 跳变后连续几帧禁止开火建议
         freeze_on_unstable_state: true  # detecting/temp_lost 时先保持上一帧目标 yaw
         lost_target_hold_s: 0.25  # s；短暂丢目标时继续保持上一帧稳定瞄准角，避免视野被拉走
