@@ -34,6 +34,11 @@ struct DebugMjpegStatus {
   int mode{-1};
   double feedback_yaw_deg{0.0};
   double feedback_pitch_deg{0.0};
+  double aligned_feedback_yaw_deg{0.0};
+  double aligned_feedback_pitch_deg{0.0};
+  double feedback_alignment_delta_yaw_deg{0.0};
+  double feedback_alignment_delta_pitch_deg{0.0};
+  double aligned_feedback_age_ms{0.0};
   double command_yaw_deg{0.0};
   double command_pitch_deg{0.0};
   double command_yaw_vel_rad_s{0.0};
@@ -51,6 +56,7 @@ struct DebugMjpegStatus {
   double yaw_error_deg{0.0};
   double pitch_error_deg{0.0};
   double feedback_age_ms{0.0};
+  bool feedback_alignment_used{false};
   bool fire_advice{false};
   bool fire{false};
   bool fire_blocked_by_limiter{false};

@@ -8,6 +8,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <list>
@@ -117,6 +118,10 @@ struct CommandLimiterConfig {
   double reset_timeout_s{0.25};
   double sp_pitch_to_command_sign{-1.0};
   double feedback_yaw_to_world_sign{-1.0};
+  bool enable_feedback_alignment{true};
+  double feedback_alignment_offset_s{0.001};
+  double feedback_alignment_max_sample_age_s{0.05};
+  int feedback_alignment_history_size{1000};
   double target_stabilizer_max_yaw_jump_rad{4.0 * kPi / 180.0};
   double target_stabilizer_max_yaw_rate_rad_s{120.0 * kPi / 180.0};
   double lost_target_hold_s{0.25};
@@ -127,6 +132,81 @@ struct FireGateResult {
   double yaw_error_rad{0.0};
   double pitch_error_rad{0.0};
   bool blocked{false};
+};
+
+class FeedbackHistory {
+ public:
+  using Clock = std::chrono::steady_clock;
+  using TimePoint = Clock::time_point;
+
+ private:
+  struct Sample {
+    TimePoint time;
+    hfut::io::SerialFeedback feedback;
+  };
+
+ public:
+
+  explicit FeedbackHistory(std::size_t max_size) : max_size_(std::max<std::size_t>(max_size, 2U)) {}
+
+  void push(TimePoint receive_time, const hfut::io::SerialFeedback& feedback) {
+    history_.push_back({receive_time, feedback});
+    while (history_.size() > max_size_) history_.pop_front();
+  }
+
+  bool sampleAt(TimePoint target_time, double max_sample_age_s,
+                hfut::io::SerialFeedback& feedback, TimePoint* sample_time) const {
+    if (history_.empty()) return false;
+    if (!std::isfinite(max_sample_age_s) || max_sample_age_s <= 0.0) return false;
+
+    const auto tooFar = [&](TimePoint a, TimePoint b) {
+      return std::chrono::duration<double>(a > b ? a - b : b - a).count() > max_sample_age_s;
+    };
+
+    if (history_.size() == 1 || target_time <= history_.front().time) {
+      if (tooFar(target_time, history_.front().time)) return false;
+      feedback = history_.front().feedback;
+      if (sample_time) *sample_time = history_.front().time;
+      return true;
+    }
+    if (target_time >= history_.back().time) {
+      if (tooFar(target_time, history_.back().time)) return false;
+      feedback = history_.back().feedback;
+      if (sample_time) *sample_time = history_.back().time;
+      return true;
+    }
+
+    const auto upper = std::upper_bound(
+        history_.begin(), history_.end(), target_time,
+        [](TimePoint time, const Sample& sample) { return time < sample.time; });
+    if (upper == history_.begin() || upper == history_.end()) return false;
+    auto lower = upper;
+    --lower;
+    const double duration_s = std::chrono::duration<double>(upper->time - lower->time).count();
+    const double alpha = duration_s > 1e-9
+                             ? std::clamp(std::chrono::duration<double>(target_time - lower->time).count() /
+                                              duration_s,
+                                          0.0, 1.0)
+                             : 0.0;
+
+    feedback = lower->feedback;
+    feedback.roll_rad = lerp(lower->feedback.roll_rad, upper->feedback.roll_rad, alpha);
+    feedback.yaw_rad = lower->feedback.yaw_rad +
+                       alpha * tools::limit_rad(upper->feedback.yaw_rad - lower->feedback.yaw_rad);
+    feedback.pitch_rad = lerp(lower->feedback.pitch_rad, upper->feedback.pitch_rad, alpha);
+    feedback.bullet_speed = lerp(lower->feedback.bullet_speed, upper->feedback.bullet_speed, alpha);
+    feedback.chassis_vx = lerp(lower->feedback.chassis_vx, upper->feedback.chassis_vx, alpha);
+    feedback.chassis_vy = lerp(lower->feedback.chassis_vy, upper->feedback.chassis_vy, alpha);
+    feedback.chassis_wz = lerp(lower->feedback.chassis_wz, upper->feedback.chassis_wz, alpha);
+    if (sample_time) *sample_time = target_time;
+    return true;
+  }
+
+ private:
+  static double lerp(double a, double b, double alpha) { return a + alpha * (b - a); }
+
+  std::size_t max_size_;
+  std::deque<Sample> history_;
 };
 
 class SimpleCommandGuard {
@@ -397,6 +477,7 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   const YAML::Node stabilizer = controller["target_stabilizer"];
   const YAML::Node fire_gate = controller["fire_gate"];
   const YAML::Node adapter = controller["output_adapter"];
+  const YAML::Node feedback_alignment = controller["feedback_alignment"];
 
   if (output) {
     config.enable_clamping = parseBool(output["enable_clamping"], config.enable_clamping);
@@ -462,6 +543,19 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
         parseDouble(adapter["feedback_yaw_to_world_sign"], config.feedback_yaw_to_world_sign);
   }
 
+  if (feedback_alignment) {
+    config.enable_feedback_alignment =
+        parseBool(feedback_alignment["enable"], config.enable_feedback_alignment);
+    config.feedback_alignment_offset_s =
+        parseDouble(feedback_alignment["timestamp_offset_ms"],
+                    config.feedback_alignment_offset_s * 1000.0) / 1000.0;
+    config.feedback_alignment_max_sample_age_s =
+        parseDouble(feedback_alignment["max_sample_age_ms"],
+                    config.feedback_alignment_max_sample_age_s * 1000.0) / 1000.0;
+    config.feedback_alignment_history_size =
+        parseInt(feedback_alignment["history_size"], config.feedback_alignment_history_size);
+  }
+
   if (config.reference_rate_hz <= 0.0) throw std::invalid_argument("controller reference_rate_hz 必须 > 0");
   if (config.reset_timeout_s <= 0.0) throw std::invalid_argument("controller reset_timeout_s 必须 > 0");
   if (config.max_yaw_step_rad <= 0.0) throw std::invalid_argument("controller.output_filter.max_yaw_rate 必须 > 0");
@@ -485,6 +579,16 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   }
   if (std::abs(std::abs(config.feedback_yaw_to_world_sign) - 1.0) > 1e-6) {
     throw std::invalid_argument("controller.output_adapter.feedback_yaw_to_world_sign 必须是 1 或 -1");
+  }
+  if (config.feedback_alignment_offset_s < 0.0 || !std::isfinite(config.feedback_alignment_offset_s)) {
+    throw std::invalid_argument("controller.feedback_alignment.timestamp_offset_ms 必须是 >= 0 的有限数");
+  }
+  if (config.feedback_alignment_max_sample_age_s <= 0.0 ||
+      !std::isfinite(config.feedback_alignment_max_sample_age_s)) {
+    throw std::invalid_argument("controller.feedback_alignment.max_sample_age_ms 必须 > 0");
+  }
+  if (config.feedback_alignment_history_size < 2) {
+    throw std::invalid_argument("controller.feedback_alignment.history_size 必须 >= 2");
   }
   return config;
 }
@@ -988,7 +1092,7 @@ int run(const Options& options) {
       "[standard] controller_config=%s guard=%s yaw_step=%.2fdeg pitch_step=%.2fdeg "
       "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg "
       "sp_pitch_to_cmd=%.0f yaw_world_sign=%.0f outlier_guard=%s jump=%.1fdeg "
-      "target_rate=%.1fdeg/s hold=%d lost_hold=%.2fs\n",
+      "target_rate=%.1fdeg/s hold=%d lost_hold=%.2fs fb_align=%s offset=%.1fms max_age=%.1fms\n",
       options.controller_config.c_str(), command_limiter_config.enable ? "on" : "off",
       command_limiter_config.max_yaw_step_rad * kRadToDeg,
       command_limiter_config.max_pitch_step_rad * kRadToDeg,
@@ -1003,10 +1107,15 @@ int run(const Options& options) {
       command_limiter_config.target_stabilizer_max_yaw_jump_rad * kRadToDeg,
       command_limiter_config.target_stabilizer_max_yaw_rate_rad_s * kRadToDeg,
       command_limiter_config.target_stabilizer_hold_frames,
-      command_limiter_config.lost_target_hold_s);
+      command_limiter_config.lost_target_hold_s,
+      command_limiter_config.enable_feedback_alignment ? "on" : "off",
+      command_limiter_config.feedback_alignment_offset_s * 1000.0,
+      command_limiter_config.feedback_alignment_max_sample_age_s * 1000.0);
 
   hfut::io::SerialFeedback latest_feedback;
   latest_feedback.bullet_speed = options.bullet_speed;
+  FeedbackHistory feedback_history(
+      static_cast<std::size_t>(command_limiter_config.feedback_alignment_history_size));
   bool have_feedback = options.dry_run || !options.require_feedback;
   auto last_feedback_time = std::chrono::steady_clock::now();
   auto last_feedback_wait_log = std::chrono::steady_clock::now();
@@ -1018,20 +1127,29 @@ int run(const Options& options) {
   const auto elapsedMs = [](const auto& start, const auto& end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
   };
+  const auto feedbackTargetTime = [&](std::chrono::steady_clock::time_point capture_time) {
+    return capture_time - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                              std::chrono::duration<double>(
+                                  command_limiter_config.feedback_alignment_offset_s));
+  };
+  const auto drainFeedback = [&]() {
+    if (options.dry_run) return false;
+    hfut::io::SerialFeedback feedback;
+    if (!serial.readFeedback(feedback)) return false;
+    const auto receive_time = std::chrono::steady_clock::now();
+    latest_feedback = feedback;
+    if (latest_feedback.bullet_speed < 14.0) latest_feedback.bullet_speed = options.bullet_speed;
+    have_feedback = true;
+    last_feedback_time = receive_time;
+    feedback_history.push(receive_time, latest_feedback);
+    return true;
+  };
 
   while (!g_stop.load() && (options.max_frames < 0 || processed < options.max_frames)) {
     const auto loop_start = std::chrono::steady_clock::now();
 
     const auto serial_rx_start = loop_start;
-    if (!options.dry_run) {
-      hfut::io::SerialFeedback feedback;
-      if (serial.readFeedback(feedback)) {
-        latest_feedback = feedback;
-        if (latest_feedback.bullet_speed < 14.0) latest_feedback.bullet_speed = options.bullet_speed;
-        have_feedback = true;
-        last_feedback_time = std::chrono::steady_clock::now();
-      }
-    }
+    drainFeedback();
     const auto serial_rx_end = std::chrono::steady_clock::now();
 
     const auto feedback_age = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1067,14 +1185,37 @@ int run(const Options& options) {
       continue;
     }
     const auto capture_end = std::chrono::steady_clock::now();
+    drainFeedback();
+
+    hfut::io::SerialFeedback aligned_feedback = latest_feedback;
+    auto aligned_feedback_time = last_feedback_time;
+    bool used_aligned_feedback = false;
+    if (!options.dry_run && command_limiter_config.enable_feedback_alignment) {
+      used_aligned_feedback = feedback_history.sampleAt(
+          feedbackTargetTime(capture_end),
+          command_limiter_config.feedback_alignment_max_sample_age_s,
+          aligned_feedback, &aligned_feedback_time);
+      if (!used_aligned_feedback) {
+        aligned_feedback = latest_feedback;
+        aligned_feedback_time = last_feedback_time;
+      }
+    }
+    if (aligned_feedback.bullet_speed < 14.0) aligned_feedback.bullet_speed = options.bullet_speed;
+    const auto current_feedback_age = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - last_feedback_time);
+    const double aligned_feedback_age_ms = options.dry_run
+                                               ? 0.0
+                                               : elapsedMs(aligned_feedback_time, capture_end);
+    const double aligned_delta_yaw = tools::limit_rad(latest_feedback.yaw_rad - aligned_feedback.yaw_rad);
+    const double aligned_delta_pitch = latest_feedback.pitch_rad - aligned_feedback.pitch_rad;
 
     const auto adapted_calibration = hfut::video::adaptCalibration(
         source_calibration, frame.image.cols, frame.image.rows, calibration_mode);
     frame.intrinsics = toIntrinsics(adapted_calibration);
-    frame.gimbal_yaw = latest_feedback.yaw_rad;
-    frame.gimbal_pitch = latest_feedback.pitch_rad;
+    frame.gimbal_yaw = aligned_feedback.yaw_rad;
+    frame.gimbal_pitch = aligned_feedback.pitch_rad;
     const auto timestamp = capture_end;
-    solver.set_R_gimbal2world(feedbackQuaternion(latest_feedback, command_limiter_config));
+    solver.set_R_gimbal2world(feedbackQuaternion(aligned_feedback, command_limiter_config));
 
     const auto detect_start = std::chrono::steady_clock::now();
     auto armors = detector.detect(frame.image, static_cast<int>(frame.seq));
@@ -1124,6 +1265,11 @@ int run(const Options& options) {
     web_status.mode = static_cast<int>(command.mode);
     web_status.feedback_yaw_deg = latest_feedback.yaw_rad * kRadToDeg;
     web_status.feedback_pitch_deg = latest_feedback.pitch_rad * kRadToDeg;
+    web_status.aligned_feedback_yaw_deg = aligned_feedback.yaw_rad * kRadToDeg;
+    web_status.aligned_feedback_pitch_deg = aligned_feedback.pitch_rad * kRadToDeg;
+    web_status.feedback_alignment_delta_yaw_deg = aligned_delta_yaw * kRadToDeg;
+    web_status.feedback_alignment_delta_pitch_deg = aligned_delta_pitch * kRadToDeg;
+    web_status.aligned_feedback_age_ms = aligned_feedback_age_ms;
     web_status.command_yaw_deg = command.yaw * kRadToDeg;
     web_status.command_pitch_deg = command.pitch * kRadToDeg;
     web_status.command_yaw_vel_rad_s = command.yaw_vel;
@@ -1139,7 +1285,8 @@ int run(const Options& options) {
     web_status.limiter_yaw_error_deg = fire_gate.yaw_error_rad * kRadToDeg;
     web_status.limiter_pitch_error_deg = fire_gate.pitch_error_rad * kRadToDeg;
     web_status.distance_m = command.distance;
-    web_status.feedback_age_ms = options.dry_run ? 0.0 : static_cast<double>(feedback_age.count());
+    web_status.feedback_age_ms = options.dry_run ? 0.0 : static_cast<double>(current_feedback_age.count());
+    web_status.feedback_alignment_used = used_aligned_feedback;
     web_status.fire_advice = sp_command.shoot;
     web_status.fire = command.fire_advice;
     web_status.fire_blocked_by_limiter = fire_gate.blocked;
@@ -1170,12 +1317,15 @@ int run(const Options& options) {
     if (visual_end - last_log > std::chrono::seconds(1)) {
       std::printf(
           "[standard] frames=%llu fps=%.1f armors=%zu tracked=%zu state=%s "
-          "fb=%.2f/%.2fdeg raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
+          "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
+          "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg distance=%.3f "
           "sp_fire=%d fire=%d gate=%d latency=%.1fms\n",
           static_cast<unsigned long long>(frames), runtime_fps, armors.size(), targets.size(),
           tracker.state().c_str(), latest_feedback.yaw_rad * kRadToDeg,
-          latest_feedback.pitch_rad * kRadToDeg, raw_desired_yaw * kRadToDeg,
+          latest_feedback.pitch_rad * kRadToDeg, aligned_feedback.yaw_rad * kRadToDeg,
+          aligned_feedback.pitch_rad * kRadToDeg, aligned_delta_yaw * kRadToDeg,
+          aligned_delta_pitch * kRadToDeg, aligned_feedback_age_ms, raw_desired_yaw * kRadToDeg,
           raw_desired_pitch * kRadToDeg, desired_yaw * kRadToDeg, desired_pitch * kRadToDeg,
           command.yaw * kRadToDeg, command.pitch * kRadToDeg,
           command.yaw_vel * kRadToDeg, command.pitch_vel * kRadToDeg,

@@ -59,6 +59,11 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"mode\":" << status.mode
       << ",\"feedback_yaw_deg\":" << finiteOrZero(status.feedback_yaw_deg)
       << ",\"feedback_pitch_deg\":" << finiteOrZero(status.feedback_pitch_deg)
+      << ",\"aligned_feedback_yaw_deg\":" << finiteOrZero(status.aligned_feedback_yaw_deg)
+      << ",\"aligned_feedback_pitch_deg\":" << finiteOrZero(status.aligned_feedback_pitch_deg)
+      << ",\"feedback_alignment_delta_yaw_deg\":" << finiteOrZero(status.feedback_alignment_delta_yaw_deg)
+      << ",\"feedback_alignment_delta_pitch_deg\":" << finiteOrZero(status.feedback_alignment_delta_pitch_deg)
+      << ",\"aligned_feedback_age_ms\":" << finiteOrZero(status.aligned_feedback_age_ms)
       << ",\"command_yaw_deg\":" << finiteOrZero(status.command_yaw_deg)
       << ",\"command_pitch_deg\":" << finiteOrZero(status.command_pitch_deg)
       << ",\"command_yaw_vel_rad_s\":" << finiteOrZero(status.command_yaw_vel_rad_s)
@@ -76,6 +81,7 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"yaw_error_deg\":" << finiteOrZero(status.yaw_error_deg)
       << ",\"pitch_error_deg\":" << finiteOrZero(status.pitch_error_deg)
       << ",\"feedback_age_ms\":" << finiteOrZero(status.feedback_age_ms)
+      << ",\"feedback_alignment_used\":" << (status.feedback_alignment_used ? "true" : "false")
       << ",\"fire_advice\":" << (status.fire_advice ? "true" : "false")
       << ",\"fire\":" << (status.fire ? "true" : "false")
       << ",\"fire_blocked_by_limiter\":" << (status.fire_blocked_by_limiter ? "true" : "false")
@@ -373,6 +379,7 @@ const CHARTS = [
     unit: 'deg',
     series: [
       {key: 'feedback_yaw_deg', label: 'fb_yaw', color: COLORS.feedback, digits: 2},
+      {key: 'aligned_feedback_yaw_deg', label: 'align_fb', color: '#65d6ff', digits: 2},
       {key: 'raw_target_yaw_deg', label: 'raw_sp', color: COLORS.target, digits: 2},
       {key: 'target_yaw_deg', label: 'stable_sp', color: '#d3b7ff', digits: 2},
       {key: 'command_yaw_deg', label: 'cmd_yaw', color: COLORS.command, digits: 2},
@@ -386,6 +393,7 @@ const CHARTS = [
     unit: 'deg',
     series: [
       {key: 'feedback_pitch_deg', label: 'fb_pitch', color: COLORS.feedback, digits: 2},
+      {key: 'aligned_feedback_pitch_deg', label: 'align_fb', color: '#65d6ff', digits: 2},
       {key: 'raw_target_pitch_deg', label: 'raw_sp', color: COLORS.target, digits: 2},
       {key: 'target_pitch_deg', label: 'stable_sp', color: '#d3b7ff', digits: 2},
       {key: 'command_pitch_deg', label: 'cmd_pitch', color: COLORS.command, digits: 2},
@@ -466,6 +474,14 @@ function normalizeStatus(status) {
       finite(status.command_pitch_deg) - finite(status.feedback_pitch_deg));
   status.raw_target_yaw_deg = finite(status.raw_target_yaw_deg, finite(status.target_yaw_deg, finite(status.command_yaw_deg)));
   status.raw_target_pitch_deg = finite(status.raw_target_pitch_deg, finite(status.target_pitch_deg, finite(status.command_pitch_deg)));
+  status.aligned_feedback_yaw_deg = finite(status.aligned_feedback_yaw_deg, finite(status.feedback_yaw_deg));
+  status.aligned_feedback_pitch_deg = finite(status.aligned_feedback_pitch_deg, finite(status.feedback_pitch_deg));
+  status.feedback_alignment_delta_yaw_deg = finite(
+      status.feedback_alignment_delta_yaw_deg,
+      finite(status.feedback_yaw_deg) - finite(status.aligned_feedback_yaw_deg));
+  status.feedback_alignment_delta_pitch_deg = finite(
+      status.feedback_alignment_delta_pitch_deg,
+      finite(status.feedback_pitch_deg) - finite(status.aligned_feedback_pitch_deg));
   status.target_yaw_deg = finite(status.target_yaw_deg, finite(status.command_yaw_deg));
   status.target_pitch_deg = finite(status.target_pitch_deg, finite(status.command_pitch_deg));
   status.limiter_yaw_error_deg = finite(
@@ -515,7 +531,7 @@ function updateCards(status) {
   document.getElementById('value-runtime').textContent =
       `${fmt(finite(status.fps), 1)} fps`;
   document.getElementById('meta-runtime').textContent =
-      `latency=${fmt(finite(status.latency_ms), 1, ' ms')} fb_age=${fmt(finite(status.feedback_age_ms), 0, ' ms')}`;
+      `latency=${fmt(finite(status.latency_ms), 1, ' ms')} fb_age=${fmt(finite(status.feedback_age_ms), 0, ' ms')} align=${fmt(finite(status.aligned_feedback_age_ms), 1, ' ms')}`;
 
   document.getElementById('value-distance').textContent =
       `${fmt(finite(status.distance_m), 2, ' m')}`;

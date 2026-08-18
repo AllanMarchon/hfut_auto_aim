@@ -331,6 +331,19 @@ def validate_controller(report: Report, config: Any) -> None:
         require_bool(report, limiter.get("enable"), "controller.command_limiter.enable")
         require_number(report, limiter.get("reset_timeout_s"), "controller.command_limiter.reset_timeout_s", positive=True)
 
+    feedback_alignment = controller.get("feedback_alignment")
+    if not isinstance(feedback_alignment, dict):
+        report.error("controller.feedback_alignment 缺失或不是对象")
+    else:
+        require_bool(report, feedback_alignment.get("enable"), "controller.feedback_alignment.enable")
+        require_number(report, feedback_alignment.get("timestamp_offset_ms"), "controller.feedback_alignment.timestamp_offset_ms")
+        if is_finite_number(feedback_alignment.get("timestamp_offset_ms")) and float(feedback_alignment["timestamp_offset_ms"]) < 0.0:
+            report.error("controller.feedback_alignment.timestamp_offset_ms 必须大于等于 0")
+        require_number(report, feedback_alignment.get("max_sample_age_ms"), "controller.feedback_alignment.max_sample_age_ms", positive=True)
+        require_int(report, feedback_alignment.get("history_size"), "controller.feedback_alignment.history_size", positive=True)
+        if isinstance(feedback_alignment.get("history_size"), int) and feedback_alignment["history_size"] < 2:
+            report.error("controller.feedback_alignment.history_size 必须大于等于 2")
+
     stabilizer = controller.get("target_stabilizer")
     if stabilizer is not None:
         if not isinstance(stabilizer, dict):

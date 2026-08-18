@@ -36,6 +36,15 @@ gimbal_pipeline:
         # max_yaw_acc_rad_s2: 80.0
         # max_pitch_acc_rad_s2: 80.0
 
+      # 参考 SP25 原版：图像帧按自己的时间戳取对应时刻的云台反馈，
+      # 不再把串口最新反馈直接套到刚采到的图像上。standard 当前没有海康
+      # 硬件时间戳，先用 capture_end - timestamp_offset_ms 近似图像时刻。
+      feedback_alignment:
+        enable: true
+        timestamp_offset_ms: 1.0  # SP25 原版近似使用 imu_at(t - 1ms)
+        max_sample_age_ms: 50.0   # 历史里找不到足够近的反馈时退回 latest fb
+        history_size: 1000        # 保存最近反馈样本，用于按图像时间插值
+
       # SP25 raw 输出外点保护：挡近距离 PnP/整车模型/短暂扰动造成的 raw yaw 瞬跳。
       # 注意：这里只 hold/限单帧变化，不再生成一条新的二阶控制轨迹。
       target_stabilizer:
