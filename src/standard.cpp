@@ -84,6 +84,7 @@ struct Options {
   int serial_read_timeout_ms{2};
   int feedback_timeout_ms{100};
   bool require_feedback{true};
+  bool serial_send{true};
 
   std::string enemy_color{"red"};
   double bullet_speed{23.0};
@@ -629,6 +630,7 @@ Options parseOptions(int argc, char** argv) {
           "  --baudrate N             串口波特率\n"
           "  --serial-tx-protocol NAME  infantry | infantry_16 | infantry_32\n"
           "  --serial-rx-protocol NAME  infantry | infantry_16 | infantry_32\n"
+          "  --no-serial-send       打开串口收反馈，但不下发控制包\n"
           "  --enemy-color COLOR      red | blue\n"
           "  --bullet-speed MPS       弹速覆盖\n"
           "  --dry-run                不打开串口、不下发控制\n"
@@ -648,6 +650,8 @@ Options parseOptions(int argc, char** argv) {
       options.display = true;
     } else if (arg == "--web-view") {
       options.web_view = true;
+    } else if (arg == "--no-serial-send") {
+      options.serial_send = false;
     } else if (arg == "--flip-image") {
       options.camera_flip_image = true;
     } else if (arg == "--hardware-config" || arg == "--real-config") {
@@ -1021,10 +1025,11 @@ int run(const Options& options) {
   }
 
   std::printf(
-      "[standard] camera=%s serial=%s:%s@%d dry_run=%s fire=%s enemy=%s bullet=%.2f\n",
+      "[standard] camera=%s serial=%s:%s@%d dry_run=%s serial_send=%s fire=%s enemy=%s bullet=%.2f\n",
       options.camera_backend.c_str(), hfut::io::infantryPacketLayoutName(serial_config.tx_layout),
       options.serial_port.c_str(), options.serial_baudrate,
       options.dry_run ? "true" : "false",
+      options.serial_send ? "true" : "false",
       options.enable_fire ? "enabled" : "disabled",
       options.enemy_color.c_str(), options.bullet_speed);
   std::printf("[standard] sp25_config=%s runtime_config=%s calibration_mode=%s\n",
@@ -1095,7 +1100,8 @@ int run(const Options& options) {
         (have_feedback && feedback_age.count() <= options.feedback_timeout_ms);
     if (!feedback_ready) {
       const auto now = std::chrono::steady_clock::now();
-      if (!options.dry_run && now - last_feedback_heartbeat_time >= std::chrono::milliseconds(20)) {
+      if (!options.dry_run && options.serial_send &&
+          now - last_feedback_heartbeat_time >= std::chrono::milliseconds(20)) {
         hfut::GimbalCommand heartbeat;
         heartbeat.yaw = latest_feedback.yaw_rad;
         heartbeat.pitch = latest_feedback.pitch_rad;
@@ -1182,7 +1188,10 @@ int run(const Options& options) {
     const auto aim_end = std::chrono::steady_clock::now();
 
     const auto serial_tx_start = aim_end;
-    if (!options.dry_run) gimbal.send(command);
+    bool serial_send_ok = true;
+    if (!options.dry_run && options.serial_send) {
+      serial_send_ok = gimbal.send(command);
+    }
     const auto serial_tx_end = std::chrono::steady_clock::now();
 
     ++frames;
@@ -1257,7 +1266,8 @@ int run(const Options& options) {
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg distance=%.3f "
-          "sp_fire=%d fire=%d gate=%d latency=%.1fms\n",
+          "sp_fire=%d fire=%d gate=%d latency=%.1fms "
+          "timing=rx %.1f cam %.1f det %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
           static_cast<unsigned long long>(frames), runtime_fps, armors.size(), targets.size(),
           tracker.state().c_str(), latest_feedback.yaw_rad * kRadToDeg,
           latest_feedback.pitch_rad * kRadToDeg, aligned_feedback.yaw_rad * kRadToDeg,
@@ -1269,7 +1279,12 @@ int run(const Options& options) {
           command.yaw_acc * kRadToDeg, command.pitch_acc * kRadToDeg,
           fire_gate.yaw_error_rad * kRadToDeg, fire_gate.pitch_error_rad * kRadToDeg,
           command.distance, sp_command.shoot ? 1 : 0, command.fire_advice ? 1 : 0,
-          fire_gate.blocked ? 1 : 0, elapsedMs(detect_start, aim_end));
+          fire_gate.blocked ? 1 : 0, elapsedMs(detect_start, aim_end),
+          elapsedMs(serial_rx_start, serial_rx_end), elapsedMs(capture_start, capture_end),
+          elapsedMs(detect_start, detect_end), elapsedMs(track_start, track_end),
+          elapsedMs(aim_start, aim_end), elapsedMs(serial_tx_start, serial_tx_end),
+          elapsedMs(visual_start, visual_end), elapsedMs(loop_start, visual_end),
+          serial_send_ok ? 1 : 0);
       std::fflush(stdout);
       last_log = visual_end;
     }

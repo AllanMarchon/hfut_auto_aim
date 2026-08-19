@@ -201,6 +201,8 @@ def build_standard_command(args: argparse.Namespace) -> list[str]:
         cmd.append("--display")
     if args.allow_fire:
         cmd.append("--enable-fire")
+    if not args.serial_send:
+        cmd.append("--no-serial-send")
     cmd += args.extra
     return cmd
 
@@ -368,6 +370,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--no-stop-conflicts", dest="stop_conflicts", action="store_false")
     parser.set_defaults(stop_conflicts=True)
     parser.add_argument("--allow-fire", action="store_true")
+    parser.add_argument("--no-serial-send", dest="serial_send", action="store_false",
+                        help="live 时打开串口收反馈，但不向下位机发送控制包。")
+    parser.set_defaults(serial_send=True)
     parser.add_argument("--serial-port", default="/dev/ttyACM0")
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--serial-tx-protocol", default="infantry_32")
