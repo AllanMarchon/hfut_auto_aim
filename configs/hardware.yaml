@@ -36,6 +36,7 @@ hardware:
     command_angles_in_degrees: false  # false=下发 rad、rad/s、rad/s²；true=下发角度制
     feedback_angles_in_degrees: false  # false=反馈按 rad 解析；true=反馈按角度制解析后转内部弧度
     read_timeout_ms: 2
+    write_timeout_ms: 5          # 串口写入最多阻塞时间；超时丢本帧命令，不拖慢视觉循环
     feedback_timeout_ms: 100
     require_feedback: true
 

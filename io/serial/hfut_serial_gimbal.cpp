@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <thread>
 #include <utility>
 
 namespace hfut::io {
@@ -103,18 +104,32 @@ bool HfutSerialGimbal::sampleAt(TimePoint frame_time, SerialFeedback& feedback,
 }
 
 bool HfutSerialGimbal::send(const GimbalCommand& command) {
-  std::lock_guard<std::mutex> lock(transport_mutex_);
-  return transport_.sendCommand(adaptCommandForWire(command));
+  send_pending_.store(true);
+  bool ok = false;
+  {
+    std::lock_guard<std::mutex> lock(transport_mutex_);
+    ok = transport_.sendCommand(adaptCommandForWire(command));
+  }
+  send_pending_.store(false);
+  return ok;
 }
 
 const std::string& HfutSerialGimbal::errorMessage() const { return transport_.errorMessage(); }
 
 void HfutSerialGimbal::receiveLoop() {
   while (running_.load()) {
+    if (send_pending_.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      continue;
+    }
     SerialFeedback feedback;
     bool received = false;
     {
-      std::lock_guard<std::mutex> lock(transport_mutex_);
+      std::unique_lock<std::mutex> lock(transport_mutex_, std::try_to_lock);
+      if (!lock.owns_lock()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        continue;
+      }
       received = transport_.readFeedback(feedback);
     }
     if (received) pushFeedback(Clock::now(), feedback);

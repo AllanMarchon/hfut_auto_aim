@@ -16,7 +16,7 @@ class UartTransport {
   void close();
   bool isOpen() const { return fd_ >= 0; }
   int readSome(void* buffer, std::size_t len, int timeout_ms);
-  bool writeAll(const void* buffer, std::size_t len);
+  bool writeAll(const void* buffer, std::size_t len, int timeout_ms = 5);
   const std::string& errorMessage() const { return error_message_; }
 
  private:

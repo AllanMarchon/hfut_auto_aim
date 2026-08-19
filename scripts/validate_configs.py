@@ -215,6 +215,7 @@ def validate_hardware(report: Report, repo_root: Path, hardware: Any, camera_inf
             "电控串口反馈统一按 rad 解析",
         )
         require_number(report, serial.get("read_timeout_ms"), "hardware.serial.read_timeout_ms")
+        require_number(report, serial.get("write_timeout_ms"), "hardware.serial.write_timeout_ms")
         require_number(report, serial.get("feedback_timeout_ms"), "hardware.serial.feedback_timeout_ms", positive=True)
         require_bool(report, serial.get("require_feedback"), "hardware.serial.require_feedback")
 

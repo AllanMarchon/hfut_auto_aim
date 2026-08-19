@@ -18,6 +18,7 @@ struct Infantry32SerialConfig {
   bool feedback_angles_in_degrees = false;
   bool allow_fire = false;
   int read_timeout_ms = 20;
+  int write_timeout_ms = 5;
 };
 
 class Infantry32SerialTransport final : public GimbalTransport {

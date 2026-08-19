@@ -82,6 +82,7 @@ struct Options {
   bool command_angles_in_degrees{false};
   bool feedback_angles_in_degrees{false};
   int serial_read_timeout_ms{2};
+  int serial_write_timeout_ms{5};
   int feedback_timeout_ms{100};
   bool require_feedback{true};
   bool serial_send{true};
@@ -575,6 +576,8 @@ void loadHardwareConfig(Options& options) {
         serial["feedback_angles_in_degrees"], options.feedback_angles_in_degrees);
     options.serial_read_timeout_ms =
         parseInt(serial["read_timeout_ms"], options.serial_read_timeout_ms);
+    options.serial_write_timeout_ms =
+        parseInt(serial["write_timeout_ms"], options.serial_write_timeout_ms);
     options.feedback_timeout_ms =
         parseInt(serial["feedback_timeout_ms"], options.feedback_timeout_ms);
     options.require_feedback = parseBool(serial["require_feedback"], options.require_feedback);
@@ -726,6 +729,9 @@ Options parseOptions(int argc, char** argv) {
   if (options.serial_read_timeout_ms < 0) {
     throw std::invalid_argument("串口读取超时必须 >= 0");
   }
+  if (options.serial_write_timeout_ms < 0) {
+    throw std::invalid_argument("串口写入超时必须 >= 0");
+  }
   if (options.feedback_timeout_ms <= 0) {
     throw std::invalid_argument("反馈超时必须 > 0");
   }
@@ -865,6 +871,7 @@ hfut::io::InfantrySerialConfig makeSerialConfig(const Options& options) {
   config.feedback_angles_in_degrees = options.feedback_angles_in_degrees;
   config.allow_fire = options.enable_fire;
   config.read_timeout_ms = options.serial_read_timeout_ms;
+  config.write_timeout_ms = options.serial_write_timeout_ms;
   hfut::io::parseInfantryPacketLayout(options.serial_tx_protocol, config.tx_layout);
   hfut::io::parseInfantryPacketLayout(options.serial_rx_protocol, config.rx_layout);
   hfut::io::parseInfantry32TailFields(options.infantry32_tail_fields, config.tail_fields);
@@ -1025,9 +1032,11 @@ int run(const Options& options) {
   }
 
   std::printf(
-      "[standard] camera=%s serial=%s:%s@%d dry_run=%s serial_send=%s fire=%s enemy=%s bullet=%.2f\n",
+      "[standard] camera=%s serial=%s:%s@%d read_timeout=%dms write_timeout=%dms "
+      "dry_run=%s serial_send=%s fire=%s enemy=%s bullet=%.2f\n",
       options.camera_backend.c_str(), hfut::io::infantryPacketLayoutName(serial_config.tx_layout),
-      options.serial_port.c_str(), options.serial_baudrate,
+      options.serial_port.c_str(), options.serial_baudrate, options.serial_read_timeout_ms,
+      options.serial_write_timeout_ms,
       options.dry_run ? "true" : "false",
       options.serial_send ? "true" : "false",
       options.enable_fire ? "enabled" : "disabled",

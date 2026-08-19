@@ -1,6 +1,8 @@
 #include "io/serial/uart_transport.hpp"
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <utility>
 
@@ -143,25 +145,69 @@ int UartTransport::readSome(void* buffer, std::size_t len, int timeout_ms) {
 #endif
 }
 
-bool UartTransport::writeAll(const void* buffer, std::size_t len) {
+bool UartTransport::writeAll(const void* buffer, std::size_t len, int timeout_ms) {
 #if defined(__unix__) || defined(__APPLE__)
   if (fd_ < 0) return false;
+  if (len == 0) return true;
   const auto* bytes = static_cast<const std::uint8_t*>(buffer);
   std::size_t written = 0;
+  const bool finite_timeout = timeout_ms >= 0;
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(std::max(timeout_ms, 0));
+
+  const auto remainingTimeoutMs = [&]() -> int {
+    if (!finite_timeout) return -1;
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) return 0;
+    const auto remaining =
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+    return static_cast<int>(std::max<long long>(remaining, 1));
+  };
+
   while (written < len) {
     const auto n = ::write(fd_, bytes + written, len - written);
-    if (n < 0) {
-      if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+    if (n > 0) {
+      written += static_cast<std::size_t>(n);
+      continue;
+    }
+    if (n < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
       error_message_ = "write failed: " + std::string(std::strerror(errno));
       return false;
     }
-    if (n == 0) return false;
-    written += static_cast<std::size_t>(n);
+
+    const int wait_ms = remainingTimeoutMs();
+    if (wait_ms == 0) {
+      error_message_ = "write timed out after " + std::to_string(timeout_ms) +
+                       " ms (" + std::to_string(written) + "/" +
+                       std::to_string(len) + " bytes written)";
+      return false;
+    }
+
+    pollfd pfd{};
+    pfd.fd = fd_;
+    pfd.events = POLLOUT;
+    const int poll_ret = ::poll(&pfd, 1, wait_ms);
+    if (poll_ret == 0) {
+      error_message_ = "write timed out after " + std::to_string(timeout_ms) +
+                       " ms (" + std::to_string(written) + "/" +
+                       std::to_string(len) + " bytes written)";
+      return false;
+    }
+    if (poll_ret < 0) {
+      if (errno == EINTR) continue;
+      error_message_ = "write poll failed: " + std::string(std::strerror(errno));
+      return false;
+    }
+    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+      error_message_ = "serial write poll reported disconnected/error";
+      return false;
+    }
   }
   return true;
 #else
   (void)buffer;
   (void)len;
+  (void)timeout_ms;
   return false;
 #endif
 }

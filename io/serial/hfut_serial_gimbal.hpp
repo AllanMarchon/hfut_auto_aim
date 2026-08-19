@@ -62,6 +62,7 @@ class HfutSerialGimbal {
   HfutSerialGimbalConfig config_;
   InfantrySerialTransport transport_;
   std::atomic<bool> running_{false};
+  std::atomic<bool> send_pending_{false};
   std::thread receive_thread_;
   mutable std::mutex transport_mutex_;
   mutable std::mutex feedback_mutex_;

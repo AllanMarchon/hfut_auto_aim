@@ -125,7 +125,7 @@ bool InfantrySerialTransport::sendCommandPacket(const GimbalCommand& command) {
     packet.load(commandAngle(yaw_tail), 26);
   }
   packet.setCrc();
-  return uart_->writeAll(packet.data(), packet.size());
+  return uart_->writeAll(packet.data(), packet.size(), config_.write_timeout_ms);
 }
 
 bool InfantrySerialTransport::sendCommand(const GimbalCommand& command) {

@@ -48,7 +48,7 @@ bool Infantry32SerialTransport::sendCommand(const GimbalCommand& command) {
   packet.load(commandAngle(command.pitch_acc), 22);
   packet.load(commandAngle(command.yaw_acc), 26);
   packet.setCrc();
-  return uart_->writeAll(packet.data(), packet.size());
+  return uart_->writeAll(packet.data(), packet.size(), config_.write_timeout_ms);
 }
 
 bool Infantry32SerialTransport::readFeedback(SerialFeedback& feedback) {
