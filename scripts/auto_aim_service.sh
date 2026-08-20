@@ -13,8 +13,11 @@ if [[ "$START_DELAY" =~ ^[0-9]+$ ]] && (( START_DELAY > 0 )); then
 fi
 
 if [[ -f /opt/MVS/bin/set_env_path.sh ]]; then
+    export MVCAM_SDK_PATH="${MVCAM_SDK_PATH:-/opt/MVS}"
+    set +u
     # shellcheck disable=SC1091
-    source /opt/MVS/bin/set_env_path.sh
+    source /opt/MVS/bin/set_env_path.sh || echo "[auto_aim] warning: failed to source /opt/MVS/bin/set_env_path.sh"
+    set -u
 fi
 
 if [[ -d /opt/MVS/lib/64 ]]; then
