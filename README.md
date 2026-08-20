@@ -81,6 +81,43 @@ python3 scripts/visualize.py --host <小电脑IP>
 
 默认只输出 info 及以上级别日志；需要排查 SP25 内部细节时可临时加 `HFUT_LOG_LEVEL=debug`，避免平时刷屏和写盘影响 FPS。
 
+## 开机自启动
+
+小电脑推荐使用 systemd 注册为 `auto_aim.service`，不依赖桌面登录或 `screen`：
+
+```bash
+cd ~/hfut_auto_aim-main
+sudo bash scripts/install_auto_aim_service.sh
+```
+
+默认服务命令等价于：
+
+```bash
+python3 scripts/start.py --mode live --no-web-view
+```
+
+常用维护命令：
+
+```bash
+systemctl status auto_aim
+journalctl -u auto_aim -f
+sudo systemctl restart auto_aim
+sudo systemctl stop auto_aim
+sudo systemctl disable --now auto_aim
+```
+
+启动参数集中在 `/etc/default/auto_aim`。例如确认安全后允许下发开火建议，可把其中的 `AUTO_AIM_ARGS` 改为：
+
+```bash
+AUTO_AIM_ARGS="--no-web-view --allow-fire"
+```
+
+取消注册：
+
+```bash
+sudo bash scripts/uninstall_auto_aim_service.sh
+```
+
 ## 配置
 
 - `configs/standard3.yaml`：SP25 算法参数、模型路径、OpenVINO device、ROI、传统检测、tracker/aimer/shooter 参数。
