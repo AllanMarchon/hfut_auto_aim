@@ -126,11 +126,20 @@ struct CommandLimiterConfig {
   int feedback_alignment_history_size{1000};
   bool serial_command_send_velocity{true};
   bool serial_command_send_acceleration{true};
+  std::string serial_command_velocity_mode{"feedback_error"};
+  double serial_command_yaw_error_gain{6.0};
+  double serial_command_pitch_error_gain{6.0};
+  double serial_command_max_yaw_velocity_rad_s{120.0 * kPi / 180.0};
+  double serial_command_max_pitch_velocity_rad_s{90.0 * kPi / 180.0};
   double target_stabilizer_max_yaw_jump_rad{4.0 * kPi / 180.0};
   double target_stabilizer_max_yaw_rate_rad_s{120.0 * kPi / 180.0};
   double lost_target_hold_s{0.25};
   int target_stabilizer_hold_frames{3};
 };
+
+bool velocityModeUsesFeedbackError(const std::string& mode) {
+  return mode == "feedback_error" || mode == "error_feedback" || mode == "tracking";
+}
 
 struct FireGateResult {
   double yaw_error_rad{0.0};
@@ -290,8 +299,20 @@ class SimpleCommandGuard {
       command.pitch_acc = 0.0;
       return;
     }
-    command.yaw_vel = tools::limit_rad(command.yaw - last_yaw_) / dt;
-    command.pitch_vel = (command.pitch - last_pitch_) / dt;
+    const double yaw_target_vel = tools::limit_rad(command.yaw - last_yaw_) / dt;
+    const double pitch_target_vel = (command.pitch - last_pitch_) / dt;
+    command.yaw_vel = yaw_target_vel;
+    command.pitch_vel = pitch_target_vel;
+    if (velocityModeUsesFeedbackError(config_.serial_command_velocity_mode)) {
+      command.yaw_vel += config_.serial_command_yaw_error_gain * command.yaw_diff;
+      command.pitch_vel += config_.serial_command_pitch_error_gain * command.pitch_diff;
+    }
+    command.yaw_vel = std::clamp(command.yaw_vel,
+                                 -config_.serial_command_max_yaw_velocity_rad_s,
+                                 config_.serial_command_max_yaw_velocity_rad_s);
+    command.pitch_vel = std::clamp(command.pitch_vel,
+                                   -config_.serial_command_max_pitch_velocity_rad_s,
+                                   config_.serial_command_max_pitch_velocity_rad_s);
     command.yaw_acc = std::clamp((command.yaw_vel - last_yaw_vel_) / dt,
                                  -config_.max_yaw_acc_rad_s2, config_.max_yaw_acc_rad_s2);
     command.pitch_acc = std::clamp((command.pitch_vel - last_pitch_vel_) / dt,
@@ -491,6 +512,18 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
         parseBool(serial_command["send_velocity"], config.serial_command_send_velocity);
     config.serial_command_send_acceleration =
         parseBool(serial_command["send_acceleration"], config.serial_command_send_acceleration);
+    config.serial_command_velocity_mode =
+        parseString(serial_command["velocity_mode"], config.serial_command_velocity_mode);
+    config.serial_command_yaw_error_gain =
+        parseDouble(serial_command["yaw_error_gain"], config.serial_command_yaw_error_gain);
+    config.serial_command_pitch_error_gain =
+        parseDouble(serial_command["pitch_error_gain"], config.serial_command_pitch_error_gain);
+    config.serial_command_max_yaw_velocity_rad_s = degToRad(
+        parseDouble(serial_command["max_yaw_velocity"],
+                    config.serial_command_max_yaw_velocity_rad_s * kRadToDeg));
+    config.serial_command_max_pitch_velocity_rad_s = degToRad(
+        parseDouble(serial_command["max_pitch_velocity"],
+                    config.serial_command_max_pitch_velocity_rad_s * kRadToDeg));
   }
 
   if (config.reference_rate_hz <= 0.0) throw std::invalid_argument("controller reference_rate_hz 必须 > 0");
@@ -526,6 +559,20 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   }
   if (config.feedback_alignment_history_size < 2) {
     throw std::invalid_argument("controller.feedback_alignment.history_size 必须 >= 2");
+  }
+  if (config.serial_command_velocity_mode != "target_rate" &&
+      !velocityModeUsesFeedbackError(config.serial_command_velocity_mode)) {
+    throw std::invalid_argument("controller.serial_command.velocity_mode 必须是 target_rate 或 feedback_error");
+  }
+  if (!std::isfinite(config.serial_command_yaw_error_gain) ||
+      !std::isfinite(config.serial_command_pitch_error_gain)) {
+    throw std::invalid_argument("controller.serial_command yaw/pitch_error_gain 必须是有限数");
+  }
+  if (config.serial_command_max_yaw_velocity_rad_s <= 0.0 ||
+      !std::isfinite(config.serial_command_max_yaw_velocity_rad_s) ||
+      config.serial_command_max_pitch_velocity_rad_s <= 0.0 ||
+      !std::isfinite(config.serial_command_max_pitch_velocity_rad_s)) {
+    throw std::invalid_argument("controller.serial_command max_yaw/pitch_velocity 必须 > 0");
   }
   return config;
 }
@@ -1049,7 +1096,7 @@ int run(const Options& options) {
       "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg "
       "sp_pitch_to_cmd=%.0f yaw_world_sign=%.0f outlier_guard=%s jump=%.1fdeg "
       "target_rate=%.1fdeg/s hold=%d lost_hold=%.2fs fb_align=%s offset=%.1fms max_age=%.1fms "
-      "send_v=%s send_acc=%s\n",
+      "send_v=%s send_acc=%s vel_mode=%s vel_k=%.1f/%.1f vel_lim=%.0f/%.0fdeg/s\n",
       options.controller_config.c_str(), command_limiter_config.enable ? "on" : "off",
       command_limiter_config.max_yaw_step_rad * kRadToDeg,
       command_limiter_config.max_pitch_step_rad * kRadToDeg,
@@ -1069,7 +1116,12 @@ int run(const Options& options) {
       command_limiter_config.feedback_alignment_offset_s * 1000.0,
       command_limiter_config.feedback_alignment_max_sample_age_s * 1000.0,
       command_limiter_config.serial_command_send_velocity ? "on" : "off",
-      command_limiter_config.serial_command_send_acceleration ? "on" : "off");
+      command_limiter_config.serial_command_send_acceleration ? "on" : "off",
+      command_limiter_config.serial_command_velocity_mode.c_str(),
+      command_limiter_config.serial_command_yaw_error_gain,
+      command_limiter_config.serial_command_pitch_error_gain,
+      command_limiter_config.serial_command_max_yaw_velocity_rad_s * kRadToDeg,
+      command_limiter_config.serial_command_max_pitch_velocity_rad_s * kRadToDeg);
 
   hfut::io::SerialFeedback latest_feedback;
   latest_feedback.bullet_speed = options.bullet_speed;

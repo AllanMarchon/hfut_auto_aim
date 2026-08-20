@@ -47,9 +47,17 @@ gimbal_pipeline:
 
       # 串口下发字段开关。默认保持与电控约定一致，仍发送速度和加速度。
       # 上车排查抖动时可临时关掉某一项，让 32 字节包格式不变但对应字段发 0。
+      # velocity_mode:
+      #   target_rate    = SP25 原语义，只发目标角自身变化速度 d(cmd)/dt。
+      #   feedback_error = 适配当前下位机，发送 d(cmd)/dt + K*(cmd-fb)，让静止目标也继续闭合残差。
       serial_command:
         send_velocity: true
         send_acceleration: true
+        velocity_mode: feedback_error
+        yaw_error_gain: 6.0     # 1/s；yaw_v += gain * (cmd_yaw - fb_yaw)
+        pitch_error_gain: 6.0   # 1/s；pitch_v += gain * (cmd_pitch - fb_pitch)
+        max_yaw_velocity: 120.0   # deg/s；限制最终下发 yaw_v
+        max_pitch_velocity: 90.0  # deg/s；限制最终下发 pitch_v
 
       # SP25 raw 输出外点保护：挡近距离 PnP/整车模型/短暂扰动造成的 raw yaw 瞬跳。
       # 注意：这里只 hold/限单帧变化，不再生成一条新的二阶控制轨迹。
