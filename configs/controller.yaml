@@ -1,11 +1,36 @@
 # SP25 实车入口 standard 的控制输出配置。
 #
-# 这个文件保留旧工程 controller.yaml 的存放习惯，但 standard 只在 SP25 输出
-# 到旧电控串口的边界做轻量保护，不再额外规划二阶云台轨迹。
+# 这个文件保留旧工程 controller.yaml 的存放习惯。standard 默认使用已跑通的
+# Aimer + 轻量保护链路，也可通过 planner.mode 切到 SP TinyMPC 二阶轨迹规划。
 # 串口打包格式仍由 hardware.yaml 的 serial 段决定。
 gimbal_pipeline:
   ros__parameters:
     controller:
+      # 输出规划器开关：
+      #   aimer_feedback_error = 当前已跑通链路：Aimer 输出角度 + 反馈误差速度适配。
+      #   mpc                  = SP TinyMPC 二阶规划；速度仍按 serial_command.velocity_mode 适配电控语义。
+      planner:
+        mode: aimer_feedback_error
+
+      # SP TinyMPC 参数，只有 planner.mode: mpc 时使用。
+      # yaw_offset / pitch_offset 单位：度；max_*_acc 单位：rad/s²。
+      mpc_planner:
+        yaw_offset: 2.0
+        pitch_offset: 0.0
+        fire_thresh: 0.0035
+        #目标旋转速度阈值7rad/s
+        decision_speed: 7.0
+        #高/低 速目标额外预测延迟，弹道滞后，可以加一点点
+        high_speed_delay_time: 0.0
+        low_speed_delay_time: 0.0
+        
+        max_yaw_acc: 50.0
+        Q_yaw: [9000000.0, 0.0]
+        R_yaw: [1.0]
+        max_pitch_acc: 100.0
+        Q_pitch: [9000000.0, 0.0]
+        R_pitch: [1.0]
+
       # 与旧工程一致：云台能力上限放在 aim_planner 下。
       # 单位：rad/s²。standard 会用它生成 yaw_acc / pitch_acc 字段。
       aim_planner:

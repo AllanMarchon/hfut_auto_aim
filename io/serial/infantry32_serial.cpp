@@ -8,6 +8,19 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kRadToDeg = 180.0 / kPi;
 constexpr double kDegToRad = kPi / 180.0;
+
+GimbalCommand sanitizeInfantry32CommandForTransport(const GimbalCommand& command) {
+  GimbalCommand sanitized = command;
+  if (sanitized.mode != GimbalMode::normal_measurement) {
+    sanitized.fire_advice = false;
+    sanitized.distance = -1.0;
+    sanitized.pitch_vel = 0.0;
+    sanitized.yaw_vel = 0.0;
+    sanitized.pitch_acc = 0.0;
+    sanitized.yaw_acc = 0.0;
+  }
+  return sanitized;
+}
 }  // namespace
 
 Infantry32SerialTransport::Infantry32SerialTransport(Infantry32SerialConfig config)
@@ -37,16 +50,17 @@ float Infantry32SerialTransport::commandAngle(double rad) const {
 bool Infantry32SerialTransport::sendCommand(const GimbalCommand& command) {
   if (!isOpen() && !open()) return false;
 
+  const GimbalCommand wire_command = sanitizeInfantry32CommandForTransport(command);
   FixedPacket32 packet;
-  const std::uint8_t fire = (config_.allow_fire && command.fire_advice) ? 1 : 0;
+  const std::uint8_t fire = (config_.allow_fire && wire_command.fire_advice) ? 1 : 0;
   packet.load(fire, 1);
-  packet.load(commandAngle(command.pitch), 2);
-  packet.load(commandAngle(command.yaw), 6);
-  packet.load(finiteOrZero(command.distance), 10);
-  packet.load(commandAngle(command.pitch_vel), 14);
-  packet.load(commandAngle(command.yaw_vel), 18);
-  packet.load(commandAngle(command.pitch_acc), 22);
-  packet.load(commandAngle(command.yaw_acc), 26);
+  packet.load(commandAngle(wire_command.pitch), 2);
+  packet.load(commandAngle(wire_command.yaw), 6);
+  packet.load(finiteOrZero(wire_command.distance), 10);
+  packet.load(commandAngle(wire_command.pitch_vel), 14);
+  packet.load(commandAngle(wire_command.yaw_vel), 18);
+  packet.load(commandAngle(wire_command.pitch_acc), 22);
+  packet.load(commandAngle(wire_command.yaw_acc), 26);
   packet.setCrc();
   return uart_->writeAll(packet.data(), packet.size(), config_.write_timeout_ms);
 }

@@ -62,12 +62,24 @@ target_link_libraries(tools PUBLIC
   ${HFUT_SPDLOG_TARGET}
 )
 
+# TinyMPC planner used only when standard is configured with planner_mode=mpc.
+add_library(tinympcstatic STATIC
+  tasks/auto_aim/planner/tinympc/admm.cpp
+  tasks/auto_aim/planner/tinympc/tiny_api.cpp
+  tasks/auto_aim/planner/tinympc/rho_benchmark.cpp
+)
+target_include_directories(tinympcstatic PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/tasks/auto_aim/planner
+)
+target_link_libraries(tinympcstatic PUBLIC Eigen3::Eigen)
+
 # SP25 自瞄核心。
 add_library(auto_aim STATIC
   tasks/auto_aim/aimer.cpp
   tasks/auto_aim/armor.cpp
   tasks/auto_aim/classifier.cpp
   tasks/auto_aim/detector.cpp
+  tasks/auto_aim/planner/planner.cpp
   tasks/auto_aim/shooter.cpp
   tasks/auto_aim/solver.cpp
   tasks/auto_aim/target.cpp
@@ -81,6 +93,7 @@ add_library(auto_aim STATIC
 target_include_directories(auto_aim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(auto_aim PUBLIC
   tools
+  tinympcstatic
   Eigen3::Eigen
   ${OpenCV_LIBS}
   yaml-cpp

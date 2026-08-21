@@ -305,13 +305,38 @@ def validate_controller(report: Report, config: Any) -> None:
         report.error("controller.yaml 缺少 controller 配置")
         return
 
-    planner = controller.get("aim_planner")
+    planner = controller.get("planner")
     if not isinstance(planner, dict):
+        report.error("controller.planner 缺失或不是对象")
+    else:
+        require_choice(report, planner.get("mode"), "controller.planner.mode", {"aimer_feedback_error", "aimer", "mpc", "tinympc"})
+
+    mpc_planner = controller.get("mpc_planner")
+    if not isinstance(mpc_planner, dict):
+        report.error("controller.mpc_planner 缺失或不是对象")
+    else:
+        require_number(report, mpc_planner.get("yaw_offset"), "controller.mpc_planner.yaw_offset")
+        require_number(report, mpc_planner.get("pitch_offset"), "controller.mpc_planner.pitch_offset")
+        require_number(report, mpc_planner.get("fire_thresh"), "controller.mpc_planner.fire_thresh", positive=True)
+        require_number(report, mpc_planner.get("decision_speed"), "controller.mpc_planner.decision_speed", positive=True)
+        for key in ("high_speed_delay_time", "low_speed_delay_time"):
+            require_number(report, mpc_planner.get(key), f"controller.mpc_planner.{key}")
+            if is_finite_number(mpc_planner.get(key)) and float(mpc_planner[key]) < 0.0:
+                report.error(f"controller.mpc_planner.{key} 必须大于等于 0")
+        require_number(report, mpc_planner.get("max_yaw_acc"), "controller.mpc_planner.max_yaw_acc", positive=True)
+        require_number(report, mpc_planner.get("max_pitch_acc"), "controller.mpc_planner.max_pitch_acc", positive=True)
+        require_vector(report, mpc_planner.get("Q_yaw"), "controller.mpc_planner.Q_yaw", 2)
+        require_vector(report, mpc_planner.get("R_yaw"), "controller.mpc_planner.R_yaw", 1)
+        require_vector(report, mpc_planner.get("Q_pitch"), "controller.mpc_planner.Q_pitch", 2)
+        require_vector(report, mpc_planner.get("R_pitch"), "controller.mpc_planner.R_pitch", 1)
+
+    aim_planner = controller.get("aim_planner")
+    if not isinstance(aim_planner, dict):
         report.error("controller.aim_planner 缺失或不是对象")
     else:
-        require_bool(report, planner.get("enable"), "controller.aim_planner.enable")
-        require_number(report, planner.get("max_yaw_acc"), "controller.aim_planner.max_yaw_acc", positive=True)
-        require_number(report, planner.get("max_pitch_acc"), "controller.aim_planner.max_pitch_acc", positive=True)
+        require_bool(report, aim_planner.get("enable"), "controller.aim_planner.enable")
+        require_number(report, aim_planner.get("max_yaw_acc"), "controller.aim_planner.max_yaw_acc", positive=True)
+        require_number(report, aim_planner.get("max_pitch_acc"), "controller.aim_planner.max_pitch_acc", positive=True)
 
     output = controller.get("output_filter")
     if not isinstance(output, dict):
@@ -351,6 +376,16 @@ def validate_controller(report: Report, config: Any) -> None:
     else:
         require_bool(report, serial_command.get("send_velocity"), "controller.serial_command.send_velocity")
         require_bool(report, serial_command.get("send_acceleration"), "controller.serial_command.send_acceleration")
+        require_choice(
+            report,
+            serial_command.get("velocity_mode"),
+            "controller.serial_command.velocity_mode",
+            {"target_rate", "feedback_error", "error_feedback", "tracking"},
+        )
+        require_number(report, serial_command.get("yaw_error_gain"), "controller.serial_command.yaw_error_gain")
+        require_number(report, serial_command.get("pitch_error_gain"), "controller.serial_command.pitch_error_gain")
+        require_number(report, serial_command.get("max_yaw_velocity"), "controller.serial_command.max_yaw_velocity", positive=True)
+        require_number(report, serial_command.get("max_pitch_velocity"), "controller.serial_command.max_pitch_velocity", positive=True)
 
     stabilizer = controller.get("target_stabilizer")
     if stabilizer is not None:
