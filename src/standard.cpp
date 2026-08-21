@@ -358,6 +358,57 @@ class SimpleCommandGuard {
   std::chrono::steady_clock::time_point last_valid_time_{};
 };
 
+class FinalVelocityAccelerationAdapter {
+ public:
+  explicit FinalVelocityAccelerationAdapter(CommandLimiterConfig config) : config_(config) {}
+
+  void reset() { have_last_ = false; }
+
+  void apply(hfut::GimbalCommand& command, std::chrono::steady_clock::time_point now) {
+    if (command.mode != hfut::GimbalMode::normal_measurement) {
+      command.yaw_acc = 0.0;
+      command.pitch_acc = 0.0;
+      reset();
+      return;
+    }
+    if (!have_last_) {
+      command.yaw_acc = 0.0;
+      command.pitch_acc = 0.0;
+      save(command, now);
+      return;
+    }
+
+    const double dt = std::chrono::duration<double>(now - last_time_).count();
+    if (!std::isfinite(dt) || dt <= 1e-6 || dt > config_.reset_timeout_s) {
+      command.yaw_acc = 0.0;
+      command.pitch_acc = 0.0;
+      save(command, now);
+      return;
+    }
+
+    command.yaw_acc = std::clamp((command.yaw_vel - last_yaw_vel_) / dt,
+                                 -config_.max_yaw_acc_rad_s2, config_.max_yaw_acc_rad_s2);
+    command.pitch_acc = std::clamp((command.pitch_vel - last_pitch_vel_) / dt,
+                                   -config_.max_pitch_acc_rad_s2,
+                                   config_.max_pitch_acc_rad_s2);
+    save(command, now);
+  }
+
+ private:
+  void save(const hfut::GimbalCommand& command, std::chrono::steady_clock::time_point now) {
+    last_yaw_vel_ = command.yaw_vel;
+    last_pitch_vel_ = command.pitch_vel;
+    last_time_ = now;
+    have_last_ = true;
+  }
+
+  CommandLimiterConfig config_;
+  bool have_last_{false};
+  double last_yaw_vel_{0.0};
+  double last_pitch_vel_{0.0};
+  std::chrono::steady_clock::time_point last_time_{};
+};
+
 FireGateResult applyFireGate(hfut::GimbalCommand& command,
                              double desired_yaw,
                              double desired_pitch,
@@ -430,6 +481,7 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   const YAML::Node controller = controllerNode(root);
   const YAML::Node output = controller["output_filter"];
   const YAML::Node planner = controller["planner"];
+  const YAML::Node mpc_planner = controller["mpc_planner"];
   const YAML::Node aim_planner = controller["aim_planner"];
   const YAML::Node limiter = controller["command_limiter"];
   const YAML::Node stabilizer = controller["target_stabilizer"];
@@ -457,6 +509,11 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   if (aim_planner) {
     config.max_yaw_acc_rad_s2 = parseDouble(aim_planner["max_yaw_acc"], config.max_yaw_acc_rad_s2);
     config.max_pitch_acc_rad_s2 = parseDouble(aim_planner["max_pitch_acc"], config.max_pitch_acc_rad_s2);
+  }
+
+  if (plannerModeUsesMpc(config.planner_mode) && mpc_planner) {
+    config.max_yaw_acc_rad_s2 = parseDouble(mpc_planner["max_yaw_acc"], config.max_yaw_acc_rad_s2);
+    config.max_pitch_acc_rad_s2 = parseDouble(mpc_planner["max_pitch_acc"], config.max_pitch_acc_rad_s2);
   }
 
   if (limiter) {
@@ -546,6 +603,10 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   if (config.reset_timeout_s <= 0.0) throw std::invalid_argument("controller reset_timeout_s 必须 > 0");
   if (config.max_yaw_step_rad <= 0.0) throw std::invalid_argument("controller.output_filter.max_yaw_rate 必须 > 0");
   if (config.max_pitch_step_rad <= 0.0) throw std::invalid_argument("controller.output_filter.max_pitch_rate 必须 > 0");
+  if (config.max_yaw_acc_rad_s2 <= 0.0 || !std::isfinite(config.max_yaw_acc_rad_s2) ||
+      config.max_pitch_acc_rad_s2 <= 0.0 || !std::isfinite(config.max_pitch_acc_rad_s2)) {
+    throw std::invalid_argument("controller max_yaw/max_pitch_acc 必须 > 0");
+  }
   if (config.fire_yaw_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire yaw tolerance 必须 > 0");
   if (config.fire_pitch_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire pitch tolerance 必须 > 0");
   if (config.target_stabilizer_max_yaw_jump_rad <= 0.0) {
@@ -1076,6 +1137,7 @@ int run(const Options& options) {
     throw std::runtime_error("串口打开失败: " + gimbal.errorMessage());
   }
   SimpleCommandGuard command_guard(command_limiter_config);
+  FinalVelocityAccelerationAdapter mpc_motion_adapter(command_limiter_config);
 
   auto_aim::YOLO detector(adapted_config_path, false);
   auto_aim::Solver solver(adapted_config_path);
@@ -1294,9 +1356,7 @@ int run(const Options& options) {
         sp_command, aimer, latest_feedback, options.enable_fire, command_limiter_config);
     if (use_mpc_planner && have_mpc_plan) {
       command.yaw_vel = command_limiter_config.feedback_yaw_to_world_sign * mpc_plan.yaw_vel;
-      command.yaw_acc = command_limiter_config.feedback_yaw_to_world_sign * mpc_plan.yaw_acc;
       command.pitch_vel = command_limiter_config.sp_pitch_to_command_sign * mpc_plan.pitch_vel;
-      command.pitch_acc = command_limiter_config.sp_pitch_to_command_sign * mpc_plan.pitch_acc;
       if (velocityModeUsesFeedbackError(command_limiter_config.serial_command_velocity_mode)) {
         command.yaw_vel += command_limiter_config.serial_command_yaw_error_gain * command.yaw_diff;
         command.pitch_vel += command_limiter_config.serial_command_pitch_error_gain * command.pitch_diff;
@@ -1307,6 +1367,9 @@ int run(const Options& options) {
       command.pitch_vel = std::clamp(command.pitch_vel,
                                      -command_limiter_config.serial_command_max_pitch_velocity_rad_s,
                                      command_limiter_config.serial_command_max_pitch_velocity_rad_s);
+      mpc_motion_adapter.apply(command, std::chrono::steady_clock::now());
+    } else if (use_mpc_planner) {
+      mpc_motion_adapter.reset();
     }
     const double raw_desired_yaw = command.yaw;
     const double raw_desired_pitch = command.pitch;

@@ -15,6 +15,7 @@ gimbal_pipeline:
 
       # SP TinyMPC 参数，只有 planner.mode: mpc 时使用。
       # yaw_offset / pitch_offset 单位：度；max_*_acc 单位：rad/s²。
+      # MPC 模式下 max_*_acc 同时作为 TinyMPC 内部约束和最终串口下发云台加速度限幅。
       mpc_planner:
         yaw_offset: 2.0
         pitch_offset: 0.0
@@ -32,8 +33,8 @@ gimbal_pipeline:
         Q_pitch: [9000000.0, 0.0]
         R_pitch: [1.0]
 
-      # 与旧工程一致：云台能力上限放在 aim_planner 下。
-      # 单位：rad/s²。standard 会用它生成 yaw_acc / pitch_acc 字段。
+      # 备用 Aimer 链路的云台能力上限。planner.mode: mpc 时最终下发限幅使用 mpc_planner.max_*_acc。
+      # 单位：rad/s²。
       aim_planner:
         enable: true
         max_yaw_acc: 80.0
