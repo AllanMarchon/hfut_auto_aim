@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_DIR="${AUTO_AIM_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 MODE="${AUTO_AIM_MODE:-live}"
 START_DELAY="${AUTO_AIM_START_DELAY:-5}"
-EXTRA_ARGS_TEXT="${AUTO_AIM_ARGS:---no-web-view}"
+EXTRA_ARGS_TEXT="${AUTO_AIM_ARGS:---allow-fire}"
 
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 

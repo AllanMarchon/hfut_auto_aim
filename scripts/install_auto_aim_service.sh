@@ -27,7 +27,7 @@ if [[ ! -f "$ENV_PATH" ]]; then
 # Change these values, then run: sudo systemctl restart ${SERVICE_NAME}
 AUTO_AIM_PROJECT_DIR="$PROJECT_DIR"
 AUTO_AIM_MODE="live"
-AUTO_AIM_ARGS="--no-web-view"
+AUTO_AIM_ARGS="--allow-fire"
 AUTO_AIM_START_DELAY="5"
 PYTHONUNBUFFERED="1"
 EOF

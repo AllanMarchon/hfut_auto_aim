@@ -90,10 +90,10 @@ cd ~/hfut_auto_aim-main
 sudo bash scripts/install_auto_aim_service.sh
 ```
 
-默认服务命令等价于：
+默认服务命令等价于，使用 `configs/controller.yaml` 里的 MPC 规划器并允许发送开火建议：
 
 ```bash
-python3 scripts/start.py --mode live --no-web-view
+python3 scripts/start.py --mode live --allow-fire
 ```
 
 常用维护命令：
@@ -106,11 +106,13 @@ sudo systemctl stop auto_aim
 sudo systemctl disable --now auto_aim
 ```
 
-启动参数集中在 `/etc/default/auto_aim`。例如确认安全后允许下发开火建议，可把其中的 `AUTO_AIM_ARGS` 改为：
+启动参数集中在 `/etc/default/auto_aim`。默认值为：
 
 ```bash
-AUTO_AIM_ARGS="--no-web-view --allow-fire"
+AUTO_AIM_ARGS="--allow-fire"
 ```
+
+Web 可视化默认开启；如果比赛时要关闭 Web 推流，可改为 `AUTO_AIM_ARGS="--no-web-view --allow-fire"`。
 
 取消注册：
 
@@ -171,6 +173,6 @@ python3 scripts/start.py --mode calibrate-camera \
 ## 上车注意
 
 - 当前分支目标是“先把 SP25 主链接进实车 IO”，不是继续维护旧自瞄 pipeline。
-- `hardware.safety.enable_fire` 默认是 `false`，启动脚本也要求额外传 `--allow-fire` 才会发开火建议。
+- `hardware.safety.enable_fire` 默认是 `false`，但自启动服务默认带 `--allow-fire`；调试禁火时改 `/etc/default/auto_aim` 去掉该参数。
 - 海康相机必须挂 USB3；如果 FPS 不够，先确认曝光、分辨率、OpenVINO device、Web 推流步长和磁盘剩余空间。
 - 根分支 `main` 保留旧工程；本分支可以继续按 SP25 结构演进。

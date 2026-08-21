@@ -1,16 +1,17 @@
 # SP25 实车入口 standard 的控制输出配置。
 #
-# 这个文件保留旧工程 controller.yaml 的存放习惯。standard 默认使用已跑通的
-# Aimer + 轻量保护链路，也可通过 planner.mode 切到 SP TinyMPC 二阶轨迹规划。
+# 这个文件保留旧工程 controller.yaml 的存放习惯。standard 默认使用
+# SP TinyMPC 二阶轨迹规划；必要时可通过 planner.mode 切回已跑通的
+# Aimer + 轻量保护链路。
 # 串口打包格式仍由 hardware.yaml 的 serial 段决定。
 gimbal_pipeline:
   ros__parameters:
     controller:
       # 输出规划器开关：
-      #   aimer_feedback_error = 当前已跑通链路：Aimer 输出角度 + 反馈误差速度适配。
-      #   mpc                  = SP TinyMPC 二阶规划；速度仍按 serial_command.velocity_mode 适配电控语义。
+      #   mpc                  = 默认 SP TinyMPC 二阶规划；速度仍按 serial_command.velocity_mode 适配电控语义。
+      #   aimer_feedback_error = 备用已跑通链路：Aimer 输出角度 + 反馈误差速度适配。
       planner:
-        mode: aimer_feedback_error
+        mode: mpc
 
       # SP TinyMPC 参数，只有 planner.mode: mpc 时使用。
       # yaw_offset / pitch_offset 单位：度；max_*_acc 单位：rad/s²。
