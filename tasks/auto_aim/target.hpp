@@ -2,6 +2,7 @@
 #define AUTO_AIM__TARGET_HPP
 
 #include <Eigen/Dense>
+#include <array>
 #include <chrono>
 #include <optional>
 #include <queue>
@@ -51,13 +52,19 @@ private:
   int update_count_;
 
   bool is_switch_, is_converged_;
+  std::array<double, 3> outpost_height_offsets_{{0.0, 0.0, 0.0}};
 
   tools::ExtendedKalmanFilter ekf_;
   std::chrono::steady_clock::time_point t_;
 
+  bool use_outpost_fixed_model() const;
+  int match_default_armor(const Armor & armor) const;
+  int match_outpost_armor(const Armor & armor);
   void update_ypda(const Armor & armor, int id);  // yaw pitch distance angle
 
   Eigen::Vector3d h_armor_xyz(const Eigen::VectorXd & x, int id) const;
+  Eigen::Vector3d h_armor_xyz(
+    const Eigen::VectorXd & x, int id, const std::array<double, 3> & height_offsets) const;
   Eigen::MatrixXd h_jacobian(const Eigen::VectorXd & x, int id) const;
 };
 

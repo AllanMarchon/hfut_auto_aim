@@ -654,6 +654,50 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   return config;
 }
 
+bool controllerSectionEnabled(const std::string& path, const std::string& section) {
+  const YAML::Node root = YAML::LoadFile(path);
+  const YAML::Node controller = controllerNode(root);
+  const YAML::Node node = controller[section];
+  if (!node) return false;
+  return parseBool(node["enable"], true);
+}
+
+CommandLimiterConfig loadOutpostCommandLimiterConfig(
+    const std::string& path, const CommandLimiterConfig& base) {
+  CommandLimiterConfig config = base;
+  const YAML::Node root = YAML::LoadFile(path);
+  const YAML::Node controller = controllerNode(root);
+  const YAML::Node outpost_mpc_planner = controller["outpost_mpc_planner"];
+  const YAML::Node outpost_fire_gate = controller["outpost_fire_gate"];
+
+  if (outpost_mpc_planner && parseBool(outpost_mpc_planner["enable"], true)) {
+    config.max_yaw_acc_rad_s2 =
+        parseDouble(outpost_mpc_planner["max_yaw_acc"], config.max_yaw_acc_rad_s2);
+    config.max_pitch_acc_rad_s2 =
+        parseDouble(outpost_mpc_planner["max_pitch_acc"], config.max_pitch_acc_rad_s2);
+  }
+
+  if (outpost_fire_gate) {
+    config.enable_fire_gate = parseBool(outpost_fire_gate["enable"], config.enable_fire_gate);
+    config.fire_yaw_tolerance_rad = degToRad(
+        parseDouble(outpost_fire_gate["yaw_tolerance"], config.fire_yaw_tolerance_rad * kRadToDeg));
+    config.fire_pitch_tolerance_rad = degToRad(
+        parseDouble(outpost_fire_gate["pitch_tolerance"], config.fire_pitch_tolerance_rad * kRadToDeg));
+  }
+
+  if (config.max_yaw_acc_rad_s2 <= 0.0 || !std::isfinite(config.max_yaw_acc_rad_s2) ||
+      config.max_pitch_acc_rad_s2 <= 0.0 || !std::isfinite(config.max_pitch_acc_rad_s2)) {
+    throw std::invalid_argument("controller.outpost_mpc_planner max_yaw/max_pitch_acc 必须 > 0");
+  }
+  if (config.fire_yaw_tolerance_rad <= 0.0) {
+    throw std::invalid_argument("controller.outpost_fire_gate yaw_tolerance 必须 > 0");
+  }
+  if (config.fire_pitch_tolerance_rad <= 0.0) {
+    throw std::invalid_argument("controller.outpost_fire_gate pitch_tolerance 必须 > 0");
+  }
+  return config;
+}
+
 void loadHardwareConfig(Options& options) {
   const YAML::Node file_root = YAML::LoadFile(options.hardware_config);
   const YAML::Node root = file_root["hardware"] ? file_root["hardware"]
@@ -1136,8 +1180,19 @@ int run(const Options& options) {
   if (!options.dry_run && !gimbal.open()) {
     throw std::runtime_error("串口打开失败: " + gimbal.errorMessage());
   }
+  const bool outpost_mpc_profile_enabled =
+      plannerModeUsesMpc(command_limiter_config.planner_mode) &&
+      controllerSectionEnabled(options.controller_config, "outpost_mpc_planner");
+  const bool outpost_fire_gate_enabled =
+      controllerSectionEnabled(options.controller_config, "outpost_fire_gate");
+  const bool use_outpost_profile = outpost_mpc_profile_enabled || outpost_fire_gate_enabled;
+  const CommandLimiterConfig outpost_limiter_config =
+      use_outpost_profile
+          ? loadOutpostCommandLimiterConfig(options.controller_config, command_limiter_config)
+          : command_limiter_config;
   SimpleCommandGuard command_guard(command_limiter_config);
   FinalVelocityAccelerationAdapter mpc_motion_adapter(command_limiter_config);
+  FinalVelocityAccelerationAdapter outpost_mpc_motion_adapter(outpost_limiter_config);
 
   auto_aim::YOLO detector(adapted_config_path, false);
   auto_aim::Solver solver(adapted_config_path);
@@ -1146,8 +1201,13 @@ int run(const Options& options) {
   auto_aim::Shooter shooter(adapted_config_path);
   const bool use_mpc_planner = plannerModeUsesMpc(command_limiter_config.planner_mode);
   std::unique_ptr<auto_aim::Planner> mpc_planner;
+  std::unique_ptr<auto_aim::Planner> outpost_mpc_planner;
   if (use_mpc_planner) {
     mpc_planner = std::make_unique<auto_aim::Planner>(options.controller_config);
+    if (outpost_mpc_profile_enabled) {
+      outpost_mpc_planner =
+          std::make_unique<auto_aim::Planner>(options.controller_config, "outpost_mpc_planner");
+    }
   }
 
   if (options.display) {
@@ -1215,6 +1275,17 @@ int run(const Options& options) {
       command_limiter_config.serial_command_pitch_error_gain,
       command_limiter_config.serial_command_max_yaw_velocity_rad_s * kRadToDeg,
       command_limiter_config.serial_command_max_pitch_velocity_rad_s * kRadToDeg);
+  if (use_outpost_profile) {
+    std::printf(
+        "[standard] outpost_profile mpc=%s yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s "
+        "yaw_tol=%.2fdeg pitch_tol=%.2fdeg\n",
+        outpost_mpc_profile_enabled ? "on" : "inherit",
+        outpost_limiter_config.max_yaw_acc_rad_s2,
+        outpost_limiter_config.max_pitch_acc_rad_s2,
+        outpost_limiter_config.enable_fire_gate ? "on" : "off",
+        outpost_limiter_config.fire_yaw_tolerance_rad * kRadToDeg,
+        outpost_limiter_config.fire_pitch_tolerance_rad * kRadToDeg);
+  }
 
   hfut::io::SerialFeedback latest_feedback;
   latest_feedback.bullet_speed = options.bullet_speed;
@@ -1327,14 +1398,21 @@ int run(const Options& options) {
                                     ? latest_feedback.bullet_speed
                                     : options.bullet_speed;
     const auto aim_start = track_end;
+    const bool target_is_outpost = !targets.empty() && targets.front().name == auto_aim::ArmorName::outpost;
+    const CommandLimiterConfig& active_limiter_config =
+        (target_is_outpost && use_outpost_profile) ? outpost_limiter_config : command_limiter_config;
+    auto_aim::Planner* active_mpc_planner =
+        (target_is_outpost && outpost_mpc_planner) ? outpost_mpc_planner.get() : mpc_planner.get();
+    FinalVelocityAccelerationAdapter& active_mpc_motion_adapter =
+        (target_is_outpost && use_outpost_profile) ? outpost_mpc_motion_adapter : mpc_motion_adapter;
     io::Command sp_command{false, false, 0.0, 0.0};
     auto_aim::Plan mpc_plan{};
     bool have_mpc_plan = false;
     if (use_mpc_planner) {
-      if (!targets.empty()) {
+      if (!targets.empty() && active_mpc_planner) {
         try {
           std::optional<auto_aim::Target> target{targets.front()};
-          mpc_plan = mpc_planner->plan(target, bullet_speed);
+          mpc_plan = active_mpc_planner->plan(target, bullet_speed);
           have_mpc_plan = mpc_plan.control;
           sp_command.control = mpc_plan.control;
           sp_command.shoot = mpc_plan.fire;
@@ -1353,23 +1431,24 @@ int run(const Options& options) {
       sp_command.shoot = shooter.shoot(sp_command, aimer, targets, gimbal_pos);
     }
     hfut::GimbalCommand command = convertCommand(
-        sp_command, aimer, latest_feedback, options.enable_fire, command_limiter_config);
+        sp_command, aimer, latest_feedback, options.enable_fire, active_limiter_config);
     if (use_mpc_planner && have_mpc_plan) {
-      command.yaw_vel = command_limiter_config.feedback_yaw_to_world_sign * mpc_plan.yaw_vel;
-      command.pitch_vel = command_limiter_config.sp_pitch_to_command_sign * mpc_plan.pitch_vel;
-      if (velocityModeUsesFeedbackError(command_limiter_config.serial_command_velocity_mode)) {
-        command.yaw_vel += command_limiter_config.serial_command_yaw_error_gain * command.yaw_diff;
-        command.pitch_vel += command_limiter_config.serial_command_pitch_error_gain * command.pitch_diff;
+      command.yaw_vel = active_limiter_config.feedback_yaw_to_world_sign * mpc_plan.yaw_vel;
+      command.pitch_vel = active_limiter_config.sp_pitch_to_command_sign * mpc_plan.pitch_vel;
+      if (velocityModeUsesFeedbackError(active_limiter_config.serial_command_velocity_mode)) {
+        command.yaw_vel += active_limiter_config.serial_command_yaw_error_gain * command.yaw_diff;
+        command.pitch_vel += active_limiter_config.serial_command_pitch_error_gain * command.pitch_diff;
       }
       command.yaw_vel = std::clamp(command.yaw_vel,
-                                   -command_limiter_config.serial_command_max_yaw_velocity_rad_s,
-                                   command_limiter_config.serial_command_max_yaw_velocity_rad_s);
+                                   -active_limiter_config.serial_command_max_yaw_velocity_rad_s,
+                                   active_limiter_config.serial_command_max_yaw_velocity_rad_s);
       command.pitch_vel = std::clamp(command.pitch_vel,
-                                     -command_limiter_config.serial_command_max_pitch_velocity_rad_s,
-                                     command_limiter_config.serial_command_max_pitch_velocity_rad_s);
-      mpc_motion_adapter.apply(command, std::chrono::steady_clock::now());
+                                      -active_limiter_config.serial_command_max_pitch_velocity_rad_s,
+                                      active_limiter_config.serial_command_max_pitch_velocity_rad_s);
+      active_mpc_motion_adapter.apply(command, std::chrono::steady_clock::now());
     } else if (use_mpc_planner) {
       mpc_motion_adapter.reset();
+      outpost_mpc_motion_adapter.reset();
     }
     const double raw_desired_yaw = command.yaw;
     const double raw_desired_pitch = command.pitch;
@@ -1379,7 +1458,7 @@ int run(const Options& options) {
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
     const FireGateResult fire_gate = applyFireGate(
-        command, raw_desired_yaw, raw_desired_pitch, command_limiter_config);
+        command, raw_desired_yaw, raw_desired_pitch, active_limiter_config);
     const auto aim_end = std::chrono::steady_clock::now();
 
     const auto serial_tx_start = aim_end;

@@ -15,25 +15,41 @@ namespace auto_aim
 {
 namespace
 {
-YAML::Node planner_node(const YAML::Node & yaml)
+YAML::Node controller_node(const YAML::Node & yaml)
 {
-  const auto nested = yaml["gimbal_pipeline"]["ros__parameters"]["controller"]["mpc_planner"];
+  const auto nested = yaml["gimbal_pipeline"]["ros__parameters"]["controller"];
   if (nested) return nested;
-  const auto direct = yaml["mpc_planner"];
+  const auto direct = yaml["controller"];
   if (direct) return direct;
   return yaml;
 }
+
+YAML::Node planner_node(const YAML::Node & yaml, const std::string & profile)
+{
+  return controller_node(yaml)[profile];
+}
+
+template <typename T>
+T read_planner_value(
+  const YAML::Node & primary, const YAML::Node & fallback, const std::string & key)
+{
+  if (primary && primary[key]) return primary[key].as<T>();
+  return tools::read<T>(fallback, key);
+}
 }  // namespace
 
-Planner::Planner(const std::string & config_path)
+Planner::Planner(const std::string & config_path, const std::string & planner_profile)
+: planner_profile_(planner_profile)
 {
-  auto yaml = planner_node(tools::load(config_path));
-  yaw_offset_ = tools::read<double>(yaml, "yaw_offset") / 57.3;
-  pitch_offset_ = tools::read<double>(yaml, "pitch_offset") / 57.3;
-  fire_thresh_ = tools::read<double>(yaml, "fire_thresh");
-  decision_speed_ = tools::read<double>(yaml, "decision_speed");
-  high_speed_delay_time_ = tools::read<double>(yaml, "high_speed_delay_time");
-  low_speed_delay_time_ = tools::read<double>(yaml, "low_speed_delay_time");
+  const auto root = tools::load(config_path);
+  const auto yaml = planner_node(root, planner_profile_);
+  const auto fallback = planner_node(root, "mpc_planner");
+  yaw_offset_ = read_planner_value<double>(yaml, fallback, "yaw_offset") / 57.3;
+  pitch_offset_ = read_planner_value<double>(yaml, fallback, "pitch_offset") / 57.3;
+  fire_thresh_ = read_planner_value<double>(yaml, fallback, "fire_thresh");
+  decision_speed_ = read_planner_value<double>(yaml, fallback, "decision_speed");
+  high_speed_delay_time_ = read_planner_value<double>(yaml, fallback, "high_speed_delay_time");
+  low_speed_delay_time_ = read_planner_value<double>(yaml, fallback, "low_speed_delay_time");
 
   setup_yaw_solver(config_path);
   setup_pitch_solver(config_path);
@@ -143,10 +159,12 @@ Plan Planner::plan(std::optional<Target> target, double bullet_speed)
 
 void Planner::setup_yaw_solver(const std::string & config_path)
 {
-  auto yaml = planner_node(tools::load(config_path));
-  auto max_yaw_acc = tools::read<double>(yaml, "max_yaw_acc");
-  auto Q_yaw = tools::read<std::vector<double>>(yaml, "Q_yaw");
-  auto R_yaw = tools::read<std::vector<double>>(yaml, "R_yaw");
+  const auto root = tools::load(config_path);
+  const auto yaml = planner_node(root, planner_profile_);
+  const auto fallback = planner_node(root, "mpc_planner");
+  auto max_yaw_acc = read_planner_value<double>(yaml, fallback, "max_yaw_acc");
+  auto Q_yaw = read_planner_value<std::vector<double>>(yaml, fallback, "Q_yaw");
+  auto R_yaw = read_planner_value<std::vector<double>>(yaml, fallback, "R_yaw");
   if (Q_yaw.size() != 2 || R_yaw.size() != 1) {
     throw std::runtime_error("Invalid yaw MPC weight dimensions");
   }
@@ -173,10 +191,12 @@ void Planner::setup_yaw_solver(const std::string & config_path)
 
 void Planner::setup_pitch_solver(const std::string & config_path)
 {
-  auto yaml = planner_node(tools::load(config_path));
-  auto max_pitch_acc = tools::read<double>(yaml, "max_pitch_acc");
-  auto Q_pitch = tools::read<std::vector<double>>(yaml, "Q_pitch");
-  auto R_pitch = tools::read<std::vector<double>>(yaml, "R_pitch");
+  const auto root = tools::load(config_path);
+  const auto yaml = planner_node(root, planner_profile_);
+  const auto fallback = planner_node(root, "mpc_planner");
+  auto max_pitch_acc = read_planner_value<double>(yaml, fallback, "max_pitch_acc");
+  auto Q_pitch = read_planner_value<std::vector<double>>(yaml, fallback, "Q_pitch");
+  auto R_pitch = read_planner_value<std::vector<double>>(yaml, fallback, "R_pitch");
   if (Q_pitch.size() != 2 || R_pitch.size() != 1) {
     throw std::runtime_error("Invalid pitch MPC weight dimensions");
   }

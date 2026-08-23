@@ -33,6 +33,15 @@ gimbal_pipeline:
         Q_pitch: [9000000.0, 0.0]
         R_pitch: [1.0]
 
+      # 前哨站专用 MPC 覆盖项。不写的字段继承 mpc_planner。
+      # 26 赛季前哨站三块板存在 102mm 高度差，pitch 切板响应通常需要单独调。
+      outpost_mpc_planner:
+        enable: true
+        max_yaw_acc: 50.0
+        max_pitch_acc: 140.0
+        Q_pitch: [12000000.0, 0.0]
+        R_pitch: [0.8]
+
       # 备用 Aimer 链路的云台能力上限。planner.mode: mpc 时最终下发限幅使用 mpc_planner.max_*_acc。
       # 单位：rad/s²。
       aim_planner:
@@ -103,6 +112,13 @@ gimbal_pipeline:
         enable: true
         yaw_tolerance: 3.0
         pitch_tolerance: 2.0
+
+      # 前哨站专用最终开火门控。不写的字段继承 fire_gate。
+      # pitch 高低板更敏感，先给独立门限，实车按 sp_fire/fire/gate 和命中情况微调。
+      outpost_fire_gate:
+        enable: true
+        yaw_tolerance: 3.0
+        pitch_tolerance: 1.5
 
       # SP25 与旧电控的坐标适配。这里不改变串口反馈显示和 cmd-fb 误差，只改变
       # SP25 输出到旧电控、以及旧电控反馈到 SP25 世界坐标补偿的边界符号。

@@ -1,6 +1,9 @@
 #include "target.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
 #include <numeric>
 
 #include "tools/logger.hpp"
@@ -8,6 +11,32 @@
 
 namespace auto_aim
 {
+namespace
+{
+constexpr double kOutpostRadiusM = 0.275;
+constexpr double kOutpostHeightStepM = 0.102;
+constexpr double kOutpostSpinSpeedRadS = 0.8 * CV_PI;
+
+const std::array<std::array<double, 3>, 6> kOutpostHeightCandidates{{
+  {{-kOutpostHeightStepM, 0.0, kOutpostHeightStepM}},
+  {{-kOutpostHeightStepM, kOutpostHeightStepM, 0.0}},
+  {{0.0, -kOutpostHeightStepM, kOutpostHeightStepM}},
+  {{0.0, kOutpostHeightStepM, -kOutpostHeightStepM}},
+  {{kOutpostHeightStepM, -kOutpostHeightStepM, 0.0}},
+  {{kOutpostHeightStepM, 0.0, -kOutpostHeightStepM}},
+}};
+
+bool sameOffsets(
+  const std::array<double, 3> & lhs, const std::array<double, 3> & rhs)
+{
+  constexpr double eps = 1e-9;
+  for (std::size_t i = 0; i < lhs.size(); ++i) {
+    if (std::abs(lhs[i] - rhs[i]) > eps) return false;
+  }
+  return true;
+}
+}  // namespace
+
 Target::Target(
   const Armor & armor, std::chrono::steady_clock::time_point t, double radius, int armor_num,
   Eigen::VectorXd P0_dig)
@@ -23,6 +52,10 @@ Target::Target(
   switch_count_(0)
 {
   auto r = radius;
+  if (armor.name == ArmorName::outpost && armor_num == 3) {
+    r = kOutpostRadiusM;
+    outpost_height_offsets_ = {0.0, kOutpostHeightStepM, -kOutpostHeightStepM};
+  }
   priority = armor.priority;
   const Eigen::VectorXd & xyz = armor.xyz_in_world;
   const Eigen::VectorXd & ypr = armor.ypr_in_world;
@@ -131,43 +164,14 @@ void Target::predict(double dt)
 
   // 前哨站转速特判
   if (this->convergened() && this->name == ArmorName::outpost && std::abs(this->ekf_.x[7]) > 2)
-    this->ekf_.x[7] = this->ekf_.x[7] > 0 ? 2.51 : -2.51;
+    this->ekf_.x[7] = this->ekf_.x[7] > 0 ? kOutpostSpinSpeedRadS : -kOutpostSpinSpeedRadS;
 
   ekf_.predict(F, Q, f);
 }
 
 void Target::update(const Armor & armor)
 {
-  // 装甲板匹配
-  int id;
-  auto min_angle_error = 1e10;
-  const std::vector<Eigen::Vector4d> & xyza_list = armor_xyza_list();
-
-  std::vector<std::pair<Eigen::Vector4d, int>> xyza_i_list;
-  for (int i = 0; i < armor_num_; i++) {
-    xyza_i_list.push_back({xyza_list[i], i});
-  }
-
-  std::sort(
-    xyza_i_list.begin(), xyza_i_list.end(),
-    [](const std::pair<Eigen::Vector4d, int> & a, const std::pair<Eigen::Vector4d, int> & b) {
-      Eigen::Vector3d ypd1 = tools::xyz2ypd(a.first.head(3));
-      Eigen::Vector3d ypd2 = tools::xyz2ypd(b.first.head(3));
-      return ypd1[2] < ypd2[2];
-    });
-
-  // 取前3个distance最小的装甲板
-  for (int i = 0; i < 3; i++) {
-    const auto & xyza = xyza_i_list[i].first;
-    Eigen::Vector3d ypd = tools::xyz2ypd(xyza.head(3));
-    auto angle_error = std::abs(tools::limit_rad(armor.ypr_in_world[0] - xyza[3])) +
-                       std::abs(tools::limit_rad(armor.ypd_in_world[0] - ypd[0]));
-
-    if (std::abs(angle_error) < std::abs(min_angle_error)) {
-      id = xyza_i_list[i].second;
-      min_angle_error = angle_error;
-    }
-  }
+  const int id = use_outpost_fixed_model() ? match_outpost_armor(armor) : match_default_armor(armor);
 
   if (id != 0) jumped = true;
 
@@ -183,6 +187,91 @@ void Target::update(const Armor & armor)
   update_count_++;
 
   update_ypda(armor, id);
+}
+
+bool Target::use_outpost_fixed_model() const
+{
+  return name == ArmorName::outpost && armor_num_ == 3;
+}
+
+int Target::match_default_armor(const Armor & armor) const
+{
+  int id = 0;
+  auto min_angle_error = std::numeric_limits<double>::max();
+  const std::vector<Eigen::Vector4d> & xyza_list = armor_xyza_list();
+
+  std::vector<std::pair<Eigen::Vector4d, int>> xyza_i_list;
+  for (int i = 0; i < armor_num_; i++) {
+    xyza_i_list.push_back({xyza_list[i], i});
+  }
+
+  std::sort(
+    xyza_i_list.begin(), xyza_i_list.end(),
+    [](const std::pair<Eigen::Vector4d, int> & a, const std::pair<Eigen::Vector4d, int> & b) {
+      Eigen::Vector3d ypd1 = tools::xyz2ypd(a.first.head(3));
+      Eigen::Vector3d ypd2 = tools::xyz2ypd(b.first.head(3));
+      return ypd1[2] < ypd2[2];
+    });
+
+  const int candidate_count = std::min(3, armor_num_);
+  for (int i = 0; i < candidate_count; i++) {
+    const auto & xyza = xyza_i_list[i].first;
+    Eigen::Vector3d ypd = tools::xyz2ypd(xyza.head(3));
+    auto angle_error = std::abs(tools::limit_rad(armor.ypr_in_world[0] - xyza[3])) +
+                       std::abs(tools::limit_rad(armor.ypd_in_world[0] - ypd[0]));
+
+    if (std::abs(angle_error) < std::abs(min_angle_error)) {
+      id = xyza_i_list[i].second;
+      min_angle_error = angle_error;
+    }
+  }
+
+  return id;
+}
+
+int Target::match_outpost_armor(const Armor & armor)
+{
+  struct Match
+  {
+    double score{std::numeric_limits<double>::max()};
+    int id{0};
+    std::array<double, 3> height_offsets{{0.0, kOutpostHeightStepM, -kOutpostHeightStepM}};
+    Eigen::VectorXd x;
+  } best;
+
+  for (const auto & height_offsets : kOutpostHeightCandidates) {
+    Eigen::VectorXd candidate_x = ekf_.x;
+    if (update_count_ > 0 && last_id >= 0 && last_id < armor_num_) {
+      candidate_x[4] += outpost_height_offsets_[last_id] - height_offsets[last_id];
+    }
+
+    const double mapping_penalty = sameOffsets(height_offsets, outpost_height_offsets_) ? 0.0 : 0.01;
+    for (int i = 0; i < armor_num_; ++i) {
+      const auto angle = tools::limit_rad(candidate_x[6] + i * 2 * CV_PI / armor_num_);
+      const Eigen::Vector3d xyz = h_armor_xyz(candidate_x, i, height_offsets);
+      const Eigen::Vector3d ypd = tools::xyz2ypd(xyz);
+
+      const double armor_yaw_error = std::abs(tools::limit_rad(armor.ypr_in_world[0] - angle));
+      const double yaw_error = std::abs(tools::limit_rad(armor.ypd_in_world[0] - ypd[0]));
+      const double pitch_error = std::abs(tools::limit_rad(armor.ypd_in_world[1] - ypd[1]));
+      const double distance_scale = std::max(std::abs(armor.ypd_in_world[2]), 0.5);
+      const double distance_error = std::abs(armor.ypd_in_world[2] - ypd[2]) / distance_scale;
+
+      const double score = 0.7 * armor_yaw_error + yaw_error + 2.5 * pitch_error +
+                           0.2 * distance_error + mapping_penalty;
+
+      if (score < best.score) {
+        best.score = score;
+        best.id = i;
+        best.height_offsets = height_offsets;
+        best.x = candidate_x;
+      }
+    }
+  }
+
+  if (best.x.size() == ekf_.x.size()) ekf_.x = best.x;
+  outpost_height_offsets_ = best.height_offsets;
+  return best.id;
 }
 
 void Target::update_ypda(const Armor & armor, int id)
@@ -267,6 +356,12 @@ bool Target::convergened()
 // 计算出装甲板中心的坐标（考虑长短轴）
 Eigen::Vector3d Target::h_armor_xyz(const Eigen::VectorXd & x, int id) const
 {
+  return h_armor_xyz(x, id, outpost_height_offsets_);
+}
+
+Eigen::Vector3d Target::h_armor_xyz(
+  const Eigen::VectorXd & x, int id, const std::array<double, 3> & height_offsets) const
+{
   auto angle = tools::limit_rad(x[6] + id * 2 * CV_PI / armor_num_);
   auto use_l_h = (armor_num_ == 4) && (id == 1 || id == 3);
 
@@ -274,6 +369,9 @@ Eigen::Vector3d Target::h_armor_xyz(const Eigen::VectorXd & x, int id) const
   auto armor_x = x[0] - r * std::cos(angle);
   auto armor_y = x[2] - r * std::sin(angle);
   auto armor_z = (use_l_h) ? x[4] + x[10] : x[4];
+  if (use_outpost_fixed_model() && id >= 0 && id < static_cast<int>(height_offsets.size())) {
+    armor_z = x[4] + height_offsets[id];
+  }
 
   return {armor_x, armor_y, armor_z};
 }
