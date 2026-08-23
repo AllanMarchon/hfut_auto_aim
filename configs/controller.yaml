@@ -17,7 +17,7 @@ gimbal_pipeline:
       # yaw_offset / pitch_offset 单位：度；max_*_acc 单位：rad/s²。
       # MPC 模式下 max_*_acc 同时作为 TinyMPC 内部约束和最终串口下发云台加速度限幅。
       mpc_planner:
-        yaw_offset: 2.0
+        yaw_offset: 0.5
         pitch_offset: 0.0
         fire_thresh: 0.0035
         #目标旋转速度阈值7rad/s
