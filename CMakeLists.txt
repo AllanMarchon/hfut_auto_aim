@@ -102,6 +102,27 @@ target_link_libraries(auto_aim PUBLIC
   ${HFUT_SPDLOG_TARGET}
 )
 
+# SP25 打符核心。第一版只接普通打符 aim()，不引入旧工程的打符 MPC 调试入口。
+add_library(auto_buff STATIC
+  tasks/auto_buff/buff_aimer.cpp
+  tasks/auto_buff/buff_detector.cpp
+  tasks/auto_buff/buff_solver.cpp
+  tasks/auto_buff/buff_target.cpp
+  tasks/auto_buff/buff_type.cpp
+  tasks/auto_buff/szu_rune_detector.cpp
+  tasks/auto_buff/yolo11_buff.cpp
+)
+target_include_directories(auto_buff PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(auto_buff PUBLIC
+  tools
+  Eigen3::Eigen
+  ${OpenCV_LIBS}
+  yaml-cpp
+  openvino::runtime
+  ${HFUT_FMT_TARGET}
+  ${HFUT_SPDLOG_TARGET}
+)
+
 # HFUT 实车 IO：保留已跑通的海康相机、infantry 串口和 Web 可视化。
 add_library(hfut_real_io STATIC
   io/camera/opencv_camera_source.cpp
@@ -154,6 +175,7 @@ target_include_directories(standard PRIVATE
 )
 target_link_libraries(standard PRIVATE
   auto_aim
+  auto_buff
   tools
   hfut_real_io
   ${OpenCV_LIBS}

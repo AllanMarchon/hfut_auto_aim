@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <csignal>
@@ -44,6 +45,11 @@
 #include "tasks/auto_aim/solver.hpp"
 #include "tasks/auto_aim/tracker.hpp"
 #include "tasks/auto_aim/yolo.hpp"
+#include "tasks/auto_buff/buff_aimer.hpp"
+#include "tasks/auto_buff/buff_detector.hpp"
+#include "tasks/auto_buff/buff_solver.hpp"
+#include "tasks/auto_buff/buff_target.hpp"
+#include "tasks/auto_buff/buff_type.hpp"
 #include "tools/math_tools.hpp"
 
 namespace {
@@ -57,9 +63,11 @@ constexpr double kRadToDeg = 180.0 / kPi;
 struct Options {
   std::string hardware_config{"configs/hardware.yaml"};
   std::string sp25_config{"configs/standard3.yaml"};
+  std::string buff_config{"configs/buff.yaml"};
   std::string controller_config{"configs/controller.yaml"};
   std::string runtime_sp25_config{"build/sp25_runtime.yaml"};
   std::string sp25_device;
+  std::string aim_task{"autoaim"};
 
   std::string camera_backend{"hik"};
   std::string camera_source;
@@ -475,6 +483,23 @@ YAML::Node controllerNode(const YAML::Node& root) {
 
 double degToRad(double degrees) { return degrees * kPi / 180.0; }
 
+std::string normalizeAimTask(std::string task) {
+  std::string out;
+  out.reserve(task.size());
+  for (char c : task) {
+    if (c == '-' || c == '_') continue;
+    out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  if (out == "auto" || out == "armor" || out == "autoaim") return "autoaim";
+  if (out == "smallbuff" || out == "smallrune") return "smallbuff";
+  if (out == "bigbuff" || out == "bigrune") return "bigbuff";
+  return out;
+}
+
+bool isBuffTask(const Options& options) {
+  return options.aim_task == "smallbuff" || options.aim_task == "bigbuff";
+}
+
 CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   CommandLimiterConfig config;
   const YAML::Node root = YAML::LoadFile(path);
@@ -779,6 +804,9 @@ Options parseOptions(int argc, char** argv) {
   }
 
   loadHardwareConfig(options);
+  if (const char* task = std::getenv("HFUT_AIM_TASK"); task != nullptr && task[0] != '\0') {
+    options.aim_task = normalizeAimTask(task);
+  }
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg(argv[i]);
@@ -894,6 +922,11 @@ Options parseOptions(int argc, char** argv) {
   if (options.enemy_color != "red" && options.enemy_color != "blue") {
     throw std::invalid_argument("SP25 敌方颜色当前支持 red 或 blue");
   }
+  options.aim_task = normalizeAimTask(options.aim_task);
+  if (options.aim_task != "autoaim" && options.aim_task != "smallbuff" &&
+      options.aim_task != "bigbuff") {
+    throw std::invalid_argument("任务模式必须是 autoaim/smallbuff/bigbuff");
+  }
   if (options.serial_read_timeout_ms < 0) {
     throw std::invalid_argument("串口读取超时必须 >= 0");
   }
@@ -968,8 +1001,9 @@ std::vector<double> matrixToVector(const Eigen::Matrix3d& matrix) {
 }
 
 std::string writeRuntimeSp25Config(
-    const Options& options, const hfut::video::CameraCalibration& calibration) {
-  YAML::Node yaml = YAML::LoadFile(options.sp25_config);
+    const Options& options, const hfut::video::CameraCalibration& calibration,
+    const std::string& source_config) {
+  YAML::Node yaml = YAML::LoadFile(source_config);
   yaml["enemy_color"] = options.enemy_color;
   if (!options.sp25_device.empty()) yaml["device"] = options.sp25_device;
   yaml["image_width"] = calibration.width;
@@ -1075,9 +1109,8 @@ double targetDistance(const auto_aim::Target& target) {
 }
 
 hfut::GimbalCommand convertCommand(
-    const io::Command& sp_command, const auto_aim::Aimer& aimer,
-    const hfut::io::SerialFeedback& feedback, bool enable_fire,
-    const CommandLimiterConfig& command_config) {
+    const io::Command& sp_command, double distance_m, const hfut::io::SerialFeedback& feedback,
+    bool enable_fire, const CommandLimiterConfig& command_config) {
   hfut::GimbalCommand command;
   command.yaw = sp_command.control
                     ? tools::limit_rad(command_config.feedback_yaw_to_world_sign * sp_command.yaw)
@@ -1087,7 +1120,7 @@ hfut::GimbalCommand convertCommand(
                       : feedback.pitch_rad;
   command.yaw_diff = tools::limit_rad(command.yaw - feedback.yaw_rad);
   command.pitch_diff = command.pitch - feedback.pitch_rad;
-  command.distance = aimDistance(aimer, sp_command);
+  command.distance = distance_m;
   command.fire_advice = enable_fire && sp_command.shoot;
   command.mode = sp_command.control ? hfut::GimbalMode::normal_measurement
                                     : hfut::GimbalMode::no_valid_measurement;
@@ -1127,6 +1160,37 @@ void drawArmors(cv::Mat& image, const std::list<auto_aim::Armor>& armors) {
   }
 }
 
+void drawPowerRune(cv::Mat& image, const std::optional<auto_buff::PowerRune>& rune) {
+  if (!rune.has_value()) return;
+  const auto& power_rune = rune.value();
+  cv::circle(image, power_rune.r_center, 5, cv::Scalar(0, 255, 255), cv::FILLED, cv::LINE_AA);
+  cv::putText(image, "R", power_rune.r_center + cv::Point2f(6, -6),
+              cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+
+  for (const auto& blade : power_rune.fanblades) {
+    if (blade.type == auto_buff::_unlight || blade.points.empty()) continue;
+    const cv::Scalar color = blade.type == auto_buff::_target
+                                 ? cv::Scalar(0, 0, 255)
+                                 : cv::Scalar(255, 255, 0);
+    const size_t contour_points = std::min<size_t>(4, blade.points.size());
+    for (size_t i = 0; i < contour_points; ++i) {
+      cv::line(image, blade.points[i], blade.points[(i + 1) % contour_points], color, 2,
+               cv::LINE_AA);
+    }
+    for (size_t i = 0; i < blade.points.size(); ++i) {
+      cv::circle(image, blade.points[i], 3, color, cv::FILLED, cv::LINE_AA);
+      cv::putText(image, std::to_string(i + 1), blade.points[i] + cv::Point2f(4, -4),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv::LINE_AA);
+    }
+    if (blade.class_id >= 0) {
+      char label[48];
+      std::snprintf(label, sizeof(label), "c%d %.2f", blade.class_id, blade.confidence);
+      cv::putText(image, label, blade.center + cv::Point2f(6, 14), cv::FONT_HERSHEY_SIMPLEX,
+                  0.45, color, 1, cv::LINE_AA);
+    }
+  }
+}
+
 void drawCrosshair(cv::Mat& image) {
   const cv::Point center(image.cols / 2, image.rows / 2);
   cv::line(image, {center.x - 18, center.y}, {center.x + 18, center.y}, cv::Scalar(80, 255, 80), 1);
@@ -1137,9 +1201,10 @@ void drawOverlay(cv::Mat& image, const hfut::io::DebugMjpegStatus& status) {
   int y = 24;
   char buffer[256];
   std::snprintf(buffer, sizeof(buffer),
-                "SP25 frames=%llu fps=%.1f armors=%d tracked=%d state=%s",
+                "SP25 task=%s frames=%llu fps=%.1f det=%d tracked=%d state=%s",
+                status.reason.c_str(),
                 static_cast<unsigned long long>(status.frames), status.fps,
-                status.armors, status.tracked, status.track_state.c_str());
+                status.detections, status.tracked, status.track_state.c_str());
   drawText(image, y, buffer);
 
   std::snprintf(buffer, sizeof(buffer),
@@ -1156,13 +1221,15 @@ void drawOverlay(cv::Mat& image, const hfut::io::DebugMjpegStatus& status) {
 }
 
 int run(const Options& options) {
+  const bool use_buff_task = isBuffTask(options);
+  const std::string algorithm_config = use_buff_task ? options.buff_config : options.sp25_config;
   const auto source_calibration = loadCalibration(options.camera_info_path);
   const auto calibration_mode = hfut::video::parseCalibrationMode(options.calibration_mode);
   const int solver_width = options.camera_width > 0 ? options.camera_width : source_calibration.width;
   const int solver_height = options.camera_height > 0 ? options.camera_height : source_calibration.height;
   const auto solver_calibration = hfut::video::adaptCalibration(
       source_calibration, solver_width, solver_height, calibration_mode);
-  const auto adapted_config_path = writeRuntimeSp25Config(options, solver_calibration);
+  const auto adapted_config_path = writeRuntimeSp25Config(options, solver_calibration, algorithm_config);
 
   auto camera = createCameraSource(options, toIntrinsics(source_calibration));
   if (!camera->open()) throw std::runtime_error("相机打开失败: " + camera->errorMessage());
@@ -1181,10 +1248,10 @@ int run(const Options& options) {
     throw std::runtime_error("串口打开失败: " + gimbal.errorMessage());
   }
   const bool outpost_mpc_profile_enabled =
-      plannerModeUsesMpc(command_limiter_config.planner_mode) &&
+      !use_buff_task && plannerModeUsesMpc(command_limiter_config.planner_mode) &&
       controllerSectionEnabled(options.controller_config, "outpost_mpc_planner");
   const bool outpost_fire_gate_enabled =
-      controllerSectionEnabled(options.controller_config, "outpost_fire_gate");
+      !use_buff_task && controllerSectionEnabled(options.controller_config, "outpost_fire_gate");
   const bool use_outpost_profile = outpost_mpc_profile_enabled || outpost_fire_gate_enabled;
   const CommandLimiterConfig outpost_limiter_config =
       use_outpost_profile
@@ -1194,12 +1261,30 @@ int run(const Options& options) {
   FinalVelocityAccelerationAdapter mpc_motion_adapter(command_limiter_config);
   FinalVelocityAccelerationAdapter outpost_mpc_motion_adapter(outpost_limiter_config);
 
-  auto_aim::YOLO detector(adapted_config_path, false);
-  auto_aim::Solver solver(adapted_config_path);
-  auto_aim::Tracker tracker(adapted_config_path, solver);
-  auto_aim::Aimer aimer(adapted_config_path);
-  auto_aim::Shooter shooter(adapted_config_path);
-  const bool use_mpc_planner = plannerModeUsesMpc(command_limiter_config.planner_mode);
+  std::unique_ptr<auto_aim::YOLO> detector;
+  std::unique_ptr<auto_aim::Solver> solver;
+  std::unique_ptr<auto_aim::Tracker> tracker;
+  std::unique_ptr<auto_aim::Aimer> aimer;
+  std::unique_ptr<auto_aim::Shooter> shooter;
+  std::unique_ptr<auto_buff::Buff_Detector> buff_detector;
+  std::unique_ptr<auto_buff::Solver> buff_solver;
+  std::unique_ptr<auto_buff::SmallTarget> buff_small_target;
+  std::unique_ptr<auto_buff::BigTarget> buff_big_target;
+  std::unique_ptr<auto_buff::Aimer> buff_aimer;
+  if (use_buff_task) {
+    buff_detector = std::make_unique<auto_buff::Buff_Detector>(adapted_config_path);
+    buff_solver = std::make_unique<auto_buff::Solver>(adapted_config_path);
+    buff_small_target = std::make_unique<auto_buff::SmallTarget>();
+    buff_big_target = std::make_unique<auto_buff::BigTarget>();
+    buff_aimer = std::make_unique<auto_buff::Aimer>(adapted_config_path);
+  } else {
+    detector = std::make_unique<auto_aim::YOLO>(adapted_config_path, false);
+    solver = std::make_unique<auto_aim::Solver>(adapted_config_path);
+    tracker = std::make_unique<auto_aim::Tracker>(adapted_config_path, *solver);
+    aimer = std::make_unique<auto_aim::Aimer>(adapted_config_path);
+    shooter = std::make_unique<auto_aim::Shooter>(adapted_config_path);
+  }
+  const bool use_mpc_planner = !use_buff_task && plannerModeUsesMpc(command_limiter_config.planner_mode);
   std::unique_ptr<auto_aim::Planner> mpc_planner;
   std::unique_ptr<auto_aim::Planner> outpost_mpc_planner;
   if (use_mpc_planner) {
@@ -1232,16 +1317,17 @@ int run(const Options& options) {
 
   std::printf(
       "[standard] camera=%s serial=%s:%s@%d read_timeout=%dms write_timeout=%dms "
-      "dry_run=%s serial_send=%s fire=%s enemy=%s bullet=%.2f\n",
+      "task=%s dry_run=%s serial_send=%s fire=%s enemy=%s bullet=%.2f\n",
       options.camera_backend.c_str(), hfut::io::infantryPacketLayoutName(serial_config.tx_layout),
       options.serial_port.c_str(), options.serial_baudrate, options.serial_read_timeout_ms,
       options.serial_write_timeout_ms,
+      options.aim_task.c_str(),
       options.dry_run ? "true" : "false",
       options.serial_send ? "true" : "false",
       options.enable_fire ? "enabled" : "disabled",
       options.enemy_color.c_str(), options.bullet_speed);
-  std::printf("[standard] sp25_config=%s runtime_config=%s calibration_mode=%s\n",
-              options.sp25_config.c_str(), adapted_config_path.c_str(),
+  std::printf("[standard] algorithm_config=%s runtime_config=%s calibration_mode=%s\n",
+              algorithm_config.c_str(), adapted_config_path.c_str(),
               hfut::video::calibrationModeName(calibration_mode));
   std::printf(
       "[standard] controller_config=%s planner=%s guard=%s yaw_step=%.2fdeg pitch_step=%.2fdeg "
@@ -1382,70 +1468,126 @@ int run(const Options& options) {
     frame.intrinsics = toIntrinsics(adapted_calibration);
     frame.gimbal_yaw = aligned_feedback.yaw_rad;
     frame.gimbal_pitch = aligned_feedback.pitch_rad;
-    const auto timestamp = frame_time;
-    solver.set_R_gimbal2world(feedbackQuaternion(aligned_feedback, command_limiter_config));
-
-    const auto detect_start = std::chrono::steady_clock::now();
-    auto armors = detector.detect(frame.image, static_cast<int>(frame.seq));
-    const auto detect_end = std::chrono::steady_clock::now();
-
-    auto track_armors = armors;
-    const auto track_start = detect_end;
-    auto targets = tracker.track(track_armors, timestamp);
-    const auto track_end = std::chrono::steady_clock::now();
+    auto timestamp = frame_time;
 
     const double bullet_speed = latest_feedback.bullet_speed >= 14.0
                                     ? latest_feedback.bullet_speed
                                     : options.bullet_speed;
-    const auto aim_start = track_end;
-    const bool target_is_outpost = !targets.empty() && targets.front().name == auto_aim::ArmorName::outpost;
-    const CommandLimiterConfig& active_limiter_config =
-        (target_is_outpost && use_outpost_profile) ? outpost_limiter_config : command_limiter_config;
-    auto_aim::Planner* active_mpc_planner =
-        (target_is_outpost && outpost_mpc_planner) ? outpost_mpc_planner.get() : mpc_planner.get();
-    FinalVelocityAccelerationAdapter& active_mpc_motion_adapter =
-        (target_is_outpost && use_outpost_profile) ? outpost_mpc_motion_adapter : mpc_motion_adapter;
+    const auto detect_start = std::chrono::steady_clock::now();
+    auto detect_end = detect_start;
+    auto track_start = detect_start;
+    auto track_end = detect_start;
+    auto aim_start = detect_start;
+    std::list<auto_aim::Armor> armors;
+    std::list<auto_aim::Target> targets;
+    std::optional<auto_buff::PowerRune> power_rune;
+    std::string track_state{"lost"};
+    int detection_count = 0;
+    int tracked_count = 0;
+    double command_distance = 0.0;
+    const CommandLimiterConfig* active_limiter_config = &command_limiter_config;
+    FinalVelocityAccelerationAdapter* active_mpc_motion_adapter = &mpc_motion_adapter;
     io::Command sp_command{false, false, 0.0, 0.0};
     auto_aim::Plan mpc_plan{};
     bool have_mpc_plan = false;
-    if (use_mpc_planner) {
-      if (!targets.empty() && active_mpc_planner) {
-        try {
-          std::optional<auto_aim::Target> target{targets.front()};
-          mpc_plan = active_mpc_planner->plan(target, bullet_speed);
-          have_mpc_plan = mpc_plan.control;
-          sp_command.control = mpc_plan.control;
-          sp_command.shoot = mpc_plan.fire;
-          sp_command.yaw = mpc_plan.yaw;
-          sp_command.pitch = mpc_plan.pitch;
-          sp_command.horizon_distance = targetDistance(*target);
-        } catch (const std::exception& e) {
-          std::fprintf(stderr, "[standard] MPC 规划失败: %s\n", e.what());
+
+    if (use_buff_task) {
+      buff_solver->set_R_gimbal2world(feedbackQuaternion(aligned_feedback, command_limiter_config));
+      power_rune = buff_detector->detect(
+          frame.image, options.aim_task == "smallbuff" ? auto_buff::SMALL : auto_buff::BIG);
+      detection_count = power_rune.has_value() ? 1 : 0;
+      if (power_rune.has_value()) buff_solver->solve(power_rune);
+      detect_end = std::chrono::steady_clock::now();
+
+      track_start = detect_end;
+      if (options.aim_task == "smallbuff") {
+        buff_small_target->get_target(power_rune, timestamp);
+      } else {
+        buff_big_target->get_target(power_rune, timestamp);
+      }
+      track_end = std::chrono::steady_clock::now();
+
+      aim_start = track_end;
+      if (options.aim_task == "smallbuff") {
+        if (!buff_small_target->is_unsolve()) {
+          auto target_copy = *buff_small_target;
+          sp_command = buff_aimer->aim(target_copy, timestamp, bullet_speed);
+        }
+      } else {
+        if (!buff_big_target->is_unsolve()) {
+          auto target_copy = *buff_big_target;
+          sp_command = buff_aimer->aim(target_copy, timestamp, bullet_speed);
         }
       }
+      if (sp_command.control) {
+        command_distance = sp_command.horizon_distance > 0.0
+                               ? sp_command.horizon_distance
+                               : buff_aimer->last_distance();
+      }
+      tracked_count = sp_command.control ? 1 : 0;
+      track_state = sp_command.control ? "tracking" : (power_rune.has_value() ? "detecting" : "lost");
     } else {
-      sp_command = aimer.aim(targets, timestamp, bullet_speed);
+      solver->set_R_gimbal2world(feedbackQuaternion(aligned_feedback, command_limiter_config));
+      armors = detector->detect(frame.image, static_cast<int>(frame.seq));
+      detection_count = static_cast<int>(armors.size());
+      detect_end = std::chrono::steady_clock::now();
+
+      auto track_armors = armors;
+      track_start = detect_end;
+      targets = tracker->track(track_armors, timestamp);
+      tracked_count = static_cast<int>(targets.size());
+      track_state = tracker->state();
+      track_end = std::chrono::steady_clock::now();
+
+      aim_start = track_end;
+      const bool target_is_outpost = !targets.empty() && targets.front().name == auto_aim::ArmorName::outpost;
+      if (target_is_outpost && use_outpost_profile) {
+        active_limiter_config = &outpost_limiter_config;
+        active_mpc_motion_adapter = &outpost_mpc_motion_adapter;
+      }
+      auto_aim::Planner* active_mpc_planner =
+          (target_is_outpost && outpost_mpc_planner) ? outpost_mpc_planner.get() : mpc_planner.get();
+      if (use_mpc_planner) {
+        if (!targets.empty() && active_mpc_planner) {
+          try {
+            std::optional<auto_aim::Target> target{targets.front()};
+            mpc_plan = active_mpc_planner->plan(target, bullet_speed);
+            have_mpc_plan = mpc_plan.control;
+            sp_command.control = mpc_plan.control;
+            sp_command.shoot = mpc_plan.fire;
+            sp_command.yaw = mpc_plan.yaw;
+            sp_command.pitch = mpc_plan.pitch;
+            sp_command.horizon_distance = targetDistance(*target);
+          } catch (const std::exception& e) {
+            std::fprintf(stderr, "[standard] MPC 规划失败: %s\n", e.what());
+          }
+        }
+      } else {
+        sp_command = aimer->aim(targets, timestamp, bullet_speed);
+      }
+      const Eigen::Vector3d gimbal_pos = tools::eulers(solver->R_gimbal2world(), 2, 1, 0);
+      if (!use_mpc_planner) {
+        sp_command.shoot = shooter->shoot(sp_command, *aimer, targets, gimbal_pos);
+      }
+      command_distance = aimDistance(*aimer, sp_command);
     }
-    const Eigen::Vector3d gimbal_pos = tools::eulers(solver.R_gimbal2world(), 2, 1, 0);
-    if (!use_mpc_planner) {
-      sp_command.shoot = shooter.shoot(sp_command, aimer, targets, gimbal_pos);
-    }
+
     hfut::GimbalCommand command = convertCommand(
-        sp_command, aimer, latest_feedback, options.enable_fire, active_limiter_config);
+        sp_command, command_distance, latest_feedback, options.enable_fire, *active_limiter_config);
     if (use_mpc_planner && have_mpc_plan) {
-      command.yaw_vel = active_limiter_config.feedback_yaw_to_world_sign * mpc_plan.yaw_vel;
-      command.pitch_vel = active_limiter_config.sp_pitch_to_command_sign * mpc_plan.pitch_vel;
-      if (velocityModeUsesFeedbackError(active_limiter_config.serial_command_velocity_mode)) {
-        command.yaw_vel += active_limiter_config.serial_command_yaw_error_gain * command.yaw_diff;
-        command.pitch_vel += active_limiter_config.serial_command_pitch_error_gain * command.pitch_diff;
+      command.yaw_vel = active_limiter_config->feedback_yaw_to_world_sign * mpc_plan.yaw_vel;
+      command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * mpc_plan.pitch_vel;
+      if (velocityModeUsesFeedbackError(active_limiter_config->serial_command_velocity_mode)) {
+        command.yaw_vel += active_limiter_config->serial_command_yaw_error_gain * command.yaw_diff;
+        command.pitch_vel += active_limiter_config->serial_command_pitch_error_gain * command.pitch_diff;
       }
       command.yaw_vel = std::clamp(command.yaw_vel,
-                                   -active_limiter_config.serial_command_max_yaw_velocity_rad_s,
-                                   active_limiter_config.serial_command_max_yaw_velocity_rad_s);
+                                   -active_limiter_config->serial_command_max_yaw_velocity_rad_s,
+                                   active_limiter_config->serial_command_max_yaw_velocity_rad_s);
       command.pitch_vel = std::clamp(command.pitch_vel,
-                                      -active_limiter_config.serial_command_max_pitch_velocity_rad_s,
-                                      active_limiter_config.serial_command_max_pitch_velocity_rad_s);
-      active_mpc_motion_adapter.apply(command, std::chrono::steady_clock::now());
+                                      -active_limiter_config->serial_command_max_pitch_velocity_rad_s,
+                                      active_limiter_config->serial_command_max_pitch_velocity_rad_s);
+      active_mpc_motion_adapter->apply(command, std::chrono::steady_clock::now());
     } else if (use_mpc_planner) {
       mpc_motion_adapter.reset();
       outpost_mpc_motion_adapter.reset();
@@ -1453,12 +1595,12 @@ int run(const Options& options) {
     const double raw_desired_yaw = command.yaw;
     const double raw_desired_pitch = command.pitch;
     if (!use_mpc_planner) {
-      command_guard.apply(command, latest_feedback, tracker.state(), std::chrono::steady_clock::now());
+      command_guard.apply(command, latest_feedback, track_state, std::chrono::steady_clock::now());
     }
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
     const FireGateResult fire_gate = applyFireGate(
-        command, raw_desired_yaw, raw_desired_pitch, active_limiter_config);
+        command, raw_desired_yaw, raw_desired_pitch, *active_limiter_config);
     const auto aim_end = std::chrono::steady_clock::now();
 
     const auto serial_tx_start = aim_end;
@@ -1479,9 +1621,12 @@ int run(const Options& options) {
     web_status.frames = frames;
     web_status.fps = runtime_fps;
     web_status.latency_ms = elapsedMs(detect_start, aim_end);
-    web_status.armors = static_cast<int>(armors.size());
-    web_status.tracked = targets.empty() ? 0 : 1;
-    web_status.track_state = tracker.state();
+    web_status.detections = detection_count;
+    web_status.poses = power_rune.has_value() ? 1 : 0;
+    web_status.armors = use_buff_task ? 0 : detection_count;
+    web_status.tracked = tracked_count > 0 ? 1 : 0;
+    web_status.track_state = track_state;
+    web_status.reason = options.aim_task;
     web_status.mode = static_cast<int>(command.mode);
     web_status.feedback_yaw_deg = latest_feedback.yaw_rad * kRadToDeg;
     web_status.feedback_pitch_deg = latest_feedback.pitch_rad * kRadToDeg;
@@ -1520,7 +1665,11 @@ int run(const Options& options) {
     const auto visual_start = std::chrono::steady_clock::now();
     if (options.display || web_server) {
       cv::Mat visual = frame.image.clone();
-      drawArmors(visual, armors);
+      if (use_buff_task) {
+        drawPowerRune(visual, power_rune);
+      } else {
+        drawArmors(visual, armors);
+      }
       drawCrosshair(visual);
       drawOverlay(visual, web_status);
       if (web_server && frames % static_cast<uint64_t>(options.web_frame_step) == 0U) {
@@ -1536,14 +1685,15 @@ int run(const Options& options) {
 
     if (visual_end - last_log > std::chrono::seconds(1)) {
       std::printf(
-          "[standard] frames=%llu fps=%.1f armors=%zu tracked=%zu state=%s "
+          "[standard] task=%s frames=%llu fps=%.1f detections=%d tracked=%d state=%s "
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg distance=%.3f "
           "sp_fire=%d fire=%d gate=%d latency=%.1fms "
           "timing=rx %.1f cam %.1f det %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
-          static_cast<unsigned long long>(frames), runtime_fps, armors.size(), targets.size(),
-          tracker.state().c_str(), latest_feedback.yaw_rad * kRadToDeg,
+          options.aim_task.c_str(), static_cast<unsigned long long>(frames), runtime_fps,
+          detection_count, tracked_count,
+          track_state.c_str(), latest_feedback.yaw_rad * kRadToDeg,
           latest_feedback.pitch_rad * kRadToDeg, aligned_feedback.yaw_rad * kRadToDeg,
           aligned_feedback.pitch_rad * kRadToDeg, aligned_delta_yaw * kRadToDeg,
           aligned_delta_pitch * kRadToDeg, aligned_feedback_age_ms, raw_desired_yaw * kRadToDeg,

@@ -1,0 +1,50 @@
+# 26 赛季打符配置。
+# standard 启动时会把 hardware.yaml 中的相机内参和相机到枪管外参同步到 build/sp25_runtime.yaml。
+
+#####-----buff_detector 参数-----#####
+# detector_backend: szu / sp25
+# szu：深大 26 能量机关五点模型，默认推荐；sp25：SP25 原版打符模型，保留为备用 baseline。
+detector_backend: szu
+
+# SP25 原版打符模型。仅 detector_backend=sp25 时使用。
+model: assets/yolo11_buff_int8.xml
+
+# SZU 26 能量机关五点模型。输出类别：0=待击打叶片，1=小符已击中叶片，2=大符已击中叶片。
+szu_model: assets/szu_rune_model_0624.onnx
+device: CPU
+confidence: 0.7
+iou_threshold: 0.4
+szu_confidence: 0.8
+szu_keypoint_confidence: 0.8
+szu_nms_distance: 30.0
+szu_min_valid_keypoints: 5
+
+# SZU README 配图的原始编号里，0/1/3/4 是符叶四角，2 是 R 标中心。
+# 如果实车 PnP 姿态明显反了/转了，先只调整 szu_corner_indices 的顺序，不要改模型代码。
+szu_corner_indices: [0, 1, 3, 4]
+szu_r_center_index: 2
+
+# 26 规则下，当前“待击打叶片”是 class 0；大小符默认都以 class 0 作为可打目标。
+szu_target_class_id: 0
+szu_small_target_class_id: 0
+szu_big_target_class_id: 0
+
+#####-----buff_aimer 参数-----#####
+# 单位：度。正负方向沿用 SP25 打符 Aimer，实车调参时只微调小量。
+yaw_offset: 0.0
+pitch_offset: 0.0
+
+# 同一扇叶连续开火间隔，单位秒。
+fire_gap_time: 0.700
+
+# 打符预测提前量，单位秒。第一版保留 SP25 默认值。
+predict_time: 0.120
+
+#####-----启动时会被 hardware.yaml 覆盖的实车标定参数-----#####
+image_width: 1280
+image_height: 1024
+R_gimbal2imubody: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+camera_matrix: [1762.22864, 0.0, 513.82984, 0.0, 1763.58882, 478.72438, 0.0, 0.0, 1.0]
+distort_coeffs: [-0.069163, 0.078039, 0.001264, -0.000786, 0.0]
+R_camera2gimbal: [0, -0.136571843168, 0.99063016896, -1, 0, 0, 0, -0.99063016896, -0.136571843168]
+t_camera2gimbal: [0.100, 0.0075, 0.000]

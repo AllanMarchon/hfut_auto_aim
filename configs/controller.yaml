@@ -41,6 +41,7 @@ gimbal_pipeline:
         max_pitch_acc: 140.0
         Q_pitch: [12000000.0, 0.0]
         R_pitch: [0.8]
+        low_speed_delay_time: 0.01
 
       # 备用 Aimer 链路的云台能力上限。planner.mode: mpc 时最终下发限幅使用 mpc_planner.max_*_acc。
       # 单位：rad/s²。

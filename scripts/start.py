@@ -218,11 +218,20 @@ def run_standard(args: argparse.Namespace, env: dict[str, str]) -> int:
     print_camera_owners()
     if args.web_view:
         print(f"[start] Web 可视化：http://{args.viewer_host}:{args.web_port}/")
-    if args.mode == "live" and not args.allow_fire:
+    if args.mode in {"live", "smallbuff", "bigbuff"} and not args.allow_fire:
         print("[start] live 模式：串口开启，开火强制关闭。")
+    if args.mode == "smallbuff":
+        print("[start] smallbuff 模式：手动小符，串口开启，默认不开火。")
+    if args.mode == "bigbuff":
+        print("[start] bigbuff 模式：手动大符，串口开启，默认不开火。")
     if args.mode == "dry":
         print("[start] dry 模式：不打开串口、不下发控制。")
-    return run(build_standard_command(args), env=env).returncode
+    runtime_env = dict(env)
+    if args.mode in {"smallbuff", "bigbuff"}:
+        runtime_env["HFUT_AIM_TASK"] = args.mode
+    else:
+        runtime_env.pop("HFUT_AIM_TASK", None)
+    return run(build_standard_command(args), env=runtime_env).returncode
 
 
 def run_serial_test(args: argparse.Namespace, env: dict[str, str]) -> int:
@@ -338,7 +347,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         choices=(
-            "dry", "live", "build", "check",
+            "dry", "live", "smallbuff", "bigbuff", "build", "check",
             "serial-test", "manual-gimbal",
             "capture-calibration", "calibrate-camera", "install-udev",
         ),
@@ -415,8 +424,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.mvs_lib_dir = args.mvs_lib_dir.expanduser().resolve()
     args.calibration_output_dir = args.calibration_output_dir.expanduser().resolve()
     args.calibration_output = args.calibration_output.expanduser().resolve()
-    if args.allow_fire and args.mode != "live":
-        raise SystemExit("--allow-fire 只能配合 --mode live 使用")
+    if args.allow_fire and args.mode not in {"live", "smallbuff", "bigbuff"}:
+        raise SystemExit("--allow-fire 只能配合 --mode live/smallbuff/bigbuff 使用")
     if args.web_port <= 0 or args.web_port > 65535:
         raise SystemExit("--web-port 必须在 1..65535")
     if args.web_frame_step <= 0:
