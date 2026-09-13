@@ -410,7 +410,15 @@ int run(const Options& options) {
   std::filesystem::create_directories(options.output_dir);
   auto camera = createCamera(options);
   if (!camera->open()) throw std::runtime_error("相机打开失败: " + camera->errorMessage());
-  if (options.display) cv::namedWindow("capture_calibration_images", cv::WINDOW_NORMAL);
+  bool display_enabled = options.display;
+  if (display_enabled) {
+    try {
+      cv::namedWindow("capture_calibration_images", cv::WINDOW_NORMAL);
+    } catch (const cv::Exception& error) {
+      std::fprintf(stderr, "显示窗口初始化失败，切换为无窗口自动采图: %s\n", error.what());
+      display_enabled = false;
+    }
+  }
 
   std::printf("标定采图启动: camera=%s output=%s interval=%d max=%d auto=%s pattern=%dx%d\n",
               options.camera_backend.c_str(), options.output_dir.c_str(),
@@ -439,13 +447,23 @@ int run(const Options& options) {
       request_save = options.save_interval > 0 && frame_count % options.save_interval == 0;
     }
 
-    if (options.display) {
+    if (display_enabled) {
       cv::Mat preview = frame.image.clone();
       drawStatus(preview, options, observation, saved, delta);
-      cv::imshow("capture_calibration_images", preview);
-      const int key = cv::waitKey(1) & 0xff;
-      if (key == 'q' || key == 27) break;
-      if (key == 's' || key == 'S') request_save = true;
+      try {
+        cv::imshow("capture_calibration_images", preview);
+        const int key = cv::waitKey(1) & 0xff;
+        if (key == 'q' || key == 27) break;
+        if (key == 's' || key == 'S') request_save = true;
+      } catch (const cv::Exception& error) {
+        std::fprintf(stderr, "显示窗口失效，切换为无窗口自动采图: %s\n", error.what());
+        display_enabled = false;
+      }
+    } else if (options.auto_chessboard && frame_count % 30 == 0) {
+      std::printf("自动采图状态: frame=%d saved=%d found=%d reason=%s sharp=%.0f area=%.3f delta=%.3f\n",
+                  frame_count, saved, observation.found ? 1 : 0,
+                  observation.reject_reason.c_str(), observation.sharpness,
+                  observation.area, delta);
     }
 
     if (request_save && saveImage(options, saved, frame.image)) {
@@ -456,7 +474,7 @@ int run(const Options& options) {
       ++saved;
     }
   }
-  if (options.display) cv::destroyAllWindows();
+  if (display_enabled) cv::destroyAllWindows();
   return saved > 0 ? 0 : 2;
 }
 
