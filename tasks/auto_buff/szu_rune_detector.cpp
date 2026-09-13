@@ -5,8 +5,6 @@
 #include <stdexcept>
 #include <utility>
 
-#include <openvino/preprocess/pre_post_process.hpp>
-
 namespace auto_buff
 {
 namespace
@@ -25,6 +23,31 @@ std::vector<int> yaml_int_vector(
   const YAML::Node & yaml, const char * key, const std::vector<int> & fallback)
 {
   return yaml[key] ? yaml[key].as<std::vector<int>>() : fallback;
+}
+
+void fill_nchw_rgb_float_tensor(const cv::Mat & bgr_image, ov::Tensor & input_tensor)
+{
+  const auto shape = input_tensor.get_shape();
+  if (shape.size() != 4 || shape[1] != 3) {
+    throw std::runtime_error("SZU 打符模型输入 tensor 不是 NCHW 三通道");
+  }
+  const int height = static_cast<int>(shape[2]);
+  const int width = static_cast<int>(shape[3]);
+  if (bgr_image.rows != height || bgr_image.cols != width || bgr_image.type() != CV_8UC3) {
+    throw std::runtime_error("SZU 打符模型预处理尺寸或格式错误");
+  }
+
+  float * data = input_tensor.data<float>();
+  const size_t plane_size = static_cast<size_t>(height) * static_cast<size_t>(width);
+  for (int y = 0; y < height; ++y) {
+    const auto * row = bgr_image.ptr<cv::Vec3b>(y);
+    for (int x = 0; x < width; ++x) {
+      const size_t offset = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+      data[offset] = static_cast<float>(row[x][2]) / 255.0f;
+      data[plane_size + offset] = static_cast<float>(row[x][1]) / 255.0f;
+      data[2 * plane_size + offset] = static_cast<float>(row[x][0]) / 255.0f;
+    }
+  }
 }
 }  // namespace
 
@@ -50,18 +73,6 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
   }
   input_height_ = static_cast<int>(model_input_shape[2]);
   input_width_ = static_cast<int>(model_input_shape[3]);
-
-  auto ppp = ov::preprocess::PrePostProcessor(model_);
-  ppp.input().tensor()
-    .set_element_type(ov::element::u8)
-    .set_layout("NHWC")
-    .set_color_format(ov::preprocess::ColorFormat::BGR);
-  ppp.input().preprocess()
-    .convert_element_type(ov::element::f32)
-    .convert_color(ov::preprocess::ColorFormat::RGB)
-    .scale(255.0f);
-  ppp.input().model().set_layout("NCHW");
-  model_ = ppp.build();
 
   compiled_model_ = core_.compile_model(model_, device_);
   infer_request_ = compiled_model_.create_infer_request();
@@ -107,8 +118,8 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::detect(const cv::Mat & 
   preprocess_letterbox(image, input, scale, pad_w, pad_h);
 
   ov::Tensor input_tensor(
-    ov::element::u8, {1, static_cast<size_t>(input_height_), static_cast<size_t>(input_width_), 3},
-    input.data);
+    ov::element::f32, {1, 3, static_cast<size_t>(input_height_), static_cast<size_t>(input_width_)});
+  fill_nchw_rgb_float_tensor(input, input_tensor);
   infer_request_.set_input_tensor(input_tensor);
   infer_request_.infer();
 
