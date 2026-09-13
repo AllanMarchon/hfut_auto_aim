@@ -279,7 +279,12 @@ def run_manual_gimbal_test(args: argparse.Namespace, env: dict[str, str]) -> int
 
 def run_capture_calibration(args: argparse.Namespace, env: dict[str, str]) -> int:
     exe = BUILD_DIR / "capture_calibration_images"
-    if not exe.exists():
+    sources = [PROJECT_DIR / "apps" / "capture_calibration_images.cpp", PROJECT_DIR / "CMakeLists.txt"]
+    needs_build = not exe.exists() or any(
+        source.exists() and source.stat().st_mtime > exe.stat().st_mtime
+        for source in sources
+    )
+    if needs_build:
         status = build_project(args, env)
         if status != 0:
             return status
@@ -295,7 +300,16 @@ def run_capture_calibration(args: argparse.Namespace, env: dict[str, str]) -> in
         "--prefix", args.calibration_prefix,
         "--save-interval", str(args.calibration_save_interval),
         "--max-images", str(args.calibration_max_images),
+        "--pattern-cols", str(args.pattern_cols),
+        "--pattern-rows", str(args.pattern_rows),
+        "--min-sharpness", str(args.calibration_min_sharpness),
+        "--min-save-gap-frames", str(args.calibration_min_save_gap_frames),
+        "--min-pose-delta", str(args.calibration_min_pose_delta),
+        "--min-board-area", str(args.calibration_min_board_area),
+        "--max-board-area", str(args.calibration_max_board_area),
     ]
+    if args.auto_chessboard:
+        cmd.append("--auto-chessboard")
     if args.exposure_time_us is not None:
         cmd += ["--exposure-time-us", str(args.exposure_time_us)]
     if args.gain is not None:
@@ -398,6 +412,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--calibration-prefix", default="calib")
     parser.add_argument("--calibration-save-interval", type=int, default=20)
     parser.add_argument("--calibration-max-images", type=int, default=40)
+    parser.add_argument("--auto-chessboard", action="store_true",
+                        help="采图时自动识别棋盘格，并只保存清晰、非重复的有效样本。")
+    parser.add_argument("--calibration-min-sharpness", type=float, default=30.0,
+                        help="自动采图最小 Laplacian 清晰度；0 表示不按清晰度过滤。")
+    parser.add_argument("--calibration-min-save-gap-frames", type=int, default=15,
+                        help="自动采图两张保存图片之间的最小帧间隔。")
+    parser.add_argument("--calibration-min-pose-delta", type=float, default=0.08,
+                        help="自动采图最小姿态差异，越大越不容易保存重复姿态。")
+    parser.add_argument("--calibration-min-board-area", type=float, default=0.001,
+                        help="自动采图棋盘外接框最小画面占比。")
+    parser.add_argument("--calibration-max-board-area", type=float, default=0.85,
+                        help="自动采图棋盘外接框最大画面占比。")
     parser.add_argument("--calibration-images", default="calibration/images/*.png")
     parser.add_argument("--pattern-cols", type=int, default=9)
     parser.add_argument("--pattern-rows", type=int, default=6)
@@ -434,6 +460,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         raise SystemExit("--calibration-save-interval 必须 >= 0")
     if args.calibration_max_images == 0:
         raise SystemExit("--calibration-max-images 不能为 0")
+    if args.calibration_min_save_gap_frames < 0:
+        raise SystemExit("--calibration-min-save-gap-frames 必须 >= 0")
+    if args.calibration_min_sharpness < 0:
+        raise SystemExit("--calibration-min-sharpness 必须 >= 0")
+    if args.calibration_min_pose_delta < 0:
+        raise SystemExit("--calibration-min-pose-delta 必须 >= 0")
+    if not (0 <= args.calibration_min_board_area < args.calibration_max_board_area):
+        raise SystemExit("--calibration-min-board-area 必须小于 --calibration-max-board-area")
     if args.pattern_cols <= 0 or args.pattern_rows <= 0 or args.square_size <= 0.0:
         raise SystemExit("棋盘格参数必须大于 0")
     if args.manual_hz <= 0.0:
