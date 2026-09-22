@@ -1548,6 +1548,10 @@ int run(const Options& options) {
       auto_aim::Planner* active_mpc_planner =
           (target_is_outpost && outpost_mpc_planner) ? outpost_mpc_planner.get() : mpc_planner.get();
       if (use_mpc_planner) {
+        if (track_state != "tracking") {
+          if (mpc_planner) mpc_planner->reset();
+          if (outpost_mpc_planner) outpost_mpc_planner->reset();
+        }
         if (!targets.empty() && active_mpc_planner) {
           try {
             std::optional<auto_aim::Target> target{targets.front()};

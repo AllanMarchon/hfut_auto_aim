@@ -5,6 +5,7 @@
 #include <list>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "tasks/auto_aim/target.hpp"
 #include "tinympc/tiny_api.hpp"
@@ -37,6 +38,8 @@ class Planner
   Eigen::Vector4d debug_xyza;
   Planner(const std::string & config_path, const std::string & planner_profile = "mpc_planner");
 
+  void reset();
+
   Plan plan(Target target, double bullet_speed);
   Plan plan(std::optional<Target> target, double bullet_speed);
 
@@ -51,11 +54,20 @@ private:
   TinySolver * pitch_solver_;
   bool warned_solver_status_{false};
 
+  int selected_armor_id_{-1};
+  int switch_candidate_id_{-1};
+  int switch_candidate_count_{0};
+  ArmorName selected_target_name_{ArmorName::not_armor};
+  ArmorType selected_target_type_{ArmorType::small};
+
   void setup_yaw_solver(const std::string & config_path);
   void setup_pitch_solver(const std::string & config_path);
 
-  Eigen::Matrix<double, 2, 1> aim(const Target & target, double bullet_speed);
-  Trajectory get_trajectory(Target & target, double yaw0, double bullet_speed);
+  int select_armor_id(const Target & target, const std::vector<Eigen::Vector4d> & armor_xyza_list);
+  Eigen::Matrix<double, 2, 1> aim(
+    const Target & target, double bullet_speed, int armor_id);
+  Trajectory get_trajectory(
+    Target & target, double yaw0, double bullet_speed, int armor_id);
 };
 
 }  // namespace auto_aim
