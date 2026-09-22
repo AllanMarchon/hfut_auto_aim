@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "tools/logger.hpp"
@@ -22,6 +23,18 @@ int yaml_int(const YAML::Node & yaml, const char * key, int fallback)
 {
   return yaml[key] ? yaml[key].as<int>() : fallback;
 }
+
+bool yaml_bool(const YAML::Node & yaml, const char * key, bool fallback)
+{
+  return yaml[key] ? yaml[key].as<bool>() : fallback;
+}
+
+void validate_szu_class_id(const char * key, int class_id)
+{
+  if (class_id < 0 || class_id > 2) {
+    throw std::runtime_error(std::string(key) + " 必须在 0..2 范围内");
+  }
+}
 }  // namespace
 
 Buff_Detector::Buff_Detector(const std::string & config)
@@ -33,6 +46,12 @@ Buff_Detector::Buff_Detector(const std::string & config)
   szu_small_target_class_id_ =
     yaml_int(yaml, "szu_small_target_class_id", szu_target_class_id_);
   szu_big_target_class_id_ = yaml_int(yaml, "szu_big_target_class_id", szu_target_class_id_);
+  validate_szu_class_id("szu_target_class_id", szu_target_class_id_);
+  validate_szu_class_id("szu_small_target_class_id", szu_small_target_class_id_);
+  validate_szu_class_id("szu_big_target_class_id", szu_big_target_class_id_);
+  szu_debug_log_ = yaml_bool(yaml, "szu_debug_log", szu_debug_log_);
+  szu_debug_log_every_n_ =
+    std::max(1, yaml_int(yaml, "szu_debug_log_every_n", szu_debug_log_every_n_));
   if (backend_ == SZU) {
     szu_detector_ = std::make_unique<SzuRuneDetector>(config);
   } else {
@@ -116,6 +135,7 @@ void Buff_Detector::handle_lose()
   if (lose_ >= LOSE_MAX) {
     status_ = LOSE;
     last_powerrune_ = std::nullopt;
+    return;
   }
   status_ = TEM_LOSE;
 }
@@ -183,7 +203,9 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
 {
   if (!szu_detector_) return std::nullopt;
   const auto results = szu_detector_->detect(bgr_img);
+  const auto & stats = szu_detector_->debug_stats();
   if (results.empty()) {
+    log_szu_debug("no_result", stats, results.size(), 0, 0);
     handle_lose();
     return std::nullopt;
   }
@@ -210,6 +232,8 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   }
 
   if (target_fanblades.empty() || r_center_count == 0) {
+    log_szu_debug(
+      "target_missing", stats, results.size(), target_fanblades.size(), other_fanblades.size());
     handle_lose();
     return std::nullopt;
   }
@@ -235,6 +259,9 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
 
   /// handle error
   if (powerrune.is_unsolve()) {
+    log_szu_debug(
+      "powerrune_unsolve", stats, results.size(), target_fanblades.size(),
+      other_fanblades.size());
     handle_lose();
     return std::nullopt;
   }
@@ -244,6 +271,7 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   std::optional<PowerRune> P;
   P.emplace(powerrune);
   last_powerrune_ = P;
+  log_szu_debug("ok", stats, results.size(), target_fanblades.size(), other_fanblades.size());
   return P;
 }
 
@@ -251,6 +279,23 @@ FanBlade_type Buff_Detector::classify_szu_blade(int class_id, PowerRune_type run
 {
   const int target_class = rune_type == SMALL ? szu_small_target_class_id_ : szu_big_target_class_id_;
   return class_id == target_class ? _target : _light;
+}
+
+void Buff_Detector::log_szu_debug(
+  const char * stage, const SzuRuneDetector::DebugStats & stats, std::size_t raw_count,
+  std::size_t target_count, std::size_t other_count)
+{
+  if (!szu_debug_log_) return;
+  ++szu_debug_frame_;
+  if (szu_debug_frame_ != 1 && szu_debug_frame_ % szu_debug_log_every_n_ != 0) return;
+
+  tools::logger()->info(
+    "[Buff_Detector] szu frame={} stage={} anchors={} conf={} kpt={} required={} nms={} results={} "
+    "target={} other={} classes={}/{}/{} max_conf={:.3f} max_kpt={:.3f}",
+    szu_debug_frame_, stage, stats.anchors, stats.confidence_pass, stats.keypoint_pass,
+    stats.required_keypoint_pass, stats.nms_output, raw_count, target_count, other_count,
+    stats.class_counts[0], stats.class_counts[1], stats.class_counts[2], stats.max_confidence,
+    stats.max_keypoint_confidence);
 }
 
 std::optional<PowerRune> Buff_Detector::detect_debug(cv::Mat & bgr_img, cv::Point2f v)

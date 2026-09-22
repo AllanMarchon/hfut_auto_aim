@@ -64,6 +64,9 @@ protected:
   Voter voter;  // 逆时针-1 顺时针1
   bool first_in_;
   bool unsolvable_;
+  int lost_count_ = 0;
+  bool have_start_timestamp_ = false;
+  std::chrono::steady_clock::time_point start_timestamp_{};
 };
 
 /// SmallTarget子类

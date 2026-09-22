@@ -14,7 +14,8 @@ YOLO11_BUFF::YOLO11_BUFF(const std::string & config)
   model = core.read_model(model_path);
   // printInputAndOutputsInfo(*model);  // 打印模型信息
   /// 载入并编译模型
-  compiled_model = core.compile_model(model, device_);
+  compiled_model = core.compile_model(
+    model, device_, ov::hint::performance_mode(ov::hint::PerformanceMode::LATENCY));
   /// 创建推理请求
   infer_request = compiled_model.create_infer_request();
   // 获取模型输入节点
@@ -113,7 +114,6 @@ std::vector<YOLO11_BUFF::Object> YOLO11_BUFF::get_multicandidateboxes(cv::Mat & 
       image, label, cv::Point(obj.rect.tl().x, obj.rect.tl().y - 5), cv::FONT_HERSHEY_SIMPLEX, 0.5,
       cv::Scalar(0, 0, 0));
     const int radius = 2;  // 绘制关键点
-    const cv::Size & shape = image.size();
     for (int i = 0; i < NUM_POINTS; ++i)
       cv::circle(image, obj.kpt[i], radius, cv::Scalar(255, 0, 0), -1, cv::LINE_AA);
   }
@@ -122,10 +122,6 @@ std::vector<YOLO11_BUFF::Object> YOLO11_BUFF::get_multicandidateboxes(cv::Mat & 
   cv::putText(
     image, cv::format("FPS: %.2f", 1.0 / t), cv::Point(20, 40), cv::FONT_HERSHEY_PLAIN, 2.0,
     cv::Scalar(255, 0, 0), 2, 8);
-
-  // #ifdef SAVE
-  //         save("save", image);
-  // #endif
   return object_result;
 }
 
@@ -184,9 +180,6 @@ std::vector<YOLO11_BUFF::Object> YOLO11_BUFF::get_onecandidatebox(cv::Mat & imag
     }
     object_result.push_back(obj);
 
-    /// 0.3-0.7 save
-    if (max_confidence < 0.7) save(std::to_string(start), image);
-
     /// 绘制关键点和连线
     cv::rectangle(image, obj.rect, cv::Scalar(255, 255, 255), 1, 8);                  // 绘制矩形框
     const std::string label = "buff:" + std::to_string(max_confidence).substr(0, 4);  // 绘制标签
@@ -198,7 +191,6 @@ std::vector<YOLO11_BUFF::Object> YOLO11_BUFF::get_onecandidatebox(cv::Mat & imag
       image, label, cv::Point(obj.rect.tl().x, obj.rect.tl().y - 5), cv::FONT_HERSHEY_SIMPLEX, 0.5,
       cv::Scalar(0, 0, 0));
     const int radius = 2;  // 绘制关键点
-    const cv::Size & shape = image.size();
     for (int i = 0; i < NUM_POINTS; ++i) {
       cv::circle(image, obj.kpt[i], radius, cv::Scalar(255, 255, 0), -1, cv::LINE_AA);
       cv::putText(
@@ -295,13 +287,4 @@ void YOLO11_BUFF::printInputAndOutputsInfo(const ov::Model & network)
   }
 }
 
-void YOLO11_BUFF::save(const std::string & programName, const cv::Mat & image)
-{
-  const std::filesystem::path saveDir = "../result/";
-  if (!std::filesystem::exists(saveDir)) {
-    std::filesystem::create_directories(saveDir);
-  }
-  const std::filesystem::path savePath = saveDir / (programName + ".jpg");
-  cv::imwrite(savePath.string(), image);
-}
 }  // namespace auto_buff

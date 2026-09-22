@@ -52,15 +52,23 @@ void SmallTarget::get_target(
   const std::optional<PowerRune> & p, std::chrono::steady_clock::time_point & timestamp)
 {
   // 如果没有识别，退出函数
-  static int lost_cn = 0;
   if (!p.has_value()) {
     unsolvable_ = true;
-    lost_cn++;
+    lost_count_++;
+    if (lost_count_ > 6) {
+      tools::logger()->debug("[Target] 丢失buff");
+      lost_count_ = 0;
+      first_in_ = true;
+      have_start_timestamp_ = false;
+    }
     return;
   }
 
-  static std::chrono::steady_clock::time_point start_timestamp = timestamp;
-  auto time_gap = tools::delta_time(timestamp, start_timestamp);
+  if (first_in_ || !have_start_timestamp_) {
+    start_timestamp_ = timestamp;
+    have_start_timestamp_ = true;
+  }
+  auto time_gap = tools::delta_time(timestamp, start_timestamp_);
 
   // init
   if (first_in_) {
@@ -68,15 +76,7 @@ void SmallTarget::get_target(
     init(time_gap, p.value());
     first_in_ = false;
   }
-
-  // 处理识别时间间隔过大
-  if (lost_cn > 6) {
-    unsolvable_ = true;
-    tools::logger()->debug("[Target] 丢失buff");
-    lost_cn = 0;
-    first_in_ = true;
-    return;
-  }
+  lost_count_ = 0;
 
   // kalman update
   unsolvable_ = false;
@@ -362,15 +362,23 @@ void BigTarget::get_target(
   const std::optional<PowerRune> & p, std::chrono::steady_clock::time_point & timestamp)
 {
   // 如果没有识别，退出函数
-  static int lost_cn = 0;
   if (!p.has_value()) {
     unsolvable_ = true;
-    lost_cn++;
+    lost_count_++;
+    if (lost_count_ > 6) {
+      tools::logger()->debug("[Target] 丢失buff");
+      lost_count_ = 0;
+      first_in_ = true;
+      have_start_timestamp_ = false;
+    }
     return;
   }
 
-  static std::chrono::steady_clock::time_point start_timestamp = timestamp;
-  auto time_gap = tools::delta_time(timestamp, start_timestamp);
+  if (first_in_ || !have_start_timestamp_) {
+    start_timestamp_ = timestamp;
+    have_start_timestamp_ = true;
+  }
+  auto time_gap = tools::delta_time(timestamp, start_timestamp_);
 
   // init
   if (first_in_) {
@@ -378,15 +386,7 @@ void BigTarget::get_target(
     init(time_gap, p.value());
     first_in_ = false;
   }
-
-  // 处理识别时间间隔过大
-  if (lost_cn > 6) {
-    unsolvable_ = true;
-    tools::logger()->debug("[Target] 丢失buff");
-    lost_cn = 0;
-    first_in_ = true;
-    return;
-  }
+  lost_count_ = 0;
 
   // kalman update
   unsolvable_ = false;

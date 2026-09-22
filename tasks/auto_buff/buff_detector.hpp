@@ -1,8 +1,9 @@
-#ifndef AUTO_BUFF__TRACK_HPP
-#define AUTO_BUFF__TRACK_HPP
+#ifndef AUTO_BUFF__BUFF_DETECTOR_HPP
+#define AUTO_BUFF__BUFF_DETECTOR_HPP
 
 #include <yaml-cpp/yaml.h>
 
+#include <cstddef>
 #include <deque>
 #include <memory>
 #include <optional>
@@ -41,6 +42,10 @@ private:
 
   FanBlade_type classify_szu_blade(int class_id, PowerRune_type rune_type) const;
 
+  void log_szu_debug(
+    const char * stage, const SzuRuneDetector::DebugStats & stats, std::size_t raw_count,
+    std::size_t target_count, std::size_t other_count);
+
   std::string config_path_;
   std::unique_ptr<YOLO11_BUFF> sp25_detector_;
   std::unique_ptr<SzuRuneDetector> szu_detector_;
@@ -48,10 +53,12 @@ private:
   int szu_target_class_id_{0};
   int szu_small_target_class_id_{0};
   int szu_big_target_class_id_{0};
+  bool szu_debug_log_{false};
+  int szu_debug_log_every_n_{60};
+  int szu_debug_frame_{0};
   Track_status status_;
   int lose_;  // 丢失的次数
-  double lastlen_;
   std::optional<PowerRune> last_powerrune_ = std::nullopt;
 };
 }  // namespace auto_buff
-#endif  // DETECTOR_HPP
+#endif  // AUTO_BUFF__BUFF_DETECTOR_HPP

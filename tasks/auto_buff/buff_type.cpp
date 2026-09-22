@@ -1,8 +1,8 @@
 #include "buff_type.hpp"
 
 #include <algorithm>
-#include <cstdlib>
 #include <limits>
+#include <stdexcept>
 
 #include "tools/logger.hpp"
 namespace auto_buff
@@ -24,7 +24,9 @@ FanBlade::FanBlade(
 
 FanBlade::FanBlade(FanBlade_type t) : type(t)
 {
-  if (t != _unlight) exit(-1);
+  if (t != _unlight) {
+    throw std::invalid_argument("FanBlade 占位构造只允许 _unlight");
+  }
 }
 
 PowerRune::PowerRune(

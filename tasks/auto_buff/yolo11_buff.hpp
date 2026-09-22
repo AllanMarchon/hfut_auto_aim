@@ -2,7 +2,6 @@
 #define AUTO_BUFF__YOLO11_BUFF_HPP
 #include <yaml-cpp/yaml.h>
 
-#include <filesystem>
 #include <opencv2/opencv.hpp>
 #include <openvino/openvino.hpp>
 
@@ -52,8 +51,6 @@ private:
   // 打印模型信息, 这个函数修改自$${OPENVINO_COMMON}/utils/src/args_helper.cpp的同名函数
   void printInputAndOutputsInfo(const ov::Model & network);
 
-  // 将image保存为"../result/$${programName}.jpg"
-  void save(const std::string & programName, const cv::Mat & image);
 };
 }  // namespace auto_buff
 #endif

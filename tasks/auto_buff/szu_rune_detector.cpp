@@ -65,6 +65,8 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
   min_valid_keypoints_ = yaml_int(yaml, "szu_min_valid_keypoints", min_valid_keypoints_);
   corner_indices_ = yaml_int_vector(yaml, "szu_corner_indices", corner_indices_);
   r_center_index_ = yaml_int(yaml, "szu_r_center_index", r_center_index_);
+  required_keypoint_indices_ =
+    yaml_int_vector(yaml, "szu_required_keypoint_indices", required_keypoint_indices_);
 
   model_ = core_.read_model(model_path);
   const auto model_input_shape = model_->input().get_shape();
@@ -74,7 +76,8 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
   input_height_ = static_cast<int>(model_input_shape[2]);
   input_width_ = static_cast<int>(model_input_shape[3]);
 
-  compiled_model_ = core_.compile_model(model_, device_);
+  compiled_model_ = core_.compile_model(
+    model_, device_, ov::hint::performance_mode(ov::hint::PerformanceMode::LATENCY));
   infer_request_ = compiled_model_.create_infer_request();
 
   const auto output_shape = compiled_model_.output().get_shape();
@@ -94,12 +97,20 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
   if (output_channels_ != num_classes_ + num_keypoints_ * keypoint_dim_) {
     throw std::runtime_error("SZU 打符模型输出通道不是 3 类 + 5 点 * 3");
   }
+  if (min_valid_keypoints_ < 0 || min_valid_keypoints_ > num_keypoints_) {
+    throw std::runtime_error("szu_min_valid_keypoints 必须在 0..5 范围内");
+  }
   if (corner_indices_.size() != 4) {
     throw std::runtime_error("szu_corner_indices 必须配置 4 个关键点索引");
   }
   for (int index : corner_indices_) {
     if (index < 0 || index >= num_keypoints_) {
       throw std::runtime_error("szu_corner_indices 超出 SZU 关键点范围");
+    }
+  }
+  for (int index : required_keypoint_indices_) {
+    if (index < 0 || index >= num_keypoints_) {
+      throw std::runtime_error("szu_required_keypoint_indices 超出 SZU 关键点范围");
     }
   }
   if (r_center_index_ < 0 || r_center_index_ >= num_keypoints_) {
@@ -109,6 +120,7 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
 
 std::vector<SzuRuneDetector::Detection> SzuRuneDetector::detect(const cv::Mat & image)
 {
+  debug_stats_ = {};
   if (image.empty()) return {};
 
   float scale = 1.0f;
@@ -157,6 +169,7 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::postprocess(
 {
   std::vector<Detection> detections;
   const float * output_data = infer_request_.get_output_tensor().data<float>();
+  debug_stats_.anchors = num_anchors_;
 
   auto get_val = [&](int c, int a) -> float {
     return output_layout_nca_ ? output_data[c * num_anchors_ + a]
@@ -173,7 +186,12 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::postprocess(
         best_class = c;
       }
     }
+    debug_stats_.max_confidence = std::max(debug_stats_.max_confidence, best_confidence);
     if (best_class < 0 || best_confidence < confidence_threshold_) continue;
+    ++debug_stats_.confidence_pass;
+    if (best_class >= 0 && best_class < static_cast<int>(debug_stats_.class_counts.size())) {
+      ++debug_stats_.class_counts[best_class];
+    }
 
     Detection detection;
     detection.class_id = best_class;
@@ -186,11 +204,14 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::postprocess(
     float keypoint_confidence_sum = 0.0f;
     cv::Point2f corner_sum(0.0f, 0.0f);
     bool invalid = false;
+    std::vector<bool> valid_keypoint_flags(num_keypoints_, false);
     for (int k = 0; k < num_keypoints_; ++k) {
       const int base = num_classes_ + k * keypoint_dim_;
       float x = (get_val(base, anchor) - static_cast<float>(pad_w)) / scale;
       float y = (get_val(base + 1, anchor) - static_cast<float>(pad_h)) / scale;
       const float keypoint_confidence = get_val(base + 2, anchor);
+      debug_stats_.max_keypoint_confidence =
+        std::max(debug_stats_.max_keypoint_confidence, keypoint_confidence);
       if (x < 0.0f || y < 0.0f) {
         invalid = true;
         break;
@@ -203,10 +224,22 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::postprocess(
       if (keypoint_confidence >= keypoint_confidence_threshold_) {
         ++valid_keypoints;
         keypoint_confidence_sum += keypoint_confidence;
+        valid_keypoint_flags[k] = true;
       }
       keypoints.push_back(point);
     }
     if (invalid || valid_keypoints < std::min(min_valid_keypoints_, num_keypoints_)) continue;
+    ++debug_stats_.keypoint_pass;
+
+    bool required_keypoints_valid = true;
+    for (const int index : required_keypoint_indices_) {
+      if (!valid_keypoint_flags[index]) {
+        required_keypoints_valid = false;
+        break;
+      }
+    }
+    if (!required_keypoints_valid) continue;
+    ++debug_stats_.required_keypoint_pass;
 
     detection.corners.reserve(4);
     for (int index : corner_indices_) {
@@ -222,7 +255,9 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::postprocess(
     detections.emplace_back(std::move(detection));
   }
 
-  return nms(detections);
+  auto result = nms(detections);
+  debug_stats_.nms_output = static_cast<int>(result.size());
+  return result;
 }
 
 std::vector<SzuRuneDetector::Detection> SzuRuneDetector::nms(

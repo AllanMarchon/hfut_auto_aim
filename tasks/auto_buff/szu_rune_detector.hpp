@@ -1,6 +1,7 @@
 #ifndef AUTO_BUFF__SZU_RUNE_DETECTOR_HPP
 #define AUTO_BUFF__SZU_RUNE_DETECTOR_HPP
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -26,9 +27,23 @@ public:
     std::vector<float> keypoint_confidences;
   };
 
+  struct DebugStats
+  {
+    int anchors = 0;
+    int confidence_pass = 0;
+    int keypoint_pass = 0;
+    int required_keypoint_pass = 0;
+    int nms_output = 0;
+    std::array<int, 3> class_counts{0, 0, 0};
+    float max_confidence = 0.0f;
+    float max_keypoint_confidence = 0.0f;
+  };
+
   explicit SzuRuneDetector(const std::string & config_path);
 
   std::vector<Detection> detect(const cv::Mat & image);
+
+  const DebugStats & debug_stats() const { return debug_stats_; }
 
 private:
   void preprocess_letterbox(
@@ -53,10 +68,12 @@ private:
   int keypoint_dim_{3};
   std::vector<int> corner_indices_{0, 1, 3, 4};
   int r_center_index_{2};
+  std::vector<int> required_keypoint_indices_{0, 1, 3, 4};
   float confidence_threshold_{0.8f};
   float keypoint_confidence_threshold_{0.8f};
   float nms_distance_threshold_{30.0f};
-  int min_valid_keypoints_{5};
+  int min_valid_keypoints_{4};
+  DebugStats debug_stats_;
 };
 
 }  // namespace auto_buff

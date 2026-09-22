@@ -17,12 +17,18 @@ iou_threshold: 0.4
 szu_confidence: 0.8
 szu_keypoint_confidence: 0.8
 szu_nms_distance: 30.0
-szu_min_valid_keypoints: 5
+szu_min_valid_keypoints: 4
 
 # SZU README 配图的原始编号里，0/1/3/4 是符叶四角，2 是 R 标中心。
+# 默认强制四个符叶角点过关键点阈值；R 点参与中心估计，但不再要求 5/5 全部过阈值。
 # 如果实车 PnP 姿态明显反了/转了，先只调整 szu_corner_indices 的顺序，不要改模型代码。
 szu_corner_indices: [0, 1, 3, 4]
 szu_r_center_index: 2
+szu_required_keypoint_indices: [0, 1, 3, 4]
+
+# 排查 detections=0 时打开；会周期性打印模型置信度、关键点过滤、NMS 和目标分类数量。
+szu_debug_log: false
+szu_debug_log_every_n: 60
 
 # 26 规则下，当前“待击打叶片”是 class 0；大小符默认都以 class 0 作为可打目标。
 szu_target_class_id: 0
