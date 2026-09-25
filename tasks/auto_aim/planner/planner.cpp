@@ -1,6 +1,5 @@
 #include "planner.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
@@ -16,11 +15,6 @@ namespace auto_aim
 {
 namespace
 {
-// Keep the current plate around symmetric views; switch only after a clear,
-// persistent distance advantage.
-constexpr double kArmorSwitchDistanceMarginM = 0.03;
-constexpr int kArmorSwitchConfirmFrames = 3;
-
 YAML::Node controller_node(const YAML::Node & yaml)
 {
   const auto nested = yaml["gimbal_pipeline"]["ros__parameters"]["controller"];
@@ -61,15 +55,6 @@ Planner::Planner(const std::string & config_path, const std::string & planner_pr
   setup_pitch_solver(config_path);
 }
 
-void Planner::reset()
-{
-  selected_armor_id_ = -1;
-  switch_candidate_id_ = -1;
-  switch_candidate_count_ = 0;
-  selected_target_name_ = ArmorName::not_armor;
-  selected_target_type_ = ArmorType::small;
-}
-
 Plan Planner::plan(Target target, double bullet_speed)
 {
   // 0. Check bullet speed
@@ -79,11 +64,16 @@ Plan Planner::plan(Target target, double bullet_speed)
 
   // 1. Predict fly_time
   Eigen::Vector3d xyz;
+  auto min_dist = 1e10;
   const auto armor_xyza_list = target.armor_xyza_list();
   if (armor_xyza_list.empty()) return {false};
-  const int armor_id = select_armor_id(target, armor_xyza_list);
-  xyz = armor_xyza_list[armor_id].head<3>();
-  const auto min_dist = xyz.head<2>().norm();
+  for (auto & xyza : armor_xyza_list) {
+    auto dist = xyza.head<2>().norm();
+    if (dist < min_dist) {
+      min_dist = dist;
+      xyz = xyza.head<3>();
+    }
+  }
   auto bullet_traj = tools::Trajectory(bullet_speed, min_dist, xyz.z());
   if (bullet_traj.unsolvable) return {false};
   target.predict(bullet_traj.fly_time);
@@ -92,8 +82,8 @@ Plan Planner::plan(Target target, double bullet_speed)
   double yaw0;
   Trajectory traj;
   try {
-    yaw0 = aim(target, bullet_speed, armor_id)(0);
-    traj = get_trajectory(target, yaw0, bullet_speed, armor_id);
+    yaw0 = aim(target, bullet_speed)(0);
+    traj = get_trajectory(target, yaw0, bullet_speed);
   } catch (const std::exception & e) {
     tools::logger()->warn("Unsolvable target {:.2f}", bullet_speed);
     return {false};
@@ -231,71 +221,22 @@ void Planner::setup_pitch_solver(const std::string & config_path)
   pitch_solver_->settings->max_iter = 10;
 }
 
-int Planner::select_armor_id(
-  const Target & target, const std::vector<Eigen::Vector4d> & armor_xyza_list)
-{
-  if (armor_xyza_list.empty()) throw std::runtime_error("Empty armor list!");
-
-  auto distance = [&armor_xyza_list](int id) {
-    return armor_xyza_list[id].head<2>().norm();
-  };
-
-  int nearest_id = 0;
-  for (int id = 1; id < static_cast<int>(armor_xyza_list.size()); ++id) {
-    if (distance(id) < distance(nearest_id)) nearest_id = id;
-  }
-
-  if (
-    selected_target_name_ != target.name || selected_target_type_ != target.armor_type ||
-    selected_armor_id_ < 0 || selected_armor_id_ >= static_cast<int>(armor_xyza_list.size())) {
-    selected_target_name_ = target.name;
-    selected_target_type_ = target.armor_type;
-    selected_armor_id_ = nearest_id;
-    switch_candidate_id_ = -1;
-    switch_candidate_count_ = 0;
-    return selected_armor_id_;
-  }
-
-  const double selected_distance = distance(selected_armor_id_);
-  const double nearest_distance = distance(nearest_id);
-  const bool materially_better =
-    nearest_id != selected_armor_id_ &&
-    nearest_distance + kArmorSwitchDistanceMarginM < selected_distance;
-
-  if (!materially_better) {
-    switch_candidate_id_ = -1;
-    switch_candidate_count_ = 0;
-    return selected_armor_id_;
-  }
-
-  if (switch_candidate_id_ == nearest_id) {
-    ++switch_candidate_count_;
-  } else {
-    switch_candidate_id_ = nearest_id;
-    switch_candidate_count_ = 1;
-  }
-
-  if (switch_candidate_count_ >= kArmorSwitchConfirmFrames) {
-    selected_armor_id_ = nearest_id;
-    switch_candidate_id_ = -1;
-    switch_candidate_count_ = 0;
-  }
-
-  return selected_armor_id_;
-}
-
-Eigen::Matrix<double, 2, 1> Planner::aim(
-  const Target & target, double bullet_speed, int armor_id)
+Eigen::Matrix<double, 2, 1> Planner::aim(const Target & target, double bullet_speed)
 {
   Eigen::Vector3d xyz;
+  double yaw;
+  auto min_dist = 1e10;
 
   const auto armor_xyza_list = target.armor_xyza_list();
   if (armor_xyza_list.empty()) throw std::runtime_error("Empty armor list!");
-  armor_id = std::clamp(armor_id, 0, static_cast<int>(armor_xyza_list.size()) - 1);
-  const auto & xyza = armor_xyza_list[armor_id];
-  xyz = xyza.head<3>();
-  const auto min_dist = xyz.head<2>().norm();
-  const auto yaw = xyza[3];
+  for (auto & xyza : armor_xyza_list) {
+    auto dist = xyza.head<2>().norm();
+    if (dist < min_dist) {
+      min_dist = dist;
+      xyz = xyza.head<3>();
+      yaw = xyza[3];
+    }
+  }
   debug_xyza = Eigen::Vector4d(xyz.x(), xyz.y(), xyz.z(), yaw);
 
   auto azim = std::atan2(xyz.y(), xyz.x());
@@ -305,20 +246,19 @@ Eigen::Matrix<double, 2, 1> Planner::aim(
   return {tools::limit_rad(azim + yaw_offset_), -bullet_traj.pitch - pitch_offset_};
 }
 
-Trajectory Planner::get_trajectory(
-  Target & target, double yaw0, double bullet_speed, int armor_id)
+Trajectory Planner::get_trajectory(Target & target, double yaw0, double bullet_speed)
 {
   Trajectory traj;
 
   target.predict(-DT * (HALF_HORIZON + 1));
-  auto yaw_pitch_last = aim(target, bullet_speed, armor_id);
+  auto yaw_pitch_last = aim(target, bullet_speed);
 
   target.predict(DT);  // [0] = -HALF_HORIZON * DT -> [HHALF_HORIZON] = 0
-  auto yaw_pitch = aim(target, bullet_speed, armor_id);
+  auto yaw_pitch = aim(target, bullet_speed);
 
   for (int i = 0; i < HORIZON; i++) {
     target.predict(DT);
-    auto yaw_pitch_next = aim(target, bullet_speed, armor_id);
+    auto yaw_pitch_next = aim(target, bullet_speed);
 
     auto yaw_vel = tools::limit_rad(yaw_pitch_next(0) - yaw_pitch_last(0)) / (2 * DT);
     auto pitch_vel = (yaw_pitch_next(1) - yaw_pitch_last(1)) / (2 * DT);
