@@ -80,17 +80,13 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     return;
   }
 
-  // 只取前四个角点，避免兼容 SP25 六点检测结果时把额外点传入五点模型。
+  // 只取前四个角点，避免兼容 SP25 六点检测结果时把额外点传入四点模型。
   std::vector<cv::Point2f> image_points_fourth(
     p.target().points.begin(), p.target().points.begin() + 4);
   std::vector<cv::Point3f> OBJECT_POINTS_FOURTH(OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
-  // R 点对应模型原点，和四个角点一起参与姿态求解，避免只靠叶片外轮廓外推中心。
-  std::vector<cv::Point2f> image_points_pnp = image_points_fourth;
-  image_points_pnp.emplace_back(p.r_center);
-  std::vector<cv::Point3f> object_points_pnp = OBJECT_POINTS_FOURTH;
-  object_points_pnp.emplace_back(OBJECT_POINTS.back());
+  // 先沿用四角 PnP，R 点只用于诊断，避免 R 点语义或定位误差阻断整帧识别。
   const bool solved = cv::solvePnP(
-    object_points_pnp, image_points_pnp, camera_matrix_, distort_coeffs_, rvec_, tvec_, false,
+    OBJECT_POINTS_FOURTH, image_points_fourth, camera_matrix_, distort_coeffs_, rvec_, tvec_, false,
     cv::SOLVEPNP_IPPE);
   if (!solved || !std::isfinite(tvec_[0]) || !std::isfinite(tvec_[1]) ||
       !std::isfinite(tvec_[2])) {
@@ -99,7 +95,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     return;
   }
 
-  // 五个点共面，继续使用 IPPE；四角和 R 点的误差分别保留，便于定位模型几何问题。
+  // 四个角点共面，继续使用 IPPE；R 点误差只保留作诊断，不参与有效性判定。
   std::vector<cv::Point2f> projected_points;
   cv::projectPoints(
     OBJECT_POINTS_FOURTH, rvec_, tvec_, camera_matrix_, distort_coeffs_, projected_points);
@@ -119,15 +115,11 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     r_projected_point.empty() ? 0.0 : cv::norm(r_projected_point.front() - p.r_center);
   p.pnp_center_distance_m = std::sqrt(
     tvec_[0] * tvec_[0] + tvec_[1] * tvec_[1] + tvec_[2] * tvec_[2]);
-  const bool invalid_reprojection =
-    !std::isfinite(p.pnp_reprojection_error_px) ||
-    !std::isfinite(p.pnp_r_reprojection_error_px) || p.pnp_reprojection_error_px > 8.0 ||
-    p.pnp_r_reprojection_error_px > 8.0;
-  if (invalid_reprojection) {
+  if (!std::isfinite(p.pnp_reprojection_error_px) ||
+      !std::isfinite(p.pnp_r_reprojection_error_px)) {
     tools::logger()->debug(
-      "[BuffSolver] PnP 重投影误差偏大: corners={:.2f}px R={:.2f}px origin={:.3f}m",
+      "[BuffSolver] PnP 重投影误差非有限: corners={:.2f}px R={:.2f}px origin={:.3f}m",
       p.pnp_reprojection_error_px, p.pnp_r_reprojection_error_px, p.pnp_center_distance_m);
-    // 几何约束不一致时丢弃这一帧，避免错误姿态继续驱动云台。
     p.mark_unsolvable();
     return;
   }
