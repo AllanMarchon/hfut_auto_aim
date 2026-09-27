@@ -1219,6 +1219,19 @@ void drawPowerRune(cv::Mat& image, const std::optional<auto_buff::PowerRune>& ru
   cv::circle(image, power_rune.r_center, 5, cv::Scalar(0, 255, 255), cv::FILLED, cv::LINE_AA);
   cv::putText(image, "2/R", power_rune.r_center + cv::Point2f(6, -6),
               cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+  if (power_rune.pnp_center_distance_m > 0.0 &&
+      std::isfinite(power_rune.pnp_r_projected_pixel.x) &&
+      std::isfinite(power_rune.pnp_r_projected_pixel.y)) {
+    // 黄色圆点是检测到的 R，紫色十字是四角 PnP 反投影得到的 R。
+    cv::drawMarker(
+      image, power_rune.pnp_r_projected_pixel, cv::Scalar(255, 0, 255), cv::MARKER_CROSS, 18, 2,
+      cv::LINE_AA);
+    cv::line(
+      image, power_rune.r_center, power_rune.pnp_r_projected_pixel, cv::Scalar(255, 0, 255), 1,
+      cv::LINE_AA);
+    cv::putText(image, "PnP-R", power_rune.pnp_r_projected_pixel + cv::Point2f(6, 16),
+                cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(255, 0, 255), 1, cv::LINE_AA);
+  }
 
   for (const auto& blade : power_rune.fanblades) {
     if (blade.type == auto_buff::_unlight || blade.points.empty()) continue;
@@ -1556,6 +1569,9 @@ int run(const Options& options) {
     double pnp_r_reprojection_error_px = 0.0;
     double pnp_center_distance_m = 0.0;
     double pnp_blade_horizontal_distance_m = 0.0;
+    double pnp_yaw_deg = 0.0;
+    double pnp_pitch_deg = 0.0;
+    double pnp_roll_deg = 0.0;
     const CommandLimiterConfig* active_limiter_config = &command_limiter_config;
     FinalVelocityAccelerationAdapter* active_mpc_motion_adapter = &mpc_motion_adapter;
     io::Command sp_command{false, false, 0.0, 0.0};
@@ -1573,6 +1589,11 @@ int run(const Options& options) {
         pnp_r_reprojection_error_px = power_rune->pnp_r_reprojection_error_px;
         pnp_center_distance_m = power_rune->pnp_center_distance_m;
         pnp_blade_horizontal_distance_m = power_rune->pnp_blade_horizontal_distance_m;
+        if (!power_rune->is_unsolve()) {
+          pnp_yaw_deg = power_rune->ypr_in_world[0] * kRadToDeg;
+          pnp_pitch_deg = power_rune->ypr_in_world[1] * kRadToDeg;
+          pnp_roll_deg = power_rune->ypr_in_world[2] * kRadToDeg;
+        }
         if (power_rune->is_unsolve()) power_rune.reset();
       }
       detect_end = std::chrono::steady_clock::now();
@@ -1785,6 +1806,7 @@ int run(const Options& options) {
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg distance=%.3f "
           "pnp=%.2fpx/%0.2fpx pnp_origin=%.3fm pnp_blade=%.3fm "
+          "pnp_ypr=%.1f/%.1f/%.1fdeg "
           "sp_fire=%d fire=%d gate=%d latency=%.1fms "
           "timing=rx %.1f cam %.1f det %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
           options.aim_task.c_str(), static_cast<unsigned long long>(frames), runtime_fps,
@@ -1799,7 +1821,8 @@ int run(const Options& options) {
           command.yaw_acc * kRadToDeg, command.pitch_acc * kRadToDeg,
           fire_gate.yaw_error_rad * kRadToDeg, fire_gate.pitch_error_rad * kRadToDeg,
           command.distance, pnp_reprojection_error_px, pnp_r_reprojection_error_px,
-          pnp_center_distance_m, pnp_blade_horizontal_distance_m,
+          pnp_center_distance_m, pnp_blade_horizontal_distance_m, pnp_yaw_deg, pnp_pitch_deg,
+          pnp_roll_deg,
           sp_command.shoot ? 1 : 0, command.fire_advice ? 1 : 0,
           fire_gate.blocked ? 1 : 0, elapsedMs(detect_start, aim_end),
           elapsedMs(serial_rx_start, serial_rx_end), elapsedMs(capture_start, capture_end),

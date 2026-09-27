@@ -113,6 +113,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     r_object_point, rvec_, tvec_, camera_matrix_, distort_coeffs_, r_projected_point);
   p.pnp_r_reprojection_error_px =
     r_projected_point.empty() ? 0.0 : cv::norm(r_projected_point.front() - p.r_center);
+  if (!r_projected_point.empty()) p.pnp_r_projected_pixel = r_projected_point.front();
   p.pnp_center_distance_m = std::sqrt(
     tvec_[0] * tvec_[0] + tvec_[1] * tvec_[1] + tvec_[2] * tvec_[2]);
   if (!std::isfinite(p.pnp_reprojection_error_px) ||
