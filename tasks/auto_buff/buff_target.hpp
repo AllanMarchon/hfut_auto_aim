@@ -49,6 +49,10 @@ public:
   double spd = 0;  //调试用
 
 protected:
+  // 使用指定的滤波状态计算符叶在世界坐标系中的位置，供 EKF 观测模型使用。
+  Eigen::Vector3d point_buff2world(
+    const Eigen::VectorXd & state, const Eigen::Vector3d & point_in_buff) const;
+
   virtual void init(double nowtime, const PowerRune & p) = 0;  // 纯虚函数
 
   virtual void update(double nowtime, const PowerRune & p) = 0;  // 纯虚函数

@@ -26,18 +26,22 @@ Target::Target() : first_in_(true), unsolvable_(true) {};
 Eigen::Vector3d Target::point_buff2world(const Eigen::Vector3d & point_in_buff) const
 {
   if (unsolvable_) return Eigen::Vector3d(0, 0, 0);
-  Eigen::Matrix3d R_buff2world =
-    tools::rotation_matrix(Eigen::Vector3d(ekf_.x[4], 0.0, ekf_.x[5]));  // pitch = 0
+  return point_buff2world(ekf_.x, point_in_buff);
+}
 
-  auto R_yaw = ekf_.x[0];
-  auto R_pitch = ekf_.x[2];
-  auto R_dis = ekf_.x[3];
-  Eigen::Vector3d point_in_world =
-    R_buff2world * point_in_buff + Eigen::Vector3d(
-                                     R_dis * std::cos(R_pitch) * std::cos(R_yaw),
-                                     R_dis * std::cos(R_pitch) * std::sin(R_yaw),
-                                     R_dis * std::sin(R_pitch));
-  return point_in_world;
+Eigen::Vector3d Target::point_buff2world(
+  const Eigen::VectorXd & state, const Eigen::Vector3d & point_in_buff) const
+{
+  if (state.size() < 6) return Eigen::Vector3d(0, 0, 0);
+  Eigen::Matrix3d R_buff2world =
+    tools::rotation_matrix(Eigen::Vector3d(state[4], 0.0, state[5]));  // pitch = 0
+
+  const double R_yaw = state[0];
+  const double R_pitch = state[2];
+  const double R_dis = state[3];
+  return R_buff2world * point_in_buff + Eigen::Vector3d(
+    R_dis * std::cos(R_pitch) * std::cos(R_yaw),
+    R_dis * std::cos(R_pitch) * std::sin(R_yaw), R_dis * std::sin(R_pitch));
 }
 
 bool Target::is_unsolve() const { return unsolvable_; }
@@ -277,10 +281,8 @@ void SmallTarget::update(double nowtime, const PowerRune & p)
 
   // 定义非线性转换函数h: x -> z
   auto h2 = [&](const Eigen::VectorXd & x) -> Eigen::Vector3d {
-    Eigen::VectorXd R_ypd{{x[0], x[2], x[3]}};
-    Eigen::VectorXd R_xyz = tools::ypd2xyz(R_ypd);
-    Eigen::VectorXd R_xyz_and_yr{{R_ypd[0], R_ypd[1], R_ypd[2], x[4], x[5]}};
-    Eigen::VectorXd B_xyz = point_buff2world(Eigen::Vector3d(0.0, 0.0, 0.7));
+    // 观测函数必须使用 EKF 传入的候选状态，不能回读旧的 ekf_.x。
+    Eigen::Vector3d B_xyz = point_buff2world(x, Eigen::Vector3d(0.0, 0.0, 0.7));
     Eigen::VectorXd B_ypd = tools::xyz2ypd(B_xyz);
     return B_ypd;
   };
@@ -623,10 +625,8 @@ void BigTarget::update(double nowtime, const PowerRune & p)
 
   // 定义非线性转换函数h: x -> z
   auto h2 = [&](const Eigen::VectorXd & x) -> Eigen::Vector3d {
-    Eigen::VectorXd R_ypd{{x[0], x[2], x[3]}};
-    Eigen::VectorXd R_xyz = tools::ypd2xyz(R_ypd);
-    Eigen::VectorXd R_xyz_and_yr{{R_ypd[0], R_ypd[1], R_ypd[2], x[4], x[5]}};
-    Eigen::VectorXd B_xyz = point_buff2world(Eigen::Vector3d(0.0, 0.0, 0.7));
+    // 观测函数必须使用 EKF 传入的候选状态，不能回读旧的 ekf_.x。
+    Eigen::Vector3d B_xyz = point_buff2world(x, Eigen::Vector3d(0.0, 0.0, 0.7));
     Eigen::VectorXd B_ypd = tools::xyz2ypd(B_xyz);
     return B_ypd;
   };
