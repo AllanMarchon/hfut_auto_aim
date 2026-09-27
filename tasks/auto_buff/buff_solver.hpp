@@ -39,7 +39,8 @@ private:
   Eigen::Vector3d t_camera2gimbal_;
   Eigen::Matrix3d R_gimbal2world_;
 
-  cv::Vec3d rvec_, tvec_;
+  mutable cv::Vec3d rvec_, tvec_;
+  mutable bool pose_valid_{false};
 
   // std::vector<std::vector<cv::Point3f>> OBJECT_POINTS = {
   //   {cv::Point3f(0, 160e-3, 858.5e-3), cv::Point3f(0, -160e-3, 858.5e-3),
@@ -50,7 +51,7 @@ private:
   //   {},
   //   {}};  // 单位：米
 
-  // 与 SZU 模型的顺序 [1, 3, 4, 0] 对应：下、右、上、左。
+  // SZU 角点会在检测器中按图像轮廓排序；PnP 再枚举循环起点和方向。
   // 叶片采用原打符模型的菱形几何，原点为 R 中心。
   const std::vector<cv::Point3f> OBJECT_POINTS = {
     cv::Point3f(0, 0, 827e-3), cv::Point3f(0, 127e-3, 700e-3),

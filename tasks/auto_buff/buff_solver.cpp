@@ -75,39 +75,139 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   // image_points.emplace_back(p.r_center);  //r_center
   // object_points.emplace_back(cv::Point3f(0, 0, 0));
   if (p.fanblades.empty() || p.target().points.size() < 4) {
+    pose_valid_ = false;
     p.mark_unsolvable();
     tools::logger()->debug("[BuffSolver] PnP 输入角点不足: {}", p.fanblades.empty() ? 0 : p.target().points.size());
     return;
   }
 
   // 只取前四个角点，避免兼容 SP25 六点检测结果时把额外点传入四点模型。
-  std::vector<cv::Point2f> image_points_fourth(
+  const std::vector<cv::Point2f> image_points_fourth(
     p.target().points.begin(), p.target().points.begin() + 4);
   std::vector<cv::Point3f> OBJECT_POINTS_FOURTH(OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
-  // 先沿用四角 PnP，R 点只用于诊断，避免 R 点语义或定位误差阻断整帧识别。
-  const bool solved = cv::solvePnP(
-    OBJECT_POINTS_FOURTH, image_points_fourth, camera_matrix_, distort_coeffs_, rvec_, tvec_, false,
-    cv::SOLVEPNP_IPPE);
-  if (!solved || !std::isfinite(tvec_[0]) || !std::isfinite(tvec_[1]) ||
-      !std::isfinite(tvec_[2])) {
+  const std::vector<cv::Point3f> r_object_point{OBJECT_POINTS.back()};
+  const bool use_szu_corner_order = p.target().point_indices.size() >= 4;
+
+  struct PnpCandidate
+  {
+    cv::Vec3d rvec;
+    cv::Vec3d tvec;
+    std::vector<cv::Point2f> image_points;
+    double corner_error = 0.0;
+    double r_error = 0.0;
+    double score = 0.0;
+    double continuity_score = 0.0;
+    bool valid = false;
+  };
+
+  PnpCandidate best;
+  const auto try_candidate = [&](const std::vector<cv::Point2f> & candidate_points) {
+    cv::Vec3d candidate_rvec;
+    cv::Vec3d candidate_tvec;
+    const bool solved = cv::solvePnP(
+      OBJECT_POINTS_FOURTH, candidate_points, camera_matrix_, distort_coeffs_, candidate_rvec,
+      candidate_tvec, false, cv::SOLVEPNP_IPPE);
+    if (!solved || !std::isfinite(candidate_tvec[0]) || !std::isfinite(candidate_tvec[1]) ||
+        !std::isfinite(candidate_tvec[2]) || candidate_tvec[2] <= 0.0) {
+      return;
+    }
+
+    std::vector<cv::Point2f> candidate_projected_points;
+    cv::projectPoints(
+      OBJECT_POINTS_FOURTH, candidate_rvec, candidate_tvec, camera_matrix_, distort_coeffs_,
+      candidate_projected_points);
+    double corner_squared_error = 0.0;
+    for (size_t i = 0; i < candidate_projected_points.size(); ++i) {
+      const double error = cv::norm(candidate_projected_points[i] - candidate_points[i]);
+      corner_squared_error += error * error;
+    }
+    const double corner_error = std::sqrt(corner_squared_error / 4.0);
+
+    std::vector<cv::Point2f> candidate_r_projected;
+    cv::projectPoints(
+      r_object_point, candidate_rvec, candidate_tvec, camera_matrix_, distort_coeffs_,
+      candidate_r_projected);
+    if (candidate_r_projected.empty()) return;
+    const double r_error = cv::norm(candidate_r_projected.front() - p.r_center);
+    if (!std::isfinite(corner_error) || !std::isfinite(r_error)) return;
+
+    double continuity_score = 0.0;
+    if (use_szu_corner_order && pose_valid_) {
+      cv::Mat candidate_rotation;
+      cv::Mat previous_rotation;
+      cv::Rodrigues(candidate_rvec, candidate_rotation);
+      cv::Rodrigues(rvec_, previous_rotation);
+      const cv::Vec3d translation_delta{
+        candidate_tvec[0] - tvec_[0], candidate_tvec[1] - tvec_[1],
+        candidate_tvec[2] - tvec_[2]};
+      continuity_score = cv::norm(candidate_rotation - previous_rotation) +
+                         0.25 * cv::norm(translation_delta);
+    }
+
+    const double score = use_szu_corner_order ? r_error + 0.25 * corner_error : corner_error;
+    const bool materially_better = !best.valid || score < best.score - 2.0;
+    const bool near_tie_better =
+      best.valid && std::abs(score - best.score) <= 2.0 &&
+      continuity_score < best.continuity_score;
+    if (materially_better || near_tie_better) {
+      best.rvec = candidate_rvec;
+      best.tvec = candidate_tvec;
+      best.image_points = candidate_points;
+      best.corner_error = corner_error;
+      best.r_error = r_error;
+      best.score = score;
+      best.continuity_score = continuity_score;
+      best.valid = true;
+    }
+  };
+
+  if (use_szu_corner_order) {
+    // 模型关键点编号在不同叶片姿态下不一定保持图像轮廓顺序；枚举四边形的循环起点和方向。
+    for (int reversed = 0; reversed < 2; ++reversed) {
+      for (int shift = 0; shift < 4; ++shift) {
+        std::vector<cv::Point2f> candidate_points(4);
+        for (int i = 0; i < 4; ++i) {
+          const int index = reversed ? (shift - i + 4) % 4 : (shift + i) % 4;
+          candidate_points[i] = image_points_fourth[index];
+        }
+        try_candidate(candidate_points);
+      }
+    }
+  } else {
+    try_candidate(image_points_fourth);
+  }
+
+  if (!best.valid) {
+    pose_valid_ = false;
     p.mark_unsolvable();
     tools::logger()->debug("[BuffSolver] solvePnP 失败或返回非有限平移");
     return;
   }
+  if (use_szu_corner_order && best.corner_error > 8.0) {
+    pose_valid_ = false;
+    p.mark_unsolvable();
+    tools::logger()->debug(
+      "[BuffSolver] SZU 角点 PnP 重投影误差偏大: corners={:.2f}px R={:.2f}px",
+      best.corner_error, best.r_error);
+    return;
+  }
 
-  // 四个角点共面，继续使用 IPPE；R 点误差只保留作诊断，不参与有效性判定。
+  rvec_ = best.rvec;
+  tvec_ = best.tvec;
+  pose_valid_ = true;
+
+  // 四个角点共面，继续使用 IPPE；R 点只用于在 SZU 候选姿态中选解，不作为硬约束。
   std::vector<cv::Point2f> projected_points;
   cv::projectPoints(
     OBJECT_POINTS_FOURTH, rvec_, tvec_, camera_matrix_, distort_coeffs_, projected_points);
   double squared_error = 0.0;
   for (size_t i = 0; i < projected_points.size(); ++i) {
-    squared_error += cv::norm(projected_points[i] - image_points_fourth[i]) *
-                     cv::norm(projected_points[i] - image_points_fourth[i]);
+    const double error = cv::norm(projected_points[i] - best.image_points[i]);
+    squared_error += error * error;
   }
   p.pnp_reprojection_error_px =
     std::sqrt(squared_error / static_cast<double>(projected_points.size()));
   // R 点是能量机关旋转中心，对应模型原点，不是距离原点 700 mm 的待击打叶片中心。
-  std::vector<cv::Point3f> r_object_point{OBJECT_POINTS.back()};
   std::vector<cv::Point2f> r_projected_point;
   cv::projectPoints(
     r_object_point, rvec_, tvec_, camera_matrix_, distort_coeffs_, r_projected_point);
@@ -122,6 +222,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       "[BuffSolver] PnP 重投影误差非有限: corners={:.2f}px R={:.2f}px origin={:.3f}m",
       p.pnp_reprojection_error_px, p.pnp_r_reprojection_error_px, p.pnp_center_distance_m);
     p.mark_unsolvable();
+    pose_valid_ = false;
     return;
   }
 
