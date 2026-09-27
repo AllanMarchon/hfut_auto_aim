@@ -102,7 +102,7 @@ target_link_libraries(auto_aim PUBLIC
   ${HFUT_SPDLOG_TARGET}
 )
 
-# SP25 打符核心。第一版只接普通打符 aim()，不引入旧工程的打符 MPC 调试入口。
+# SP25 打符核心。打符运动前馈独立于普通自瞄 TinyMPC。
 add_library(auto_buff STATIC
   tasks/auto_buff/buff_aimer.cpp
   tasks/auto_buff/buff_detector.cpp

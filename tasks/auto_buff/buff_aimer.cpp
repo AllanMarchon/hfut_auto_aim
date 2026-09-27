@@ -4,6 +4,9 @@
 #include "tools/math_tools.hpp"
 #include "tools/trajectory.hpp"
 
+#include <algorithm>
+#include <stdexcept>
+
 namespace auto_buff
 {
 Aimer::Aimer(const std::string & config_path)
@@ -13,6 +16,30 @@ Aimer::Aimer(const std::string & config_path)
   pitch_offset_ = yaml["pitch_offset"].as<double>() / 57.3;  // degree to rad
   fire_gap_time_ = yaml["fire_gap_time"].as<double>();
   predict_time_ = yaml["predict_time"].as<double>();
+  const auto motion_feedforward = yaml["motion_feedforward"];
+  if (motion_feedforward) {
+    motion_feedforward_enabled_ =
+      motion_feedforward["enable"].as<bool>(motion_feedforward_enabled_);
+    motion_difference_time_ =
+      motion_feedforward["difference_time"].as<double>(motion_difference_time_);
+    motion_max_yaw_velocity_rad_s_ =
+      motion_feedforward["max_yaw_velocity"].as<double>(120.0) / 57.3;
+    motion_max_pitch_velocity_rad_s_ =
+      motion_feedforward["max_pitch_velocity"].as<double>(90.0) / 57.3;
+    motion_max_yaw_acceleration_rad_s2_ =
+      motion_feedforward["max_yaw_acceleration"].as<double>(motion_max_yaw_acceleration_rad_s2_);
+    motion_max_pitch_acceleration_rad_s2_ =
+      motion_feedforward["max_pitch_acceleration"].as<double>(motion_max_pitch_acceleration_rad_s2_);
+  }
+  if (!std::isfinite(motion_difference_time_) || motion_difference_time_ <= 0.0 ||
+      !std::isfinite(motion_max_yaw_velocity_rad_s_) || motion_max_yaw_velocity_rad_s_ <= 0.0 ||
+      !std::isfinite(motion_max_pitch_velocity_rad_s_) || motion_max_pitch_velocity_rad_s_ <= 0.0 ||
+      !std::isfinite(motion_max_yaw_acceleration_rad_s2_) ||
+      motion_max_yaw_acceleration_rad_s2_ <= 0.0 ||
+      !std::isfinite(motion_max_pitch_acceleration_rad_s2_) ||
+      motion_max_pitch_acceleration_rad_s2_ <= 0.0) {
+    throw std::invalid_argument("打符运动前馈的差分间隔、速度和加速度上限必须是有限正数");
+  }
 
   last_fire_t_ = std::chrono::steady_clock::now();
 }
@@ -63,6 +90,76 @@ io::Command Aimer::aim(
   }
 
   return command;
+}
+
+AimMotionCommand Aimer::aimWithMotion(
+  auto_buff::Target & target, auto_buff::Target & past_target,
+  auto_buff::Target & future_target, std::chrono::steady_clock::time_point & timestamp,
+  double bullet_speed, bool to_now)
+{
+  AimMotionCommand result;
+  if (target.is_unsolve()) return result;
+
+  result.command = aim(target, timestamp, bullet_speed, to_now);
+  if (!motion_feedforward_enabled_ || !result.command.control) return result;
+  const double center_distance = last_distance_;
+  const double center_angle = angle;
+
+  if (bullet_speed < 10.0) bullet_speed = 24.0;
+  const auto now = std::chrono::steady_clock::now();
+  const double detect_now_gap = tools::delta_time(now, timestamp);
+  const double future = to_now ? detect_now_gap + predict_time_ : 0.1 + predict_time_;
+  const double dt = std::min(motion_difference_time_, future);
+  if (!std::isfinite(dt) || dt <= 1e-4) return result;
+
+  double past_yaw = 0.0;
+  double past_pitch = 0.0;
+  double future_yaw = 0.0;
+  double future_pitch = 0.0;
+  const bool past_valid =
+    get_send_angle(past_target, future - dt, bullet_speed, to_now, past_yaw, past_pitch);
+  last_distance_ = center_distance;
+  angle = center_angle;
+  const bool future_valid =
+    get_send_angle(future_target, future + dt, bullet_speed, to_now, future_yaw, future_pitch);
+  last_distance_ = center_distance;
+  angle = center_angle;
+  if (!past_valid || !future_valid) {
+    return result;
+  }
+
+  const double past_command_pitch = -past_pitch;
+  const double future_command_pitch = -future_pitch;
+  const double yaw_before = tools::limit_rad(result.command.yaw - past_yaw);
+  const double yaw_after = tools::limit_rad(future_yaw - result.command.yaw);
+  const double pitch_before = result.command.pitch - past_command_pitch;
+  const double pitch_after = future_command_pitch - result.command.pitch;
+
+  result.yaw_velocity = tools::limit_rad(future_yaw - past_yaw) / (2.0 * dt);
+  result.yaw_acceleration = (yaw_after - yaw_before) / (dt * dt);
+  result.pitch_velocity = (future_command_pitch - past_command_pitch) / (2.0 * dt);
+  result.pitch_acceleration = (pitch_after - pitch_before) / (dt * dt);
+  result.yaw_velocity = std::clamp(
+    result.yaw_velocity, -motion_max_yaw_velocity_rad_s_, motion_max_yaw_velocity_rad_s_);
+  result.pitch_velocity = std::clamp(
+    result.pitch_velocity, -motion_max_pitch_velocity_rad_s_, motion_max_pitch_velocity_rad_s_);
+  result.yaw_acceleration = std::clamp(
+    result.yaw_acceleration, -motion_max_yaw_acceleration_rad_s2_,
+    motion_max_yaw_acceleration_rad_s2_);
+  result.pitch_acceleration = std::clamp(
+    result.pitch_acceleration, -motion_max_pitch_acceleration_rad_s2_,
+    motion_max_pitch_acceleration_rad_s2_);
+  result.motion_valid = std::isfinite(result.yaw_velocity) &&
+                        std::isfinite(result.yaw_acceleration) &&
+                        std::isfinite(result.pitch_velocity) &&
+                        std::isfinite(result.pitch_acceleration);
+  if (!result.motion_valid) {
+    result.yaw_velocity = 0.0;
+    result.yaw_acceleration = 0.0;
+    result.pitch_velocity = 0.0;
+    result.pitch_acceleration = 0.0;
+  }
+  return result;
 }
 
 bool Aimer::get_send_angle(

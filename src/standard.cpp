@@ -166,11 +166,17 @@ class SimpleCommandGuard {
  public:
   explicit SimpleCommandGuard(CommandLimiterConfig config) : config_(config) {}
 
-  void apply(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
-             const std::string& track_state, std::chrono::steady_clock::time_point now) {
-    if (!config_.enable) return passThrough(command, feedback, now);
-    if (command.mode != hfut::GimbalMode::normal_measurement) return holdLastAimOnLoss(command, feedback, now);
+  bool apply(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
+             const std::string& track_state, std::chrono::steady_clock::time_point now,
+             bool preserve_planned_motion = false) {
+    if (!config_.enable) return passThrough(command, feedback, now, preserve_planned_motion);
+    if (command.mode != hfut::GimbalMode::normal_measurement) {
+      holdLastAimOnLoss(command, feedback, now);
+      return false;
+    }
 
+    const double requested_yaw = command.yaw;
+    const double requested_pitch = command.pitch;
     double target_yaw = command.yaw;
     double target_pitch = command.pitch;
     bool blocked = false;
@@ -204,7 +210,7 @@ class SimpleCommandGuard {
       command.fire_advice = false;
       fillDiffAndMotion(command, feedback, now, false);
       last_time_ = now;
-      return;
+      return false;
     }
 
     if (have_last_ && config_.enable_target_stabilizer) {
@@ -260,16 +266,34 @@ class SimpleCommandGuard {
     command.yaw = tools::limit_rad(target_yaw);
     command.pitch = target_pitch;
     if (blocked) command.fire_advice = false;
-    fillDiffAndMotion(command, feedback, now, true);
+    const bool angles_unchanged =
+        std::abs(tools::limit_rad(requested_yaw - command.yaw)) <= 1e-9 &&
+        std::abs(requested_pitch - command.pitch) <= 1e-9;
+    bool motion_preserved = false;
+    if (preserve_planned_motion && angles_unchanged) {
+      motion_preserved = applyPlannedMotion(command, feedback);
+      if (!motion_preserved) command.fire_advice = false;
+    } else {
+      if (preserve_planned_motion) command.fire_advice = false;
+      fillDiffAndMotion(command, feedback, now, true);
+    }
     saveLastAim(command, now);
+    return motion_preserved;
   }
 
  private:
-  void passThrough(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
-                   std::chrono::steady_clock::time_point now) {
+  bool passThrough(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
+                   std::chrono::steady_clock::time_point now, bool preserve_planned_motion) {
+    if (preserve_planned_motion && command.mode == hfut::GimbalMode::normal_measurement) {
+      const bool motion_preserved = applyPlannedMotion(command, feedback);
+      if (!motion_preserved) command.fire_advice = false;
+      saveLastAim(command, now);
+      return motion_preserved;
+    }
     fillDiffAndMotion(command, feedback, now, true);
     if (command.mode == hfut::GimbalMode::normal_measurement) saveLastAim(command, now);
     else reset();
+    return false;
   }
 
   void holdLastAimOnLoss(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
@@ -332,6 +356,35 @@ class SimpleCommandGuard {
                                  -config_.max_yaw_acc_rad_s2, config_.max_yaw_acc_rad_s2);
     command.pitch_acc = std::clamp((command.pitch_vel - last_pitch_vel_) / dt,
                                    -config_.max_pitch_acc_rad_s2, config_.max_pitch_acc_rad_s2);
+  }
+
+  bool applyPlannedMotion(hfut::GimbalCommand& command,
+                          const hfut::io::SerialFeedback& feedback) {
+    command.yaw_diff = tools::limit_rad(command.yaw - feedback.yaw_rad);
+    command.pitch_diff = command.pitch - feedback.pitch_rad;
+    if (!std::isfinite(command.yaw_vel) || !std::isfinite(command.yaw_acc) ||
+        !std::isfinite(command.pitch_vel) || !std::isfinite(command.pitch_acc)) {
+      command.yaw_vel = 0.0;
+      command.yaw_acc = 0.0;
+      command.pitch_vel = 0.0;
+      command.pitch_acc = 0.0;
+      return false;
+    }
+    if (velocityModeUsesFeedbackError(config_.serial_command_velocity_mode)) {
+      command.yaw_vel += config_.serial_command_yaw_error_gain * command.yaw_diff;
+      command.pitch_vel += config_.serial_command_pitch_error_gain * command.pitch_diff;
+    }
+    command.yaw_vel = std::clamp(command.yaw_vel,
+                                 -config_.serial_command_max_yaw_velocity_rad_s,
+                                 config_.serial_command_max_yaw_velocity_rad_s);
+    command.pitch_vel = std::clamp(command.pitch_vel,
+                                   -config_.serial_command_max_pitch_velocity_rad_s,
+                                   config_.serial_command_max_pitch_velocity_rad_s);
+    command.yaw_acc = std::clamp(command.yaw_acc,
+                                 -config_.max_yaw_acc_rad_s2, config_.max_yaw_acc_rad_s2);
+    command.pitch_acc = std::clamp(command.pitch_acc,
+                                   -config_.max_pitch_acc_rad_s2, config_.max_pitch_acc_rad_s2);
+    return true;
   }
 
   void reset() {
@@ -1482,6 +1535,8 @@ int run(const Options& options) {
     std::list<auto_aim::Target> targets;
     std::optional<auto_buff::PowerRune> power_rune;
     std::string track_state{"lost"};
+    auto_buff::AimMotionCommand buff_motion;
+    bool buff_motion_applied = false;
     int detection_count = 0;
     int tracked_count = 0;
     double command_distance = 0.0;
@@ -1511,12 +1566,20 @@ int run(const Options& options) {
       if (options.aim_task == "smallbuff") {
         if (!buff_small_target->is_unsolve()) {
           auto target_copy = *buff_small_target;
-          sp_command = buff_aimer->aim(target_copy, timestamp, bullet_speed);
+          auto past_target = *buff_small_target;
+          auto future_target = *buff_small_target;
+          buff_motion = buff_aimer->aimWithMotion(
+              target_copy, past_target, future_target, timestamp, bullet_speed);
+          sp_command = buff_motion.command;
         }
       } else {
         if (!buff_big_target->is_unsolve()) {
           auto target_copy = *buff_big_target;
-          sp_command = buff_aimer->aim(target_copy, timestamp, bullet_speed);
+          auto past_target = *buff_big_target;
+          auto future_target = *buff_big_target;
+          buff_motion = buff_aimer->aimWithMotion(
+              target_copy, past_target, future_target, timestamp, bullet_speed);
+          sp_command = buff_motion.command;
         }
       }
       if (sp_command.control) {
@@ -1574,6 +1637,12 @@ int run(const Options& options) {
 
     hfut::GimbalCommand command = convertCommand(
         sp_command, command_distance, latest_feedback, options.enable_fire, *active_limiter_config);
+    if (use_buff_task && buff_motion.motion_valid) {
+      command.yaw_vel = active_limiter_config->feedback_yaw_to_world_sign * buff_motion.yaw_velocity;
+      command.yaw_acc = active_limiter_config->feedback_yaw_to_world_sign * buff_motion.yaw_acceleration;
+      command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * buff_motion.pitch_velocity;
+      command.pitch_acc = active_limiter_config->sp_pitch_to_command_sign * buff_motion.pitch_acceleration;
+    }
     if (use_mpc_planner && have_mpc_plan) {
       command.yaw_vel = active_limiter_config->feedback_yaw_to_world_sign * mpc_plan.yaw_vel;
       command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * mpc_plan.pitch_vel;
@@ -1595,7 +1664,9 @@ int run(const Options& options) {
     const double raw_desired_yaw = command.yaw;
     const double raw_desired_pitch = command.pitch;
     if (!use_mpc_planner) {
-      command_guard.apply(command, latest_feedback, track_state, std::chrono::steady_clock::now());
+      buff_motion_applied = command_guard.apply(
+          command, latest_feedback, track_state, std::chrono::steady_clock::now(),
+          use_buff_task && buff_motion.motion_valid);
     }
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
@@ -1686,6 +1757,7 @@ int run(const Options& options) {
     if (visual_end - last_log > std::chrono::seconds(1)) {
       std::printf(
           "[standard] task=%s frames=%llu fps=%.1f detections=%d tracked=%d state=%s "
+          "buff_ff=%d "
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg distance=%.3f "
@@ -1693,7 +1765,7 @@ int run(const Options& options) {
           "timing=rx %.1f cam %.1f det %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
           options.aim_task.c_str(), static_cast<unsigned long long>(frames), runtime_fps,
           detection_count, tracked_count,
-          track_state.c_str(), latest_feedback.yaw_rad * kRadToDeg,
+          track_state.c_str(), buff_motion_applied ? 1 : 0, latest_feedback.yaw_rad * kRadToDeg,
           latest_feedback.pitch_rad * kRadToDeg, aligned_feedback.yaw_rad * kRadToDeg,
           aligned_feedback.pitch_rad * kRadToDeg, aligned_delta_yaw * kRadToDeg,
           aligned_delta_pitch * kRadToDeg, aligned_feedback_age_ms, raw_desired_yaw * kRadToDeg,

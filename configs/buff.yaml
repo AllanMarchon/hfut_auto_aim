@@ -46,6 +46,15 @@ fire_gap_time: 0.700
 # 打符预测提前量，单位秒。第一版保留 SP25 默认值。
 predict_time: 0.120
 
+# 打符角度运动前馈；使用预测瞄准角的中心差分生成角速度和角加速度。
+motion_feedforward:
+  enable: true
+  difference_time: 0.120  # s；差分间隔受当前预测时域限制
+  max_yaw_velocity: 120.0  # deg/s；打符专用上限
+  max_pitch_velocity: 90.0  # deg/s；打符专用上限
+  max_yaw_acceleration: 50.0  # rad/s^2；打符专用上限
+  max_pitch_acceleration: 80.0  # rad/s^2；打符专用上限
+
 #####-----启动时会被 hardware.yaml 覆盖的实车标定参数-----#####
 image_width: 1280
 image_height: 1024
