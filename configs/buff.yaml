@@ -11,7 +11,7 @@ model: assets/yolo11_buff_int8.xml
 
 # SZU 26 能量机关五点模型。输出类别：0=待击打叶片，1=小符已击中叶片，2=大符已击中叶片。
 szu_model: assets/szu_rune_model_0624.onnx
-device: CPU
+device: GPU
 confidence: 0.7
 iou_threshold: 0.4
 szu_confidence: 0.8
@@ -21,8 +21,8 @@ szu_min_valid_keypoints: 4
 
 # SZU README 配图的原始编号里，0/1/3/4 是符叶四角，2 是 R 标中心。
 # 默认强制四个符叶角点过关键点阈值；R 点参与中心估计，但不再要求 5/5 全部过阈值。
-# 如果实车 PnP 姿态明显反了/转了，先只调整 szu_corner_indices 的顺序，不要改模型代码。
-szu_corner_indices: [0, 1, 3, 4]
+# 按模型原始编号按叶片轮廓排列：右上、左上、左下、右下；2 是 R 中心，不放入角点序列。
+szu_corner_indices: [0, 1, 4, 3]
 szu_r_center_index: 2
 szu_required_keypoint_indices: [0, 1, 3, 4]
 

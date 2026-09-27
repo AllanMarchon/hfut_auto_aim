@@ -24,6 +24,7 @@ public:
     cv::Point2f center{0.0f, 0.0f};
     cv::Point2f r_center{0.0f, 0.0f};
     std::vector<cv::Point2f> corners;
+    std::vector<int> corner_indices;
     std::vector<float> keypoint_confidences;
   };
 

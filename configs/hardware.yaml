@@ -13,7 +13,7 @@ hardware:
     width: 1280
     height: 1024
     fps: 120.0
-    exposure_time_us: 5500.0      # 海康曝光时间，单位微秒
+    exposure_time_us: 2500.0      # 海康曝光时间，单位微秒
     gain: 16.0                    # 海康增益；OpenCV 后端仅在值大于 0 时尝试设置
     analog_gain: 8                # 保留旧字段，standard 当前不读取
     frame_speed: 1                # 保留旧字段，standard 当前不读取

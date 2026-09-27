@@ -50,10 +50,11 @@ private:
   //   {},
   //   {}};  // 单位：米
 
-  // TODO
+  // 与 SZU 模型的二维顺序 [0, 1, 4, 3] 对应：右上、左上、左下、右下。
+  // 单位：米；尺寸沿用原打符模型的梯形叶片尺寸。
   const std::vector<cv::Point3f> OBJECT_POINTS = {
-    cv::Point3f(0, 0, 827e-3), cv::Point3f(0, 127e-3, 700e-3),
-    cv::Point3f(0, 0, 573e-3), cv::Point3f(0, -127e-3, 700e-3),
+    cv::Point3f(0, 160e-3, 858.5e-3), cv::Point3f(0, -160e-3, 858.5e-3),
+    cv::Point3f(0, -186e-3, 541.5e-3), cv::Point3f(0, 186e-3, 541.5e-3),
     cv::Point3f(0, 0, 700e-3), cv::Point3f(0, 0, 220e-3),
     cv::Point3f(0, 0, 0)};  // 单位：米
 

@@ -222,6 +222,7 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
     FanBlade blade(
       result.corners, result.center, classify_szu_blade(result.class_id, rune_type), result.class_id,
       result.confidence);
+    blade.point_indices = result.corner_indices;
     r_center_sum += result.r_center;
     ++r_center_count;
     if (blade.type == _target) {

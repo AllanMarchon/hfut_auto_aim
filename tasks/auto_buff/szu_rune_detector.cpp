@@ -242,8 +242,10 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::postprocess(
     ++debug_stats_.required_keypoint_pass;
 
     detection.corners.reserve(4);
+    detection.corner_indices.reserve(corner_indices_.size());
     for (int index : corner_indices_) {
       detection.corners.push_back(keypoints[index]);
+      detection.corner_indices.push_back(index);
       corner_sum += keypoints[index];
     }
     detection.r_center = keypoints[r_center_index_];

@@ -1217,7 +1217,7 @@ void drawPowerRune(cv::Mat& image, const std::optional<auto_buff::PowerRune>& ru
   if (!rune.has_value()) return;
   const auto& power_rune = rune.value();
   cv::circle(image, power_rune.r_center, 5, cv::Scalar(0, 255, 255), cv::FILLED, cv::LINE_AA);
-  cv::putText(image, "R", power_rune.r_center + cv::Point2f(6, -6),
+  cv::putText(image, "2/R", power_rune.r_center + cv::Point2f(6, -6),
               cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
 
   for (const auto& blade : power_rune.fanblades) {
@@ -1232,7 +1232,10 @@ void drawPowerRune(cv::Mat& image, const std::optional<auto_buff::PowerRune>& ru
     }
     for (size_t i = 0; i < blade.points.size(); ++i) {
       cv::circle(image, blade.points[i], 3, color, cv::FILLED, cv::LINE_AA);
-      cv::putText(image, std::to_string(i + 1), blade.points[i] + cv::Point2f(4, -4),
+      const int point_index = i < blade.point_indices.size()
+                                ? blade.point_indices[i]
+                                : static_cast<int>(i);
+      cv::putText(image, std::to_string(point_index), blade.points[i] + cv::Point2f(4, -4),
                   cv::FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv::LINE_AA);
     }
     if (blade.class_id >= 0) {
