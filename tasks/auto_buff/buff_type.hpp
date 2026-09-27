@@ -59,6 +59,12 @@ public:
   Eigen::Vector3d blade_xyz_in_world;  // 单位：m
   Eigen::Vector3d blade_ypd_in_world;  // 球坐标系, 单位: m
 
+  // PnP 诊断信息，由 Solver 填充；与跟踪状态分离，便于排查距离问题。
+  double pnp_reprojection_error_px = 0.0;
+  double pnp_r_reprojection_error_px = 0.0;
+  double pnp_center_distance_m = 0.0;  // PnP 原点（R 中心）到相机的直线距离
+  double pnp_blade_horizontal_distance_m = 0.0;  // 待击打叶片中心的水平距离
+
   explicit PowerRune(
     std::vector<FanBlade> & ts, const cv::Point2f r_center,
     std::optional<PowerRune> last_powerrune);
@@ -67,6 +73,8 @@ public:
   FanBlade & target() { return fanblades[0]; };
 
   bool is_unsolve() const { return unsolvable_; }
+
+  void mark_unsolvable() { unsolvable_ = true; }
 
 private:
   double target_angle_;

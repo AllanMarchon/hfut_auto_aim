@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include "tools/logger.hpp"
+
 namespace auto_buff
 {
 cv::Matx33f Solver::rotation_matrix(double angle) const
@@ -72,15 +74,56 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   // }
   // image_points.emplace_back(p.r_center);  //r_center
   // object_points.emplace_back(cv::Point3f(0, 0, 0));
+  if (p.fanblades.empty() || p.target().points.size() < 4) {
+    p.mark_unsolvable();
+    tools::logger()->debug("[BuffSolver] PnP 输入角点不足: {}", p.fanblades.empty() ? 0 : p.target().points.size());
+    return;
+  }
+
   std::vector<cv::Point2f> image_points = p.target().points;
   // image_points.emplace_back(p.target().center);
   image_points.emplace_back(p.r_center);
 
   std::vector<cv::Point2f> image_points_fourth(image_points.begin(), image_points.begin() + 4);
   std::vector<cv::Point3f> OBJECT_POINTS_FOURTH(OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
-  cv::solvePnP(
+  const bool solved = cv::solvePnP(
     OBJECT_POINTS_FOURTH, image_points_fourth, camera_matrix_, distort_coeffs_, rvec_, tvec_, false,
     cv::SOLVEPNP_IPPE);
+  if (!solved || !std::isfinite(tvec_[0]) || !std::isfinite(tvec_[1]) ||
+      !std::isfinite(tvec_[2])) {
+    p.mark_unsolvable();
+    tools::logger()->debug("[BuffSolver] solvePnP 失败或返回非有限平移");
+    return;
+  }
+
+  // 四个角点共面，因此继续使用 IPPE。R 点暂不参与姿态选择，
+  // 这里先保留四角重投影误差，用于独立检查关键点编号和模型几何。
+  std::vector<cv::Point2f> projected_points;
+  cv::projectPoints(
+    OBJECT_POINTS_FOURTH, rvec_, tvec_, camera_matrix_, distort_coeffs_, projected_points);
+  double squared_error = 0.0;
+  for (size_t i = 0; i < projected_points.size(); ++i) {
+    squared_error += cv::norm(projected_points[i] - image_points_fourth[i]) *
+                     cv::norm(projected_points[i] - image_points_fourth[i]);
+  }
+  p.pnp_reprojection_error_px =
+    std::sqrt(squared_error / static_cast<double>(projected_points.size()));
+  // R 点是能量机关旋转中心，对应模型原点，不是距离原点 700 mm 的待击打叶片中心。
+  std::vector<cv::Point3f> r_object_point{OBJECT_POINTS.back()};
+  std::vector<cv::Point2f> r_projected_point;
+  cv::projectPoints(
+    r_object_point, rvec_, tvec_, camera_matrix_, distort_coeffs_, r_projected_point);
+  p.pnp_r_reprojection_error_px =
+    r_projected_point.empty() ? 0.0 : cv::norm(r_projected_point.front() - p.r_center);
+  p.pnp_center_distance_m = std::sqrt(
+    tvec_[0] * tvec_[0] + tvec_[1] * tvec_[1] + tvec_[2] * tvec_[2]);
+  if (!std::isfinite(p.pnp_reprojection_error_px) ||
+      !std::isfinite(p.pnp_r_reprojection_error_px) || p.pnp_reprojection_error_px > 8.0 ||
+      p.pnp_r_reprojection_error_px > 8.0) {
+    tools::logger()->debug(
+      "[BuffSolver] PnP 重投影误差偏大: corners={:.2f}px R={:.2f}px origin={:.3f}m",
+      p.pnp_reprojection_error_px, p.pnp_r_reprojection_error_px, p.pnp_center_distance_m);
+  }
 
   Eigen::Vector3d t_buff2camera;
   cv::cv2eigen(tvec_, t_buff2camera);
@@ -108,6 +151,9 @@ void Solver::solve(std::optional<PowerRune> & ps) const
 
   p.blade_xyz_in_world = R_gimbal2world_ * blade_xyz_in_gimbal;
   p.blade_ypd_in_world = tools::xyz2ypd(p.blade_xyz_in_world);
+  // 记录与 Aimer 使用的同一类水平距离，便于区分 PnP 和跟踪器的误差。
+  p.pnp_blade_horizontal_distance_m =
+    std::hypot(p.blade_xyz_in_world[0], p.blade_xyz_in_world[1]);
 
   p.ypr_in_world = tools::eulers(R_buff2world, 2, 1, 0);
 }

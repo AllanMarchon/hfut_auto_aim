@@ -1386,6 +1386,15 @@ int run(const Options& options) {
               algorithm_config.c_str(), adapted_config_path.c_str(),
               hfut::video::calibrationModeName(calibration_mode));
   std::printf(
+      "[standard] calibration source=%dx%d solver=%dx%d K=%.3f/%.3f/%.3f/%.3f distortion=%.6f/%.6f/%.6f/%.6f/%.6f\n",
+      source_calibration.width, source_calibration.height, solver_calibration.width,
+      solver_calibration.height, solver_calibration.k[0], solver_calibration.k[4],
+      solver_calibration.k[2], solver_calibration.k[5], solver_calibration.d.size() > 0 ? solver_calibration.d[0] : 0.0,
+      solver_calibration.d.size() > 1 ? solver_calibration.d[1] : 0.0,
+      solver_calibration.d.size() > 2 ? solver_calibration.d[2] : 0.0,
+      solver_calibration.d.size() > 3 ? solver_calibration.d[3] : 0.0,
+      solver_calibration.d.size() > 4 ? solver_calibration.d[4] : 0.0);
+  std::printf(
       "[standard] controller_config=%s planner=%s guard=%s yaw_step=%.2fdeg pitch_step=%.2fdeg "
       "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg "
       "sp_pitch_to_cmd=%.0f yaw_world_sign=%.0f outlier_guard=%s jump=%.1fdeg "
@@ -1543,6 +1552,10 @@ int run(const Options& options) {
     int detection_count = 0;
     int tracked_count = 0;
     double command_distance = 0.0;
+    double pnp_reprojection_error_px = 0.0;
+    double pnp_r_reprojection_error_px = 0.0;
+    double pnp_center_distance_m = 0.0;
+    double pnp_blade_horizontal_distance_m = 0.0;
     const CommandLimiterConfig* active_limiter_config = &command_limiter_config;
     FinalVelocityAccelerationAdapter* active_mpc_motion_adapter = &mpc_motion_adapter;
     io::Command sp_command{false, false, 0.0, 0.0};
@@ -1554,7 +1567,14 @@ int run(const Options& options) {
       power_rune = buff_detector->detect(
           frame.image, options.aim_task == "smallbuff" ? auto_buff::SMALL : auto_buff::BIG);
       detection_count = power_rune.has_value() ? 1 : 0;
-      if (power_rune.has_value()) buff_solver->solve(power_rune);
+      if (power_rune.has_value()) {
+        buff_solver->solve(power_rune);
+        pnp_reprojection_error_px = power_rune->pnp_reprojection_error_px;
+        pnp_r_reprojection_error_px = power_rune->pnp_r_reprojection_error_px;
+        pnp_center_distance_m = power_rune->pnp_center_distance_m;
+        pnp_blade_horizontal_distance_m = power_rune->pnp_blade_horizontal_distance_m;
+        if (power_rune->is_unsolve()) power_rune.reset();
+      }
       detect_end = std::chrono::steady_clock::now();
 
       track_start = detect_end;
@@ -1764,6 +1784,7 @@ int run(const Options& options) {
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg distance=%.3f "
+          "pnp=%.2fpx/%0.2fpx pnp_origin=%.3fm pnp_blade=%.3fm "
           "sp_fire=%d fire=%d gate=%d latency=%.1fms "
           "timing=rx %.1f cam %.1f det %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
           options.aim_task.c_str(), static_cast<unsigned long long>(frames), runtime_fps,
@@ -1777,7 +1798,9 @@ int run(const Options& options) {
           command.yaw_vel * kRadToDeg, command.pitch_vel * kRadToDeg,
           command.yaw_acc * kRadToDeg, command.pitch_acc * kRadToDeg,
           fire_gate.yaw_error_rad * kRadToDeg, fire_gate.pitch_error_rad * kRadToDeg,
-          command.distance, sp_command.shoot ? 1 : 0, command.fire_advice ? 1 : 0,
+          command.distance, pnp_reprojection_error_px, pnp_r_reprojection_error_px,
+          pnp_center_distance_m, pnp_blade_horizontal_distance_m,
+          sp_command.shoot ? 1 : 0, command.fire_advice ? 1 : 0,
           fire_gate.blocked ? 1 : 0, elapsedMs(detect_start, aim_end),
           elapsedMs(serial_rx_start, serial_rx_end), elapsedMs(capture_start, capture_end),
           elapsedMs(detect_start, detect_end), elapsedMs(track_start, track_end),
