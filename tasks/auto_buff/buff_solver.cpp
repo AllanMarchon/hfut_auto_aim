@@ -67,7 +67,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     bool valid = false;
   };
 
-  PnpCandidate best;
+  PnpCandidate best_geometry;
+  PnpCandidate best_continuous;
   const auto evaluate_pose = [&](const std::vector<cv::Point2f> & candidate_points,
                                  const cv::Vec3d & candidate_rvec,
                                  const cv::Vec3d & candidate_tvec) {
@@ -114,19 +115,29 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     }
 
     const double score = use_szu_corner_order ? r_error + 0.25 * corner_error : corner_error;
-    const bool materially_better = !best.valid || score < best.score - 2.0;
-    const bool near_tie_better =
-      best.valid && std::abs(score - best.score) <= 2.0 &&
-      continuity_score < best.continuity_score;
-    if (materially_better || near_tie_better) {
-      best.rvec = candidate_rvec;
-      best.tvec = candidate_tvec;
-      best.image_points = candidate_points;
-      best.corner_error = corner_error;
-      best.r_error = r_error;
-      best.score = score;
-      best.continuity_score = continuity_score;
-      best.valid = true;
+    const auto save_candidate = [&](PnpCandidate & destination) {
+      destination.rvec = candidate_rvec;
+      destination.tvec = candidate_tvec;
+      destination.image_points = candidate_points;
+      destination.corner_error = corner_error;
+      destination.r_error = r_error;
+      destination.score = score;
+      destination.continuity_score = continuity_score;
+      destination.valid = true;
+    };
+
+    // 先保留残差最小的候选，首帧或连续性失效时使用它恢复跟踪。
+    if (!best_geometry.valid || score < best_geometry.score) {
+      save_candidate(best_geometry);
+    }
+
+    // 已有有效姿态时，只在误差合格的候选中寻找最接近上一帧的姿态，
+    // 防止八种映射在每帧重新竞争导致距离跳变。
+    const bool reprojection_valid = !use_szu_corner_order ||
+                                    (corner_error <= 8.0 && r_error <= 20.0);
+    if (use_szu_corner_order && pose_valid_ && reprojection_valid &&
+        (!best_continuous.valid || continuity_score < best_continuous.continuity_score)) {
+      save_candidate(best_continuous);
     }
   };
 
@@ -185,6 +196,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     try_candidate(image_points_corners);
   }
 
+  const PnpCandidate & best = best_continuous.valid ? best_continuous : best_geometry;
   if (!best.valid) {
     pose_valid_ = false;
     p.mark_unsolvable();
