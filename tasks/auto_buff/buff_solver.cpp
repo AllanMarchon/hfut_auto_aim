@@ -1,33 +1,12 @@
 #include "buff_solver.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include "tools/logger.hpp"
 
 namespace auto_buff
 {
-cv::Matx33f Solver::rotation_matrix(double angle) const
-{
-  return cv::Matx33f(
-    1, 0, 0, 0, std::cos(angle), -std::sin(angle), 0, std::sin(angle), std::cos(angle));
-}
-
-void Solver::compute_rotated_points(std::vector<std::vector<cv::Point3f>> & object_points)
-{
-  const std::vector<cv::Point3f> & base_points = object_points[0];
-  for (int i = 1; i < 5; ++i) {
-    double angle = i * THETA;
-    cv::Matx33f R = rotation_matrix(angle);
-    std::vector<cv::Point3f> rotated_points;
-    for (const auto & point : base_points) {
-      cv::Vec3f vec(point.x, point.y, point.z);
-      cv::Vec3f rotated_vec = R * vec;
-      rotated_points.emplace_back(rotated_vec[0], rotated_vec[1], rotated_vec[2]);
-    }
-    object_points[i] = rotated_points;
-  }
-}
-
 Solver::Solver(const std::string & config_path) : R_gimbal2world_(Eigen::Matrix3d::Identity())
 {
   auto yaml = YAML::LoadFile(config_path);
@@ -45,8 +24,6 @@ Solver::Solver(const std::string & config_path) : R_gimbal2world_(Eigen::Matrix3
   Eigen::Matrix<double, 1, 5> distort_coeffs(distort_coeffs_data.data());
   cv::eigen2cv(camera_matrix, camera_matrix_);
   cv::eigen2cv(distort_coeffs, distort_coeffs_);
-
-  // compute_rotated_points(OBJECT_POINTS);
 }
 
 Eigen::Matrix3d Solver::R_gimbal2world() const { return R_gimbal2world_; }
@@ -61,19 +38,6 @@ void Solver::solve(std::optional<PowerRune> & ps) const
 {
   if (!ps.has_value()) return;
   PowerRune & p = ps.value();
-  // std::vector<cv::Point2f> image_points;
-  // std::vector<cv::Point3f> object_points;
-  // int i = 0;
-  // for (auto & fanblade : p.fanblades) {
-  //   if (fanblade.type != _unlight) {
-  //     image_points.insert(image_points.end(), fanblade.points.begin(), fanblade.points.end());
-  //     image_points.emplace_back(fanblade.center);
-  //     object_points.insert(object_points.end(), OBJECT_POINTS[i].begin(), OBJECT_POINTS[i].end());
-  //   }
-  //   ++i;
-  // }
-  // image_points.emplace_back(p.r_center);  //r_center
-  // object_points.emplace_back(cv::Point3f(0, 0, 0));
   if (p.fanblades.empty() || p.target().points.size() < 4) {
     pose_valid_ = false;
     p.mark_unsolvable();
@@ -82,11 +46,14 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   }
 
   // 只取前四个角点，避免兼容 SP25 六点检测结果时把额外点传入四点模型。
-  const std::vector<cv::Point2f> image_points_fourth(
+  const std::vector<cv::Point2f> image_points_corners(
     p.target().points.begin(), p.target().points.begin() + 4);
-  std::vector<cv::Point3f> OBJECT_POINTS_FOURTH(OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
+  const std::vector<cv::Point3f> object_points_corners(
+    OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
   const std::vector<cv::Point3f> r_object_point{OBJECT_POINTS.back()};
   const bool use_szu_corner_order = p.target().point_indices.size() >= 4;
+  std::vector<cv::Point3f> szu_object_points = object_points_corners;
+  szu_object_points.emplace_back(OBJECT_POINTS.back());
 
   struct PnpCandidate
   {
@@ -101,34 +68,33 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   };
 
   PnpCandidate best;
-  const auto try_candidate = [&](const std::vector<cv::Point2f> & candidate_points) {
-    cv::Vec3d candidate_rvec;
-    cv::Vec3d candidate_tvec;
-    const bool solved = cv::solvePnP(
-      OBJECT_POINTS_FOURTH, candidate_points, camera_matrix_, distort_coeffs_, candidate_rvec,
-      candidate_tvec, false, cv::SOLVEPNP_IPPE);
-    if (!solved || !std::isfinite(candidate_tvec[0]) || !std::isfinite(candidate_tvec[1]) ||
+  const auto evaluate_pose = [&](const std::vector<cv::Point2f> & candidate_points,
+                                 const cv::Vec3d & candidate_rvec,
+                                 const cv::Vec3d & candidate_tvec) {
+    if (!std::isfinite(candidate_tvec[0]) || !std::isfinite(candidate_tvec[1]) ||
         !std::isfinite(candidate_tvec[2]) || candidate_tvec[2] <= 0.0) {
       return;
     }
 
-    std::vector<cv::Point2f> candidate_projected_points;
+    std::vector<cv::Point2f> projected_corners;
     cv::projectPoints(
-      OBJECT_POINTS_FOURTH, candidate_rvec, candidate_tvec, camera_matrix_, distort_coeffs_,
-      candidate_projected_points);
+      object_points_corners, candidate_rvec, candidate_tvec, camera_matrix_, distort_coeffs_,
+      projected_corners);
+    if (projected_corners.size() != candidate_points.size()) return;
+
     double corner_squared_error = 0.0;
-    for (size_t i = 0; i < candidate_projected_points.size(); ++i) {
-      const double error = cv::norm(candidate_projected_points[i] - candidate_points[i]);
+    for (size_t i = 0; i < projected_corners.size(); ++i) {
+      const double error = cv::norm(projected_corners[i] - candidate_points[i]);
       corner_squared_error += error * error;
     }
     const double corner_error = std::sqrt(corner_squared_error / 4.0);
 
-    std::vector<cv::Point2f> candidate_r_projected;
+    std::vector<cv::Point2f> projected_r;
     cv::projectPoints(
       r_object_point, candidate_rvec, candidate_tvec, camera_matrix_, distort_coeffs_,
-      candidate_r_projected);
-    if (candidate_r_projected.empty()) return;
-    const double r_error = cv::norm(candidate_r_projected.front() - p.r_center);
+      projected_r);
+    if (projected_r.empty()) return;
+    const double r_error = cv::norm(projected_r.front() - p.r_center);
     if (!std::isfinite(corner_error) || !std::isfinite(r_error)) return;
 
     double continuity_score = 0.0;
@@ -161,6 +127,45 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     }
   };
 
+  const auto try_candidate = [&](const std::vector<cv::Point2f> & candidate_points) {
+    if (!use_szu_corner_order) {
+      cv::Vec3d candidate_rvec;
+      cv::Vec3d candidate_tvec;
+      const bool solved = cv::solvePnP(
+        object_points_corners, candidate_points, camera_matrix_, distort_coeffs_, candidate_rvec,
+        candidate_tvec, false, cv::SOLVEPNP_IPPE);
+      if (solved) evaluate_pose(candidate_points, candidate_rvec, candidate_tvec);
+      return;
+    }
+
+    // SZU 的 R 点与四角属于同一平面，必须和四角一起约束最终姿态。
+    std::vector<cv::Point2f> image_points = candidate_points;
+    image_points.emplace_back(p.r_center);
+    std::vector<cv::Mat> candidate_rvecs;
+    std::vector<cv::Mat> candidate_tvecs;
+    const int solution_count = cv::solvePnPGeneric(
+      szu_object_points, image_points, camera_matrix_, distort_coeffs_, candidate_rvecs,
+      candidate_tvecs, false, cv::SOLVEPNP_IPPE);
+    const size_t count = std::min(
+      static_cast<size_t>(std::max(solution_count, 0)),
+      std::min(candidate_rvecs.size(), candidate_tvecs.size()));
+    for (size_t i = 0; i < count; ++i) {
+      cv::Mat rvec_mat;
+      cv::Mat tvec_mat;
+      candidate_rvecs[i].convertTo(rvec_mat, CV_64F);
+      candidate_tvecs[i].convertTo(tvec_mat, CV_64F);
+      if (rvec_mat.total() != 3 || tvec_mat.total() != 3) continue;
+      rvec_mat = rvec_mat.reshape(1, 3);
+      tvec_mat = tvec_mat.reshape(1, 3);
+      const cv::Vec3d candidate_rvec{
+        rvec_mat.at<double>(0, 0), rvec_mat.at<double>(1, 0), rvec_mat.at<double>(2, 0)};
+      const cv::Vec3d candidate_tvec{
+        tvec_mat.at<double>(0, 0), tvec_mat.at<double>(1, 0),
+        tvec_mat.at<double>(2, 0)};
+      evaluate_pose(candidate_points, candidate_rvec, candidate_tvec);
+    }
+  };
+
   if (use_szu_corner_order) {
     // 模型关键点编号在不同叶片姿态下不一定保持图像轮廓顺序；枚举四边形的循环起点和方向。
     for (int reversed = 0; reversed < 2; ++reversed) {
@@ -168,13 +173,13 @@ void Solver::solve(std::optional<PowerRune> & ps) const
         std::vector<cv::Point2f> candidate_points(4);
         for (int i = 0; i < 4; ++i) {
           const int index = reversed ? (shift - i + 4) % 4 : (shift + i) % 4;
-          candidate_points[i] = image_points_fourth[index];
+          candidate_points[i] = image_points_corners[index];
         }
         try_candidate(candidate_points);
       }
     }
   } else {
-    try_candidate(image_points_fourth);
+    try_candidate(image_points_corners);
   }
 
   if (!best.valid) {
@@ -183,11 +188,11 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     tools::logger()->debug("[BuffSolver] solvePnP 失败或返回非有限平移");
     return;
   }
-  if (use_szu_corner_order && best.corner_error > 8.0) {
+  if (use_szu_corner_order && (best.corner_error > 8.0 || best.r_error > 20.0)) {
     pose_valid_ = false;
     p.mark_unsolvable();
     tools::logger()->debug(
-      "[BuffSolver] SZU 角点 PnP 重投影误差偏大: corners={:.2f}px R={:.2f}px",
+      "[BuffSolver] SZU 五点 PnP 重投影误差偏大: corners={:.2f}px R={:.2f}px",
       best.corner_error, best.r_error);
     return;
   }
@@ -196,10 +201,10 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   tvec_ = best.tvec;
   pose_valid_ = true;
 
-  // 四个角点共面，继续使用 IPPE；R 点只用于在 SZU 候选姿态中选解，不作为硬约束。
+  // SZU 最终姿态由四角和 R 点共同约束；SP25 保持原四角路径。
   std::vector<cv::Point2f> projected_points;
   cv::projectPoints(
-    OBJECT_POINTS_FOURTH, rvec_, tvec_, camera_matrix_, distort_coeffs_, projected_points);
+    object_points_corners, rvec_, tvec_, camera_matrix_, distort_coeffs_, projected_points);
   double squared_error = 0.0;
   for (size_t i = 0; i < projected_points.size(); ++i) {
     const double error = cv::norm(projected_points[i] - best.image_points[i]);
@@ -235,16 +240,16 @@ void Solver::solve(std::optional<PowerRune> & ps) const
 
   Eigen::Vector3d blade_xyz_in_buff{{0, 0, 700e-3}};
 
-  // buff -> camera
+  // 打符坐标系到相机坐标系
   Eigen::Vector3d xyz_in_camera = t_buff2camera;
   Eigen::Vector3d blade_xyz_in_camera = R_buff2camera * blade_xyz_in_buff + t_buff2camera;
 
-  // camera -> gimbal
+  // 相机坐标系到云台坐标系
   Eigen::Matrix3d R_buff2gimbal = R_camera2gimbal_ * R_buff2camera;
   Eigen::Vector3d xyz_in_gimbal = R_camera2gimbal_ * xyz_in_camera + t_camera2gimbal_;
   Eigen::Vector3d blade_xyz_in_gimbal = R_camera2gimbal_ * blade_xyz_in_camera + t_camera2gimbal_;
 
-  /// gimbal -> world
+  /// 云台坐标系到世界坐标系
   Eigen::Matrix3d R_buff2world = R_gimbal2world_ * R_buff2gimbal;
 
   p.xyz_in_world = R_gimbal2world_ * xyz_in_gimbal;
@@ -270,28 +275,28 @@ cv::Point2f Solver::point_buff2pixel(cv::Point3f x)
   return image_points.back();
 }
 
-// xyz_in_world2xyz_in_pix
+// 世界坐标转换为像素坐标
 std::vector<cv::Point2f> Solver::reproject_buff(
   const Eigen::Vector3d & xyz_in_world, double yaw, double row) const
 {
   auto R_buff2world = tools::rotation_matrix(Eigen::Vector3d(yaw, 0.0, row));
   // clang-format on
 
-  // get R_buff2camera t_buff2camera
+  // 计算打符到相机的旋转和平移
   const Eigen::Vector3d & t_buff2world = xyz_in_world;
   Eigen::Matrix3d R_buff2camera =
     R_camera2gimbal_.transpose() * R_gimbal2world_.transpose() * R_buff2world;
   Eigen::Vector3d t_buff2camera =
     R_camera2gimbal_.transpose() * (R_gimbal2world_.transpose() * t_buff2world - t_camera2gimbal_);
 
-  // get rvec tvec
+  // 转换为 OpenCV 的旋转向量和平移向量
   cv::Vec3d rvec;
   cv::Mat R_buff2camera_cv;
   cv::eigen2cv(R_buff2camera, R_buff2camera_cv);
   cv::Rodrigues(R_buff2camera_cv, rvec);
   cv::Vec3d tvec(t_buff2camera[0], t_buff2camera[1], t_buff2camera[2]);
 
-  // reproject
+  // 重新投影
   std::vector<cv::Point2f> image_points;
   cv::projectPoints(OBJECT_POINTS, rvec, tvec, camera_matrix_, distort_coeffs_, image_points);
   return image_points;

@@ -64,7 +64,7 @@ public:
   double pnp_r_reprojection_error_px = 0.0;
   double pnp_center_distance_m = 0.0;  // PnP 原点（R 中心）到相机的直线距离
   double pnp_blade_horizontal_distance_m = 0.0;  // 待击打叶片中心的水平距离
-  cv::Point2f pnp_r_projected_pixel{0.0F, 0.0F};  // 四角 PnP 反投影得到的 R 点
+  cv::Point2f pnp_r_projected_pixel{0.0F, 0.0F};  // PnP 反投影得到的 R 点
 
   explicit PowerRune(
     std::vector<FanBlade> & ts, const cv::Point2f r_center,

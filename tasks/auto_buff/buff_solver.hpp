@@ -11,9 +11,6 @@
 #include "tools/math_tools.hpp"
 namespace auto_buff
 {
-// 旋转角度
-const double THETA = 2.0 * CV_PI / 5.0;  // 2/5π
-
 class Solver
 {
 public:
@@ -42,15 +39,6 @@ private:
   mutable cv::Vec3d rvec_, tvec_;
   mutable bool pose_valid_{false};
 
-  // std::vector<std::vector<cv::Point3f>> OBJECT_POINTS = {
-  //   {cv::Point3f(0, 160e-3, 858.5e-3), cv::Point3f(0, -160e-3, 858.5e-3),
-  //    cv::Point3f(0, -186e-3, 541.5e-3), cv::Point3f(0, 186e-3, 541.5e-3),
-  //    cv::Point3f(0, 0, 700e-3)},
-  //   {},
-  //   {},
-  //   {},
-  //   {}};  // 单位：米
-
   // SZU 角点会在检测器中按图像轮廓排序；PnP 再枚举循环起点和方向。
   // 叶片采用原打符模型的菱形几何，原点为 R 中心。
   const std::vector<cv::Point3f> OBJECT_POINTS = {
@@ -59,11 +47,6 @@ private:
     cv::Point3f(0, 0, 700e-3), cv::Point3f(0, 0, 220e-3),
     cv::Point3f(0, 0, 0)};  // 单位：米
 
-  // 函数：生成绕x轴旋转的旋转矩阵
-  cv::Matx33f rotation_matrix(double angle) const;
-
-  // 函数：旋转点并填充到 OBJECT_POINTS 中
-  void compute_rotated_points(std::vector<std::vector<cv::Point3f>> & object_points);
 };
 }  // namespace auto_buff
-#endif  // AUTO_AIM__SOLVER_HPP
+#endif  // AUTO_BUFF__SOLVER_HPP
