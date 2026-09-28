@@ -1,6 +1,7 @@
 #include "buff_solver.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "tools/logger.hpp"
@@ -46,12 +47,31 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   }
 
   // 只取前四个角点，避免兼容 SP25 六点检测结果时把额外点传入四点模型。
-  const std::vector<cv::Point2f> image_points_corners(
+  std::vector<cv::Point2f> image_points_corners(
     p.target().points.begin(), p.target().points.begin() + 4);
   const std::vector<cv::Point3f> object_points_corners(
     OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
   const std::vector<cv::Point3f> r_object_point{OBJECT_POINTS.back()};
-  const bool use_szu_corner_order = p.target().point_indices.size() >= 4;
+  const bool use_szu_corner_order = p.target().point_indices.size() == 4;
+  if (use_szu_corner_order) {
+    // SZU 检测器按轮廓排序了角点，这里恢复模型原始编号对应的物理顺序。
+    constexpr std::array<int, 4> szu_corner_indices{1, 3, 4, 0};
+    std::vector<cv::Point2f> ordered_points;
+    ordered_points.reserve(szu_corner_indices.size());
+    for (const int expected_index : szu_corner_indices) {
+      const auto it = std::find(
+        p.target().point_indices.begin(), p.target().point_indices.end(), expected_index);
+      if (it == p.target().point_indices.end()) {
+        pose_valid_ = false;
+        p.mark_unsolvable();
+        tools::logger()->debug("[BuffSolver] SZU 角点缺少原始编号: {}", expected_index);
+        return;
+      }
+      ordered_points.emplace_back(image_points_corners[std::distance(
+        p.target().point_indices.begin(), it)]);
+    }
+    image_points_corners = std::move(ordered_points);
+  }
   std::vector<cv::Point3f> szu_object_points = object_points_corners;
   szu_object_points.emplace_back(OBJECT_POINTS.back());
 
@@ -63,7 +83,6 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     double corner_error = 0.0;
     double r_error = 0.0;
     double score = 0.0;
-    double continuity_score = 0.0;
     bool valid = false;
   };
 
@@ -106,23 +125,24 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       const cv::Vec3d translation_delta{
         candidate_tvec[0] - tvec_[0], candidate_tvec[1] - tvec_[1],
         candidate_tvec[2] - tvec_[2]};
-      continuity_score = cv::norm(candidate_rotation - previous_rotation) +
-                         0.25 * cv::norm(translation_delta);
+      const cv::Mat delta_rotation = candidate_rotation * previous_rotation.t();
+      const double trace = delta_rotation.at<double>(0, 0) + delta_rotation.at<double>(1, 1) +
+                           delta_rotation.at<double>(2, 2);
+      const double rotation_delta = std::acos(std::clamp((trace - 1.0) * 0.5, -1.0, 1.0));
+      const double translation_delta = cv::norm(translation_delta);
+      // 同一扇叶的姿态应当跨帧连续，避免 IPPE 两个解或错误分支造成距离跳变。
+      continuity_score = 100.0 * rotation_delta + 20.0 * translation_delta;
     }
 
-    const double score = use_szu_corner_order ? r_error + 0.25 * corner_error : corner_error;
-    const bool materially_better = !best.valid || score < best.score - 2.0;
-    const bool near_tie_better =
-      best.valid && std::abs(score - best.score) <= 2.0 &&
-      continuity_score < best.continuity_score;
-    if (materially_better || near_tie_better) {
+    const double score = use_szu_corner_order ? r_error + 0.25 * corner_error + continuity_score
+                                              : corner_error;
+    if (!best.valid || score < best.score) {
       best.rvec = candidate_rvec;
       best.tvec = candidate_tvec;
       best.image_points = candidate_points;
       best.corner_error = corner_error;
       best.r_error = r_error;
       best.score = score;
-      best.continuity_score = continuity_score;
       best.valid = true;
     }
   };
@@ -166,21 +186,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     }
   };
 
-  if (use_szu_corner_order) {
-    // 模型关键点编号在不同叶片姿态下不一定保持图像轮廓顺序；枚举四边形的循环起点和方向。
-    for (int reversed = 0; reversed < 2; ++reversed) {
-      for (int shift = 0; shift < 4; ++shift) {
-        std::vector<cv::Point2f> candidate_points(4);
-        for (int i = 0; i < 4; ++i) {
-          const int index = reversed ? (shift - i + 4) % 4 : (shift + i) % 4;
-          candidate_points[i] = image_points_corners[index];
-        }
-        try_candidate(candidate_points);
-      }
-    }
-  } else {
-    try_candidate(image_points_corners);
-  }
+  // SZU 已按原始编号固定顺序；SP25 直接使用检测器提供的四点顺序。
+  try_candidate(image_points_corners);
 
   if (!best.valid) {
     pose_valid_ = false;
