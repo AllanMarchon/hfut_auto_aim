@@ -129,9 +129,11 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       const double trace = delta_rotation.at<double>(0, 0) + delta_rotation.at<double>(1, 1) +
                            delta_rotation.at<double>(2, 2);
       const double rotation_delta = std::acos(std::clamp((trace - 1.0) * 0.5, -1.0, 1.0));
-      const double translation_delta = cv::norm(translation_delta);
+      const double translation_delta_norm = std::sqrt(
+        translation_delta[0] * translation_delta[0] + translation_delta[1] * translation_delta[1] +
+        translation_delta[2] * translation_delta[2]);
       // 同一扇叶的姿态应当跨帧连续，避免 IPPE 两个解或错误分支造成距离跳变。
-      continuity_score = 100.0 * rotation_delta + 20.0 * translation_delta;
+      continuity_score = 100.0 * rotation_delta + 20.0 * translation_delta_norm;
     }
 
     const double score = use_szu_corner_order ? r_error + 0.25 * corner_error + continuity_score
