@@ -39,7 +39,8 @@ private:
   mutable cv::Vec3d rvec_, tvec_;
   mutable bool pose_valid_{false};
 
-  // SZU 菱形模型按原始编号 1、3、4、0 恢复物理顺序；叶片原点为 R 中心。
+  // SZU 角点会在检测器中按图像轮廓排序；PnP 再枚举循环起点和方向。
+  // 叶片采用原打符模型的菱形几何，原点为 R 中心。
   const std::vector<cv::Point3f> OBJECT_POINTS = {
     cv::Point3f(0, 0, 827e-3), cv::Point3f(0, 127e-3, 700e-3),
     cv::Point3f(0, 0, 573e-3), cv::Point3f(0, -127e-3, 700e-3),
