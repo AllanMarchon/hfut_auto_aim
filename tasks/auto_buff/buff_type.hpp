@@ -23,7 +23,7 @@ class FanBlade
 {
 public:
   cv::Point2f center;               // 扇页中心
-  std::vector<cv::Point2f> points;  // 四个点按图像轮廓顺序排列
+  std::vector<cv::Point2f> points;  // 四个角点；SZU 保留模型原始编号
   std::vector<int> point_indices;   // 模型原始关键点编号，SZU 五点模型使用
   double angle, width, height;
   FanBlade_type type;  // 类型
