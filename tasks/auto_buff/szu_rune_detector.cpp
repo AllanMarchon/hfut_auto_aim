@@ -241,23 +241,12 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::postprocess(
     if (!required_keypoints_valid) continue;
     ++debug_stats_.required_keypoint_pass;
 
-    std::vector<std::pair<cv::Point2f, int>> ordered_corners;
-    ordered_corners.reserve(corner_indices_.size());
+    detection.corners.reserve(corner_indices_.size());
+    detection.corner_indices.reserve(corner_indices_.size());
     for (int index : corner_indices_) {
-      ordered_corners.emplace_back(keypoints[index], index);
+      detection.corners.push_back(keypoints[index]);
+      detection.corner_indices.push_back(index);
       corner_sum += keypoints[index];
-    }
-    const cv::Point2f corner_center = corner_sum * 0.25f;
-    std::sort(ordered_corners.begin(), ordered_corners.end(), [&](const auto & a, const auto & b) {
-      const float angle_a = std::atan2(a.first.y - corner_center.y, a.first.x - corner_center.x);
-      const float angle_b = std::atan2(b.first.y - corner_center.y, b.first.x - corner_center.x);
-      return angle_a < angle_b;
-    });
-    detection.corners.reserve(ordered_corners.size());
-    detection.corner_indices.reserve(ordered_corners.size());
-    for (const auto & corner : ordered_corners) {
-      detection.corners.push_back(corner.first);
-      detection.corner_indices.push_back(corner.second);
     }
     detection.r_center = keypoints[r_center_index_];
 
