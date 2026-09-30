@@ -1,7 +1,6 @@
 #include "buff_solver.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 
 #include "tools/logger.hpp"
@@ -47,33 +46,19 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   }
 
   // 只取前四个角点，避免兼容 SP25 六点检测结果时把额外点传入四点模型。
-  std::vector<cv::Point2f> image_points_corners;
-  image_points_corners.reserve(4);
   const bool use_szu_point_indices = p.target().point_indices.size() >= 4;
+  std::vector<cv::Point2f> image_points_corners(
+    p.target().points.begin(), p.target().points.begin() + 4);
   if (use_szu_point_indices) {
-    // 按原模型语义，四个几何点依次对应原始关键点 1、3、4、0。
-    constexpr std::array<int, 4> szu_object_keypoint_indices{1, 3, 4, 0};
-    for (const int expected_index : szu_object_keypoint_indices) {
-      const auto it = std::find(
-        p.target().point_indices.begin(), p.target().point_indices.end(), expected_index);
-      if (it == p.target().point_indices.end()) {
-        pose_valid_ = false;
-        p.mark_unsolvable();
-        tools::logger()->debug("[BuffSolver] SZU 角点缺少原始编号: {}", expected_index);
-        return;
-      }
-      const size_t point_index = static_cast<size_t>(
-        std::distance(p.target().point_indices.begin(), it));
-      if (point_index >= p.target().points.size()) {
-        pose_valid_ = false;
-        p.mark_unsolvable();
-        tools::logger()->debug("[BuffSolver] SZU 角点编号与坐标数量不一致");
-        return;
-      }
-      image_points_corners.emplace_back(p.target().points[point_index]);
-    }
-  } else {
-    image_points_corners.assign(p.target().points.begin(), p.target().points.begin() + 4);
+    // 检测器保留模型原始编号，但原始编号不是图像轮廓顺序；先按像素位置排成四边形。
+    cv::Point2f center(0.0F, 0.0F);
+    for (const auto & point : image_points_corners) center += point;
+    center *= 0.25F;
+    std::sort(
+      image_points_corners.begin(), image_points_corners.end(), [&](const auto & a, const auto & b) {
+        return std::atan2(a.y - center.y, a.x - center.x) <
+               std::atan2(b.y - center.y, b.x - center.x);
+      });
   }
   const std::vector<cv::Point3f> object_points_corners(
     OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
@@ -172,13 +157,11 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       return;
     }
 
-    // SZU 的 R 点与四角属于同一平面，必须和四角一起约束最终姿态。
-    std::vector<cv::Point2f> image_points = candidate_points;
-    image_points.emplace_back(p.r_center);
+    // 先用四角 IPPE 得到两个平面姿态，再用 R 点对每个姿态做一次迭代细化。
     std::vector<cv::Mat> candidate_rvecs;
     std::vector<cv::Mat> candidate_tvecs;
     const int solution_count = cv::solvePnPGeneric(
-      szu_object_points, image_points, camera_matrix_, distort_coeffs_, candidate_rvecs,
+      object_points_corners, candidate_points, camera_matrix_, distort_coeffs_, candidate_rvecs,
       candidate_tvecs, false, cv::SOLVEPNP_IPPE);
     const size_t count = std::min(
       static_cast<size_t>(std::max(solution_count, 0)),
@@ -191,16 +174,39 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       if (rvec_mat.total() != 3 || tvec_mat.total() != 3) continue;
       rvec_mat = rvec_mat.reshape(1, 3);
       tvec_mat = tvec_mat.reshape(1, 3);
-      const cv::Vec3d candidate_rvec{
+      const cv::Vec3d initial_rvec{
         rvec_mat.at<double>(0, 0), rvec_mat.at<double>(1, 0), rvec_mat.at<double>(2, 0)};
-      const cv::Vec3d candidate_tvec{
+      const cv::Vec3d initial_tvec{
         tvec_mat.at<double>(0, 0), tvec_mat.at<double>(1, 0),
         tvec_mat.at<double>(2, 0)};
-      evaluate_pose(candidate_points, candidate_rvec, candidate_tvec);
+
+      std::vector<cv::Point2f> image_points = candidate_points;
+      image_points.emplace_back(p.r_center);
+      cv::Vec3d refined_rvec = initial_rvec;
+      cv::Vec3d refined_tvec = initial_tvec;
+      const bool refined = cv::solvePnP(
+        szu_object_points, image_points, camera_matrix_, distort_coeffs_, refined_rvec,
+        refined_tvec, true, cv::SOLVEPNP_ITERATIVE);
+      evaluate_pose(candidate_points, initial_rvec, initial_tvec);
+      if (refined) evaluate_pose(candidate_points, refined_rvec, refined_tvec);
     }
   };
 
-  try_candidate(image_points_corners);
+  if (use_szu_point_indices) {
+    // 四个角点存在环向和正反两个合法排列，全部评估后由重投影误差选择。
+    for (int reversed = 0; reversed < 2; ++reversed) {
+      for (int shift = 0; shift < 4; ++shift) {
+        std::vector<cv::Point2f> candidate_points(4);
+        for (int i = 0; i < 4; ++i) {
+          const int index = reversed ? (shift - i + 4) % 4 : (shift + i) % 4;
+          candidate_points[i] = image_points_corners[index];
+        }
+        try_candidate(candidate_points);
+      }
+    }
+  } else {
+    try_candidate(image_points_corners);
+  }
 
   const PnpCandidate & best = best_geometry;
   if (!best.valid) {
