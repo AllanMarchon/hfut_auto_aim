@@ -51,8 +51,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   image_points_corners.reserve(4);
   const bool use_szu_point_indices = p.target().point_indices.size() >= 4;
   if (use_szu_point_indices) {
-    // 模型原始编号为 0=右、1=上、3=下、4=左，几何模型顺序是上、右、下、左。
-    constexpr std::array<int, 4> szu_object_keypoint_indices{1, 0, 3, 4};
+    // 按原模型语义，四个几何点依次对应原始关键点 1、3、4、0。
+    constexpr std::array<int, 4> szu_object_keypoint_indices{1, 3, 4, 0};
     for (const int expected_index : szu_object_keypoint_indices) {
       const auto it = std::find(
         p.target().point_indices.begin(), p.target().point_indices.end(), expected_index);
