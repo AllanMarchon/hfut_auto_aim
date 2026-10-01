@@ -1562,6 +1562,7 @@ int run(const Options& options) {
     std::string track_state{"lost"};
     auto_buff::AimMotionCommand buff_motion;
     bool buff_motion_applied = false;
+    bool buff_tracking_ready = false;
     int detection_count = 0;
     int tracked_count = 0;
     double command_distance = 0.0;
@@ -1601,8 +1602,10 @@ int run(const Options& options) {
       track_start = detect_end;
       if (options.aim_task == "smallbuff") {
         buff_small_target->get_target(power_rune, timestamp);
+        buff_tracking_ready = buff_small_target->is_tracking_ready();
       } else {
         buff_big_target->get_target(power_rune, timestamp);
+        buff_tracking_ready = buff_big_target->is_tracking_ready();
       }
       track_end = std::chrono::steady_clock::now();
 
@@ -1613,7 +1616,8 @@ int run(const Options& options) {
           auto past_target = *buff_small_target;
           auto future_target = *buff_small_target;
           buff_motion = buff_aimer->aimWithMotion(
-              target_copy, past_target, future_target, timestamp, bullet_speed);
+              target_copy, past_target, future_target, timestamp, bullet_speed,
+              true, buff_small_target->is_tracking_ready());
           sp_command = buff_motion.command;
         }
       } else {
@@ -1622,7 +1626,8 @@ int run(const Options& options) {
           auto past_target = *buff_big_target;
           auto future_target = *buff_big_target;
           buff_motion = buff_aimer->aimWithMotion(
-              target_copy, past_target, future_target, timestamp, bullet_speed);
+              target_copy, past_target, future_target, timestamp, bullet_speed,
+              true, buff_big_target->is_tracking_ready());
           sp_command = buff_motion.command;
         }
       }
@@ -1631,8 +1636,8 @@ int run(const Options& options) {
                                ? sp_command.horizon_distance
                                : buff_aimer->last_distance();
       }
-      tracked_count = sp_command.control ? 1 : 0;
-      track_state = sp_command.control ? "tracking" : (power_rune.has_value() ? "detecting" : "lost");
+      tracked_count = buff_tracking_ready ? 1 : 0;
+      track_state = buff_tracking_ready ? "tracking" : (power_rune.has_value() ? "detecting" : "lost");
     } else {
       solver->set_R_gimbal2world(feedbackQuaternion(aligned_feedback, command_limiter_config));
       armors = detector->detect(frame.image, static_cast<int>(frame.seq));

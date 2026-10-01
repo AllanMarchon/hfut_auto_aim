@@ -46,6 +46,17 @@ Eigen::Vector3d Target::point_buff2world(
 
 bool Target::is_unsolve() const { return unsolvable_; }
 
+bool Target::is_tracking_ready() const { return tracking_ready_ && !unsolvable_; }
+
+bool Target::state_is_finite() const
+{
+  if (ekf_.x.size() == 0) return false;
+  for (int i = 0; i < ekf_.x.size(); ++i) {
+    if (!std::isfinite(ekf_.x[i])) return false;
+  }
+  return true;
+}
+
 Eigen::VectorXd Target::ekf_x() const { return ekf_.x; }
 
 /// SmallTarget
@@ -64,6 +75,8 @@ void SmallTarget::get_target(
       lost_count_ = 0;
       first_in_ = true;
       have_start_timestamp_ = false;
+      tracking_ready_ = false;
+      valid_count_ = 0;
     }
     return;
   }
@@ -79,20 +92,28 @@ void SmallTarget::get_target(
     unsolvable_ = true;
     init(time_gap, p.value());
     first_in_ = false;
+    valid_count_ = 0;
+    tracking_ready_ = false;
   }
   lost_count_ = 0;
 
   // kalman update
-  unsolvable_ = false;
   update(time_gap, p.value());
 
   // 处理发散
-  if (std::abs(ekf_.x[6]) > SMALL_W + CV_PI / 18 || std::abs(ekf_.x[6]) < SMALL_W - CV_PI / 18) {
+  if (
+    !state_is_finite() || !std::isfinite(ekf_.x[6]) || std::abs(ekf_.x[6]) > SMALL_W + CV_PI / 18 ||
+    std::abs(ekf_.x[6]) < SMALL_W - CV_PI / 18) {
     unsolvable_ = true;
     tools::logger()->debug("[Target] 小符角度发散spd: {:.2f}", ekf_.x[6] * 180 / CV_PI);
     first_in_ = true;
+    tracking_ready_ = false;
+    valid_count_ = 0;
     return;
   }
+  valid_count_++;
+  tracking_ready_ = valid_count_ >= 3;
+  unsolvable_ = !tracking_ready_;
 }
 
 void SmallTarget::predict(double dt)
@@ -372,6 +393,8 @@ void BigTarget::get_target(
       lost_count_ = 0;
       first_in_ = true;
       have_start_timestamp_ = false;
+      tracking_ready_ = false;
+      valid_count_ = 0;
     }
     return;
   }
@@ -387,21 +410,29 @@ void BigTarget::get_target(
     unsolvable_ = true;
     init(time_gap, p.value());
     first_in_ = false;
+    valid_count_ = 0;
+    tracking_ready_ = false;
   }
   lost_count_ = 0;
 
   // kalman update
-  unsolvable_ = false;
   update(time_gap, p.value());
 
   // 处理发散
   if (
-    ekf_.x[7] > 1.045 * 1.5 || ekf_.x[7] < 0.78 / 1.5 || ekf_.x[8] > 2.0 * 1.5 ||
-    ekf_.x[8] < 1.884 / 1.5) {
+    !state_is_finite() || !std::isfinite(ekf_.x[7]) || !std::isfinite(ekf_.x[8]) ||
+    ekf_.x[7] > 1.045 * 1.5 ||
+    ekf_.x[7] < 0.78 / 1.5 || ekf_.x[8] > 2.0 * 1.5 || ekf_.x[8] < 1.884 / 1.5) {
+    unsolvable_ = true;
     tools::logger()->debug("[Target] 大符角度发散a: {:.2f}b:{:.2f}", ekf_.x[7], ekf_.x[8]);
     first_in_ = true;
+    tracking_ready_ = false;
+    valid_count_ = 0;
     return;
   }
+  valid_count_++;
+  tracking_ready_ = valid_count_ >= 3;
+  unsolvable_ = !tracking_ready_;
 }
 
 void BigTarget::predict(double dt)

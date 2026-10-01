@@ -95,13 +95,14 @@ io::Command Aimer::aim(
 AimMotionCommand Aimer::aimWithMotion(
   auto_buff::Target & target, auto_buff::Target & past_target,
   auto_buff::Target & future_target, std::chrono::steady_clock::time_point & timestamp,
-  double bullet_speed, bool to_now)
+  double bullet_speed, bool to_now, bool enable_motion_feedforward)
 {
   AimMotionCommand result;
   if (target.is_unsolve()) return result;
 
   result.command = aim(target, timestamp, bullet_speed, to_now);
-  if (!motion_feedforward_enabled_ || !result.command.control) return result;
+  if (!motion_feedforward_enabled_ || !enable_motion_feedforward || !result.command.control)
+    return result;
   const double center_distance = last_distance_;
   const double center_angle = angle;
 

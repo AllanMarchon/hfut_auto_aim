@@ -36,7 +36,8 @@ public:
 
   AimMotionCommand aimWithMotion(
     Target & target, Target & past_target, Target & future_target,
-    std::chrono::steady_clock::time_point & timestamp, double bullet_speed, bool to_now = true);
+    std::chrono::steady_clock::time_point & timestamp, double bullet_speed,
+    bool to_now = true, bool enable_motion_feedforward = true);
 
   double last_distance() const { return last_distance_; }
 

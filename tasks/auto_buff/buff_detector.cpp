@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <cmath>
 
 #include "tools/logger.hpp"
 
@@ -29,6 +30,11 @@ bool yaml_bool(const YAML::Node & yaml, const char * key, bool fallback)
   return yaml[key] ? yaml[key].as<bool>() : fallback;
 }
 
+double yaml_double(const YAML::Node & yaml, const char * key, double fallback)
+{
+  return yaml[key] ? yaml[key].as<double>() : fallback;
+}
+
 void validate_szu_class_id(const char * key, int class_id)
 {
   if (class_id < 0 || class_id > 2) {
@@ -52,6 +58,14 @@ Buff_Detector::Buff_Detector(const std::string & config)
   szu_debug_log_ = yaml_bool(yaml, "szu_debug_log", szu_debug_log_);
   szu_debug_log_every_n_ =
     std::max(1, yaml_int(yaml, "szu_debug_log_every_n", szu_debug_log_every_n_));
+  szu_r_center_max_spread_px_ = yaml_double(
+    yaml, "szu_r_center_max_spread_px", szu_r_center_max_spread_px_);
+  szu_min_target_radius_px_ = yaml_double(
+    yaml, "szu_min_target_radius_px", szu_min_target_radius_px_);
+  if (!std::isfinite(szu_r_center_max_spread_px_) || szu_r_center_max_spread_px_ <= 0.0 ||
+      !std::isfinite(szu_min_target_radius_px_) || szu_min_target_radius_px_ <= 0.0) {
+    throw std::invalid_argument("SZU R 点几何阈值必须是有限正数");
+  }
   if (backend_ == SZU) {
     szu_detector_ = std::make_unique<SzuRuneDetector>(config);
   } else {
@@ -215,6 +229,7 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   target_fanblades.reserve(results.size());
   other_fanblades.reserve(results.size());
   cv::Point2f r_center_sum(0.0f, 0.0f);
+  double quality_sum = 0.0;
   int r_center_count = 0;
 
   for (const auto & result : results) {
@@ -223,7 +238,9 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
       result.corners, result.center, classify_szu_blade(result.class_id, rune_type), result.class_id,
       result.confidence);
     blade.point_indices = result.corner_indices;
-    r_center_sum += result.r_center;
+    const double quality = std::max(1e-3, static_cast<double>(result.quality));
+    r_center_sum += result.r_center * static_cast<float>(quality);
+    quality_sum += quality;
     ++r_center_count;
     if (blade.type == _target) {
       target_fanblades.emplace_back(std::move(blade));
@@ -255,8 +272,27 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   fanblades.insert(fanblades.end(), target_fanblades.begin(), target_fanblades.end());
   fanblades.insert(fanblades.end(), other_fanblades.begin(), other_fanblades.end());
 
-  const auto r_center = r_center_sum * (1.0f / static_cast<float>(r_center_count));
+  const auto r_center = r_center_sum * static_cast<float>(1.0 / quality_sum);
+  double r_center_spread = 0.0;
+  for (const auto & result : results) {
+    if (result.corners.size() == 4) {
+      r_center_spread = std::max(r_center_spread, cv::norm(result.r_center - r_center));
+    }
+  }
+  const auto target_center = target_fanblades.front().center;
+  const double target_radius = cv::norm(target_center - r_center);
+  // R 点应该在不同叶片的预测位置附近；明显离群时拒绝整帧，避免污染姿态解算。
+  if (!std::isfinite(target_radius) || target_radius < szu_min_target_radius_px_ ||
+      r_center_spread > szu_r_center_max_spread_px_) {
+    log_szu_debug(
+      "r_center_invalid", stats, results.size(), target_fanblades.size(), other_fanblades.size());
+    handle_lose();
+    return std::nullopt;
+  }
   PowerRune powerrune(fanblades, r_center, last_powerrune_);
+  powerrune.observation_quality = quality_sum / static_cast<double>(r_center_count);
+  powerrune.r_center_consistency_px = target_radius;
+  powerrune.r_center_spread_px = r_center_spread;
 
   /// handle error
   if (powerrune.is_unsolve()) {

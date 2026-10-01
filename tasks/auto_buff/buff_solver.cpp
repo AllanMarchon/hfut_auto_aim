@@ -1,7 +1,9 @@
 #include "buff_solver.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <iterator>
 
 #include "tools/logger.hpp"
 
@@ -45,20 +47,35 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     return;
   }
 
-  // 只取前四个角点，避免兼容 SP25 六点检测结果时把额外点传入四点模型。
+  // 只取四个符叶角点，避免兼容 SP25 六点检测结果时把额外点传入四点模型。
   const bool use_szu_point_indices = p.target().point_indices.size() >= 4;
-  std::vector<cv::Point2f> image_points_corners(
-    p.target().points.begin(), p.target().points.begin() + 4);
+  std::vector<cv::Point2f> image_points_corners;
+  image_points_corners.reserve(4);
   if (use_szu_point_indices) {
-    // 检测器保留模型原始编号，但原始编号不是图像轮廓顺序；先按像素位置排成四边形。
-    cv::Point2f center(0.0F, 0.0F);
-    for (const auto & point : image_points_corners) center += point;
-    center *= 0.25F;
-    std::sort(
-      image_points_corners.begin(), image_points_corners.end(), [&](const auto & a, const auto & b) {
-        return std::atan2(a.y - center.y, a.x - center.x) <
-               std::atan2(b.y - center.y, b.x - center.x);
-      });
+    // README 标注的环向顺序为 1(上)、0(右)、3(下)、4(左)。
+    // 直接按原始关键点编号恢复物理顺序，不能按像素极角或八种排列猜测。
+    constexpr std::array<int, 4> szu_keypoint_order{1, 0, 3, 4};
+    for (const int expected_index : szu_keypoint_order) {
+      const auto it = std::find(
+        p.target().point_indices.begin(), p.target().point_indices.end(), expected_index);
+      if (it == p.target().point_indices.end()) {
+        pose_valid_ = false;
+        p.mark_unsolvable();
+        tools::logger()->debug("[BuffSolver] SZU 角点缺少原始编号: {}", expected_index);
+        return;
+      }
+      const size_t point_index = static_cast<size_t>(
+        std::distance(p.target().point_indices.begin(), it));
+      if (point_index >= p.target().points.size()) {
+        pose_valid_ = false;
+        p.mark_unsolvable();
+        tools::logger()->debug("[BuffSolver] SZU 角点编号与坐标数量不一致");
+        return;
+      }
+      image_points_corners.emplace_back(p.target().points[point_index]);
+    }
+  } else {
+    image_points_corners.assign(p.target().points.begin(), p.target().points.begin() + 4);
   }
   const std::vector<cv::Point3f> object_points_corners(
     OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
@@ -79,6 +96,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   };
 
   PnpCandidate best_geometry;
+  PnpCandidate best_continuous;
   const auto evaluate_pose = [&](const std::vector<cv::Point2f> & candidate_points,
                                  const cv::Vec3d & candidate_rvec,
                                  const cv::Vec3d & candidate_tvec) {
@@ -136,13 +154,18 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       destination.valid = true;
     };
 
-    // 先按五点重投影误差选择，误差接近时再用跨帧连续性打破平局。
-    const bool materially_better = !best_geometry.valid || score < best_geometry.score - 2.0;
-    const bool near_tie_better =
-      best_geometry.valid && std::abs(score - best_geometry.score) <= 2.0 &&
-      continuity_score < best_geometry.continuity_score;
-    if (materially_better || near_tie_better) {
+    // 保留残差最小的候选，首帧或连续性失效时使用它恢复跟踪。
+    if (!best_geometry.valid || score < best_geometry.score) {
       save_candidate(best_geometry);
+    }
+
+    // 已有有效姿态时，只在误差合格的候选中优先选择最接近上一帧的姿态。
+    // 四点共面存在镜像解，单帧残差不能保证解在帧间连续。
+    const bool reprojection_valid = !use_szu_point_indices ||
+                                    (corner_error <= 8.0 && r_error <= 20.0);
+    if (use_szu_point_indices && pose_valid_ && reprojection_valid &&
+        (!best_continuous.valid || continuity_score < best_continuous.continuity_score)) {
+      save_candidate(best_continuous);
     }
   };
 
@@ -192,23 +215,9 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     }
   };
 
-  if (use_szu_point_indices) {
-    // 四个角点存在环向和正反两个合法排列，全部评估后由重投影误差选择。
-    for (int reversed = 0; reversed < 2; ++reversed) {
-      for (int shift = 0; shift < 4; ++shift) {
-        std::vector<cv::Point2f> candidate_points(4);
-        for (int i = 0; i < 4; ++i) {
-          const int index = reversed ? (shift - i + 4) % 4 : (shift + i) % 4;
-          candidate_points[i] = image_points_corners[index];
-        }
-        try_candidate(candidate_points);
-      }
-    }
-  } else {
-    try_candidate(image_points_corners);
-  }
+  try_candidate(image_points_corners);
 
-  const PnpCandidate & best = best_geometry;
+  const PnpCandidate & best = best_continuous.valid ? best_continuous : best_geometry;
   if (!best.valid) {
     pose_valid_ = false;
     p.mark_unsolvable();
@@ -289,6 +298,13 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     std::hypot(p.blade_xyz_in_world[0], p.blade_xyz_in_world[1]);
 
   p.ypr_in_world = tools::eulers(R_buff2world, 2, 1, 0);
+  if (!p.xyz_in_world.allFinite() || !p.ypd_in_world.allFinite() ||
+      !p.blade_xyz_in_world.allFinite() || !p.blade_ypd_in_world.allFinite() ||
+      !p.ypr_in_world.allFinite()) {
+    tools::logger()->debug("[BuffSolver] PnP 坐标或姿态出现非有限值");
+    p.mark_unsolvable();
+    pose_valid_ = false;
+  }
 }
 
 // 调试用

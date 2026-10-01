@@ -18,10 +18,13 @@ szu_confidence: 0.8
 szu_keypoint_confidence: 0.8
 szu_nms_distance: 30.0
 szu_min_valid_keypoints: 4
+# R 点集合的最大离群距离和目标叶片到 R 点的最小像素距离。
+szu_r_center_max_spread_px: 50.0
+szu_min_target_radius_px: 20.0
 
 # SZU README 配图的原始编号里，0/1/3/4 是符叶四角，2 是 R 标中心。
 # 默认强制四个符叶角点过关键点阈值；R 点参与中心估计，但不再要求 5/5 全部过阈值。
-# 只选择四个叶片角点；检测器会按图像轮廓重新排序，2 是 R 中心。
+# 只选择四个叶片角点并保留模型原始编号；PnP 按 README 的语义顺序恢复，2 是 R 中心。
 szu_corner_indices: [0, 1, 3, 4]
 szu_r_center_index: 2
 szu_required_keypoint_indices: [0, 1, 3, 4]

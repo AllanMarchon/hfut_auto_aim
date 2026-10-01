@@ -44,6 +44,9 @@ public:
 
   bool is_unsolve() const;
 
+  // 只有经过连续有效观测确认后，目标才允许进入稳定跟踪。
+  bool is_tracking_ready() const;
+
   Eigen::VectorXd ekf_x() const;
 
   double spd = 0;  //调试用
@@ -71,6 +74,10 @@ protected:
   int lost_count_ = 0;
   bool have_start_timestamp_ = false;
   std::chrono::steady_clock::time_point start_timestamp_{};
+  int valid_count_ = 0;
+  bool tracking_ready_ = false;
+
+  bool state_is_finite() const;
 };
 
 /// SmallTarget子类

@@ -56,6 +56,8 @@ private:
   bool szu_debug_log_{false};
   int szu_debug_log_every_n_{60};
   int szu_debug_frame_{0};
+  double szu_r_center_max_spread_px_{50.0};
+  double szu_min_target_radius_px_{20.0};
   Track_status status_;
   int lose_;  // 丢失的次数
   std::optional<PowerRune> last_powerrune_ = std::nullopt;

@@ -66,6 +66,11 @@ public:
   double pnp_blade_horizontal_distance_m = 0.0;  // 待击打叶片中心的水平距离
   cv::Point2f pnp_r_projected_pixel{0.0F, 0.0F};  // PnP 反投影得到的 R 点
 
+  // 观测质量信息，由检测器在进入目标跟踪前填充。
+  double observation_quality = 0.0;
+  double r_center_consistency_px = 0.0;
+  double r_center_spread_px = 0.0;
+
   explicit PowerRune(
     std::vector<FanBlade> & ts, const cv::Point2f r_center,
     std::optional<PowerRune> last_powerrune);
