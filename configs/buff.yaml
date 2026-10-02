@@ -12,18 +12,37 @@ model: assets/yolo11_buff_int8.xml
 # SZU 26 能量机关五点模型。输出类别：0=待击打叶片，1=小符已击中叶片，2=大符已击中叶片。
 szu_model: assets/szu_rune_model_0624.onnx
 device: GPU
+# 只影响 SZU 打符内部预处理；普通自瞄仍使用原始相机图像。4:3 模型在 5:4 相机上先中心裁剪。
+szu_preprocess_mode: center_crop
 confidence: 0.7
 iou_threshold: 0.4
+# 类别和关键点阈值沿用模型 README 默认值；传统阶段只负责局部几何修正。
 szu_confidence: 0.8
 szu_keypoint_confidence: 0.8
 szu_nms_distance: 30.0
+# 传统阶段的候选入口只要求至少 3 个网络点有效，传统精修失败时保留网络点。
+szu_traditional_min_valid_keypoints: 3
+# 关闭传统阶段时使用的严格备用门槛。
 szu_min_valid_keypoints: 4
+# 网络点先沿 R 点到符叶的径向搜索亮暗边界，再用结构张量做备用亚像素精修；失败时保留网络原点。
+szu_traditional_refine: true
+szu_traditional_r_refine: true
+szu_traditional_corner_window: 5
+szu_traditional_max_shift_px: 8.0
+# R 点使用四角平面几何和局部亮斑做小幅融合，偏差过大时保留网络 R 点。
+szu_traditional_r_max_shift_px: 24.0
 # R 点集合的最大离群距离和目标叶片到 R 点的最小像素距离。
 szu_r_center_max_spread_px: 50.0
 szu_min_target_radius_px: 20.0
+# 默认只记录 R 点几何异常，不用经验阈值直接丢弃整帧。
+szu_reject_r_geometry: false
+# SZU 五点 PnP 的宽松保护阈值，避免关键点轻微抖动直接清空观测。
+szu_corner_reprojection_max_px: 15.0
+szu_r_reprojection_max_px: 50.0
 
 # SZU README 配图的原始编号里，0/1/3/4 是符叶四角，2 是 R 标中心。
-# 默认强制四个符叶角点过关键点阈值；R 点参与中心估计，但不再要求 5/5 全部过阈值。
+# 传统阶段关闭时强制四个符叶角点过关键点阈值；开启时允许三个网络点进入，由传统阶段尝试修正。
+# R 点参与中心估计，但不要求 5/5 全部过阈值。
 # 只选择四个叶片角点并保留模型原始编号；PnP 按 README 的语义顺序恢复，2 是 R 中心。
 szu_corner_indices: [0, 1, 3, 4]
 szu_r_center_index: 2

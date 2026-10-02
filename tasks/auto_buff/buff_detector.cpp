@@ -58,6 +58,8 @@ Buff_Detector::Buff_Detector(const std::string & config)
   szu_debug_log_ = yaml_bool(yaml, "szu_debug_log", szu_debug_log_);
   szu_debug_log_every_n_ =
     std::max(1, yaml_int(yaml, "szu_debug_log_every_n", szu_debug_log_every_n_));
+  szu_reject_r_geometry_ =
+    yaml_bool(yaml, "szu_reject_r_geometry", szu_reject_r_geometry_);
   szu_r_center_max_spread_px_ = yaml_double(
     yaml, "szu_r_center_max_spread_px", szu_r_center_max_spread_px_);
   szu_min_target_radius_px_ = yaml_double(
@@ -281,13 +283,20 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   }
   const auto target_center = target_fanblades.front().center;
   const double target_radius = cv::norm(target_center - r_center);
-  // R 点应该在不同叶片的预测位置附近；明显离群时拒绝整帧，避免污染姿态解算。
-  if (!std::isfinite(target_radius) || target_radius < szu_min_target_radius_px_ ||
-      r_center_spread > szu_r_center_max_spread_px_) {
+  const bool r_geometry_nonfinite = !std::isfinite(target_radius) ||
+                                    !std::isfinite(r_center_spread);
+  const bool r_geometry_outlier = target_radius < szu_min_target_radius_px_ ||
+                                  r_center_spread > szu_r_center_max_spread_px_;
+  // 先保留诊断信息；只有显式打开开关时才用这些经验阈值丢弃整帧。
+  if (r_geometry_nonfinite || (szu_reject_r_geometry_ && r_geometry_outlier)) {
     log_szu_debug(
       "r_center_invalid", stats, results.size(), target_fanblades.size(), other_fanblades.size());
     handle_lose();
     return std::nullopt;
+  }
+  if (r_geometry_outlier) {
+    log_szu_debug(
+      "r_center_warning", stats, results.size(), target_fanblades.size(), other_fanblades.size());
   }
   PowerRune powerrune(fanblades, r_center, last_powerrune_);
   powerrune.observation_quality = quality_sum / static_cast<double>(r_center_count);
@@ -328,11 +337,13 @@ void Buff_Detector::log_szu_debug(
 
   tools::logger()->info(
     "[Buff_Detector] szu frame={} stage={} anchors={} conf={} kpt={} required={} nms={} results={} "
-    "target={} other={} classes={}/{}/{} max_conf={:.3f} max_kpt={:.3f}",
+    "target={} other={} traditional={}/{}/{}/{}/{}/{}/{} classes={}/{}/{} max_conf={:.3f} max_kpt={:.3f}",
     szu_debug_frame_, stage, stats.anchors, stats.confidence_pass, stats.keypoint_pass,
     stats.required_keypoint_pass, stats.nms_output, raw_count, target_count, other_count,
-    stats.class_counts[0], stats.class_counts[1], stats.class_counts[2], stats.max_confidence,
-    stats.max_keypoint_confidence);
+    stats.traditional_attempted, stats.traditional_edge_refined, stats.traditional_corner_refined,
+    stats.traditional_geometry_pass, stats.traditional_r_refined, stats.traditional_r_geometry,
+    stats.traditional_corner_fallback, stats.class_counts[0],
+    stats.class_counts[1], stats.class_counts[2], stats.max_confidence, stats.max_keypoint_confidence);
 }
 
 std::optional<PowerRune> Buff_Detector::detect_debug(cv::Mat & bgr_img, cv::Point2f v)

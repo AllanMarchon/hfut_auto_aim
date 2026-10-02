@@ -56,6 +56,8 @@ private:
   bool szu_debug_log_{false};
   int szu_debug_log_every_n_{60};
   int szu_debug_frame_{0};
+  // R 点几何检查默认只做诊断，不直接丢弃整帧，避免把检测保护变成检测瓶颈。
+  bool szu_reject_r_geometry_{false};
   double szu_r_center_max_spread_px_{50.0};
   double szu_min_target_radius_px_{20.0};
   Track_status status_;

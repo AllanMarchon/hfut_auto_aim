@@ -26,6 +26,10 @@ public:
     std::vector<cv::Point2f> corners;
     std::vector<int> corner_indices;
     std::vector<float> keypoint_confidences;
+    // 记录传统阶段是否找到了局部边缘和几何中心，便于区分网络结果与精修结果。
+    int traditional_valid_corners = 0;
+    bool traditional_geometry_valid = false;
+    bool traditional_r_refined = false;
   };
 
   struct DebugStats
@@ -35,6 +39,13 @@ public:
     int keypoint_pass = 0;
     int required_keypoint_pass = 0;
     int nms_output = 0;
+    int traditional_attempted = 0;
+    int traditional_edge_refined = 0;
+    int traditional_corner_refined = 0;
+    int traditional_geometry_pass = 0;
+    int traditional_r_refined = 0;
+    int traditional_r_geometry = 0;
+    int traditional_corner_fallback = 0;
     std::array<int, 3> class_counts{0, 0, 0};
     float max_confidence = 0.0f;
     float max_keypoint_confidence = 0.0f;
@@ -47,10 +58,26 @@ public:
   const DebugStats & debug_stats() const { return debug_stats_; }
 
 private:
-  void preprocess_letterbox(
-    const cv::Mat & src, cv::Mat & dst, float & scale, int & pad_w, int & pad_h) const;
-  std::vector<Detection> postprocess(float scale, int pad_w, int pad_h, int orig_w, int orig_h);
+  void preprocess(
+    const cv::Mat & src, cv::Mat & dst, float & scale, int & pad_w, int & pad_h,
+    int & crop_x, int & crop_y) const;
+  std::vector<Detection> postprocess(
+    float scale, int pad_w, int pad_h, int crop_x, int crop_y, int orig_w, int orig_h);
   std::vector<Detection> nms(std::vector<Detection> & detections) const;
+  void refine_detections(const cv::Mat & image, std::vector<Detection> & detections);
+  bool refine_radial_edge(
+    const cv::Mat & gray, const cv::Mat & gradient_x, const cv::Mat & gradient_y,
+    const cv::Point2f & r_center, const cv::Point2f & seed, cv::Point2f & refined) const;
+  bool refine_corner_subpix(
+    const cv::Mat & gray, const cv::Mat & gradient_x, const cv::Mat & gradient_y,
+    const cv::Point2f & seed, cv::Point2f & refined) const;
+  bool estimate_geometric_r_center(
+    const std::vector<cv::Point2f> & corners, cv::Point2f & r_center) const;
+  bool refine_visual_r_center(
+    const cv::Mat & gray, const cv::Point2f & seed, const std::vector<cv::Point2f> & corners,
+    cv::Point2f & refined) const;
+  double corner_strength(
+    const cv::Mat & gradient_x, const cv::Mat & gradient_y, const cv::Point2f & point) const;
 
   ov::Core core_;
   std::shared_ptr<ov::Model> model_;
@@ -58,6 +85,7 @@ private:
   ov::InferRequest infer_request_;
 
   std::string device_{"CPU"};
+  std::string preprocess_mode_{"letterbox"};
   int input_width_{640};
   int input_height_{480};
   int output_channels_{0};
@@ -74,6 +102,12 @@ private:
   float keypoint_confidence_threshold_{0.8f};
   float nms_distance_threshold_{30.0f};
   int min_valid_keypoints_{4};
+  int traditional_min_valid_keypoints_{3};
+  bool traditional_refine_enabled_{true};
+  bool traditional_r_refine_enabled_{true};
+  int traditional_corner_window_{5};
+  float traditional_max_shift_px_{8.0f};
+  float traditional_r_max_shift_px_{24.0f};
   DebugStats debug_stats_;
 };
 

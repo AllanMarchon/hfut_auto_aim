@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <iterator>
+#include <stdexcept>
 
 #include "tools/logger.hpp"
 
@@ -12,6 +13,18 @@ namespace auto_buff
 Solver::Solver(const std::string & config_path) : R_gimbal2world_(Eigen::Matrix3d::Identity())
 {
   auto yaml = YAML::LoadFile(config_path);
+
+  szu_corner_reprojection_max_px_ = yaml["szu_corner_reprojection_max_px"]
+                                      ? yaml["szu_corner_reprojection_max_px"].as<double>()
+                                      : szu_corner_reprojection_max_px_;
+  szu_r_reprojection_max_px_ = yaml["szu_r_reprojection_max_px"]
+                                 ? yaml["szu_r_reprojection_max_px"].as<double>()
+                                 : szu_r_reprojection_max_px_;
+  if (!std::isfinite(szu_corner_reprojection_max_px_) ||
+      !std::isfinite(szu_r_reprojection_max_px_) || szu_corner_reprojection_max_px_ <= 0.0 ||
+      szu_r_reprojection_max_px_ <= 0.0) {
+    throw std::invalid_argument("SZU PnP 重投影误差阈值必须是有限正数");
+  }
 
   auto R_gimbal2imubody_data = yaml["R_gimbal2imubody"].as<std::vector<double>>();
   auto R_camera2gimbal_data = yaml["R_camera2gimbal"].as<std::vector<double>>();
@@ -161,8 +174,9 @@ void Solver::solve(std::optional<PowerRune> & ps) const
 
     // 已有有效姿态时，只在误差合格的候选中优先选择最接近上一帧的姿态。
     // 四点共面存在镜像解，单帧残差不能保证解在帧间连续。
-    const bool reprojection_valid = !use_szu_point_indices ||
-                                    (corner_error <= 8.0 && r_error <= 20.0);
+    const bool reprojection_valid =
+      !use_szu_point_indices || (corner_error <= szu_corner_reprojection_max_px_ &&
+                                 r_error <= szu_r_reprojection_max_px_);
     if (use_szu_point_indices && pose_valid_ && reprojection_valid &&
         (!best_continuous.valid || continuity_score < best_continuous.continuity_score)) {
       save_candidate(best_continuous);
@@ -224,7 +238,9 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     tools::logger()->debug("[BuffSolver] solvePnP 失败或返回非有限平移");
     return;
   }
-  if (use_szu_point_indices && (best.corner_error > 8.0 || best.r_error > 20.0)) {
+  if (use_szu_point_indices &&
+      (best.corner_error > szu_corner_reprojection_max_px_ ||
+       best.r_error > szu_r_reprojection_max_px_)) {
     pose_valid_ = false;
     p.mark_unsolvable();
     tools::logger()->debug(
