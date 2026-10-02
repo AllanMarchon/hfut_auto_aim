@@ -73,6 +73,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
 {
   if (!ps.has_value()) return;
   PowerRune & p = ps.value();
+  p.pnp_r_projection_valid = false;
   if (p.fanblades.empty() || p.target().points.size() < 4) {
     pose_valid_ = false;
     p.mark_unsolvable();
@@ -375,6 +376,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
         r_object_point, diagnostic_candidate->rvec, diagnostic_candidate->tvec, camera_matrix_,
         distort_coeffs_, diagnostic_projected_r);
       if (!diagnostic_projected_r.empty()) {
+        p.pnp_r_projected_pixel = diagnostic_projected_r.front();
+        p.pnp_r_projection_valid = true;
         log_r_source_diagnostics(
           "PnP 候选被拒绝的 R 来源诊断", diagnostic_projected_r.front(),
           diagnostic_candidate->corner_error);
@@ -425,6 +428,13 @@ void Solver::solve(std::optional<PowerRune> & ps) const
        (szu_use_r_in_pnp_ && best.r_error > szu_r_reprojection_max_px_))) {
     pose_valid_ = false;
     p.mark_unsolvable();
+    std::vector<cv::Point2f> rejected_projected_r;
+    cv::projectPoints(
+      r_object_point, best.rvec, best.tvec, camera_matrix_, distort_coeffs_, rejected_projected_r);
+    if (!rejected_projected_r.empty()) {
+      p.pnp_r_projected_pixel = rejected_projected_r.front();
+      p.pnp_r_projection_valid = true;
+    }
     tools::logger()->debug(
       "[BuffSolver] SZU 五点 PnP 重投影误差偏大: corners={:.2f}px R={:.2f}px",
       best.corner_error, best.r_error);
@@ -458,7 +468,10 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     r_object_point, rvec_, tvec_, camera_matrix_, distort_coeffs_, r_projected_point);
   p.pnp_r_reprojection_error_px =
     r_projected_point.empty() ? 0.0 : cv::norm(r_projected_point.front() - p.r_center);
-  if (!r_projected_point.empty()) p.pnp_r_projected_pixel = r_projected_point.front();
+  if (!r_projected_point.empty()) {
+    p.pnp_r_projected_pixel = r_projected_point.front();
+    p.pnp_r_projection_valid = true;
+  }
   if (use_szu_point_indices && !r_projected_point.empty() &&
       p.pnp_r_reprojection_error_px > szu_r_reprojection_max_px_) {
     log_r_source_diagnostics(

@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <Eigen/Core>
@@ -1213,27 +1214,51 @@ void drawArmors(cv::Mat& image, const std::list<auto_aim::Armor>& armors) {
   }
 }
 
-void drawPowerRune(cv::Mat& image, const std::optional<auto_buff::PowerRune>& rune) {
-  if (!rune.has_value()) return;
-  const auto& power_rune = rune.value();
-  cv::circle(image, power_rune.r_center, 5, cv::Scalar(0, 255, 255), cv::FILLED, cv::LINE_AA);
-  cv::putText(image, "2/R", power_rune.r_center + cv::Point2f(6, -6),
-              cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
-  if (power_rune.pnp_center_distance_m > 0.0 &&
-      std::isfinite(power_rune.pnp_r_projected_pixel.x) &&
-      std::isfinite(power_rune.pnp_r_projected_pixel.y)) {
-    // 黄色圆点是检测到的 R，紫色十字是四角 PnP 反投影得到的 R。
-    cv::drawMarker(
-      image, power_rune.pnp_r_projected_pixel, cv::Scalar(255, 0, 255), cv::MARKER_CROSS, 18, 2,
-      cv::LINE_AA);
-    cv::line(
-      image, power_rune.r_center, power_rune.pnp_r_projected_pixel, cv::Scalar(255, 0, 255), 1,
-      cv::LINE_AA);
-    cv::putText(image, "PnP-R", power_rune.pnp_r_projected_pixel + cv::Point2f(6, 16),
-                cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(255, 0, 255), 1, cv::LINE_AA);
-  }
+struct PowerRuneVisualBlade {
+  auto_buff::FanBlade_type type{auto_buff::_unlight};
+  cv::Point2f center{};
+  std::vector<cv::Point2f> points;
+  std::vector<int> point_indices;
+  int class_id{-1};
+  float confidence{0.0F};
+};
 
-  for (const auto& blade : power_rune.fanblades) {
+struct PowerRuneVisual {
+  bool valid{false};
+  cv::Point2f r_center{};
+  auto_buff::RPointDiagnostics r_points;
+  cv::Point2f pnp_r{};
+  bool pnp_r_valid{false};
+  bool pnp_candidate_rejected{false};
+  std::vector<PowerRuneVisualBlade> fanblades;
+};
+
+PowerRuneVisual makePowerRuneVisual(const auto_buff::PowerRune& rune) {
+  PowerRuneVisual visual;
+  visual.valid = true;
+  visual.r_center = rune.r_center;
+  visual.r_points = rune.r_point_diagnostics;
+  visual.pnp_r = rune.pnp_r_projected_pixel;
+  visual.pnp_r_valid = rune.pnp_r_projection_valid;
+  visual.pnp_candidate_rejected = rune.is_unsolve();
+  visual.fanblades.reserve(rune.fanblades.size());
+  for (const auto& blade : rune.fanblades) {
+    PowerRuneVisualBlade blade_visual;
+    blade_visual.type = blade.type;
+    blade_visual.center = blade.center;
+    blade_visual.points = blade.points;
+    blade_visual.point_indices = blade.point_indices;
+    blade_visual.class_id = blade.class_id;
+    blade_visual.confidence = blade.confidence;
+    visual.fanblades.emplace_back(std::move(blade_visual));
+  }
+  return visual;
+}
+
+void drawPowerRune(cv::Mat& image, const PowerRuneVisual& rune) {
+  if (!rune.valid) return;
+
+  for (const auto& blade : rune.fanblades) {
     if (blade.type == auto_buff::_unlight || blade.points.empty()) continue;
     const cv::Scalar color = blade.type == auto_buff::_target
                                  ? cv::Scalar(0, 0, 255)
@@ -1256,6 +1281,71 @@ void drawPowerRune(cv::Mat& image, const std::optional<auto_buff::PowerRune>& ru
       std::snprintf(label, sizeof(label), "c%d %.2f", blade.class_id, blade.confidence);
       cv::putText(image, label, blade.center + cv::Point2f(6, 14), cv::FONT_HERSHEY_SIMPLEX,
                   0.45, color, 1, cv::LINE_AA);
+    }
+  }
+
+  struct PointEntry {
+    std::string name;
+    cv::Point2f point;
+    cv::Scalar color;
+    int marker;
+  };
+  std::vector<PointEntry> entries;
+  const auto finite_point = [](const cv::Point2f& point) {
+    return std::isfinite(point.x) && std::isfinite(point.y);
+  };
+  const auto add_source = [&](const char* name, const auto_buff::RPointSourceSummary& source,
+                              const cv::Scalar& color, int marker) {
+    if (source.count > 0 && finite_point(source.center)) {
+      entries.push_back({name, source.center, color, marker});
+    }
+  };
+  add_source("NET-R", rune.r_points.network, cv::Scalar(0, 255, 0), cv::MARKER_SQUARE);
+  add_source("GEO-R", rune.r_points.geometry, cv::Scalar(255, 0, 0), cv::MARKER_DIAMOND);
+  add_source("VIS-R", rune.r_points.visual, cv::Scalar(255, 255, 0), cv::MARKER_TILTED_CROSS);
+  if (finite_point(rune.r_center)) {
+    entries.push_back({"2/R", rune.r_center, cv::Scalar(0, 255, 255), cv::MARKER_STAR});
+  }
+  if (rune.pnp_r_valid && finite_point(rune.pnp_r)) {
+    entries.push_back({rune.pnp_candidate_rejected ? "PnP-R*" : "PnP-R", rune.pnp_r,
+                       cv::Scalar(255, 0, 255), cv::MARKER_CROSS});
+  }
+
+  if (rune.pnp_r_valid && finite_point(rune.pnp_r) && finite_point(rune.r_center)) {
+    cv::line(image, rune.r_center, rune.pnp_r, cv::Scalar(255, 0, 255), 1, cv::LINE_AA);
+  }
+  for (const auto& entry : entries) {
+    cv::drawMarker(image, entry.point, entry.color, entry.marker, 16, 2, cv::LINE_AA);
+  }
+  if (finite_point(rune.r_center)) {
+    cv::circle(image, rune.r_center, 3, cv::Scalar(0, 255, 255), cv::FILLED, cv::LINE_AA);
+    cv::putText(image, "2/R", rune.r_center + cv::Point2f(6, -6),
+                cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+  }
+
+  if (!entries.empty()) {
+    const int panel_width = std::min(190, std::max(1, image.cols));
+    const int row_height = 20;
+    const int panel_height = std::min(
+      image.rows, 24 + row_height * static_cast<int>(entries.size()));
+    const int panel_x = std::max(0, image.cols - panel_width - 6);
+    const int panel_y = std::max(0, std::min(12, image.rows - panel_height));
+    cv::rectangle(image, cv::Rect(panel_x, panel_y, panel_width, panel_height),
+                  cv::Scalar(0, 0, 0), cv::FILLED);
+    cv::rectangle(image, cv::Rect(panel_x, panel_y, panel_width, panel_height),
+                  cv::Scalar(100, 100, 100), 1);
+    cv::putText(image, "R source pixels", cv::Point(panel_x + 8, panel_y + 16),
+                cv::FONT_HERSHEY_SIMPLEX, 0.42, cv::Scalar(235, 235, 235), 1, cv::LINE_AA);
+    for (size_t i = 0; i < entries.size(); ++i) {
+      const auto& entry = entries[i];
+      const int y = panel_y + 35 + row_height * static_cast<int>(i);
+      cv::drawMarker(image, cv::Point(panel_x + 12, y - 4), entry.color, entry.marker, 9, 1,
+                     cv::LINE_AA);
+      char label[64];
+      std::snprintf(label, sizeof(label), "%s (%d,%d)", entry.name.c_str(),
+                    cvRound(entry.point.x), cvRound(entry.point.y));
+      cv::putText(image, label, cv::Point(panel_x + 23, y), cv::FONT_HERSHEY_SIMPLEX, 0.40,
+                  cv::Scalar(235, 235, 235), 1, cv::LINE_AA);
     }
   }
 }
@@ -1559,6 +1649,7 @@ int run(const Options& options) {
     std::list<auto_aim::Armor> armors;
     std::list<auto_aim::Target> targets;
     std::optional<auto_buff::PowerRune> power_rune;
+    PowerRuneVisual power_rune_visual;
     std::string track_state{"lost"};
     auto_buff::AimMotionCommand buff_motion;
     bool buff_motion_applied = false;
@@ -1586,6 +1677,9 @@ int run(const Options& options) {
       detection_count = power_rune.has_value() ? 1 : 0;
       if (power_rune.has_value()) {
         buff_solver->solve(power_rune);
+        if (options.display || web_server) {
+          power_rune_visual = makePowerRuneVisual(*power_rune);
+        }
         pnp_reprojection_error_px = power_rune->pnp_reprojection_error_px;
         pnp_r_reprojection_error_px = power_rune->pnp_r_reprojection_error_px;
         pnp_center_distance_m = power_rune->pnp_center_distance_m;
@@ -1786,7 +1880,7 @@ int run(const Options& options) {
     if (options.display || web_server) {
       cv::Mat visual = frame.image.clone();
       if (use_buff_task) {
-        drawPowerRune(visual, power_rune);
+        drawPowerRune(visual, power_rune_visual);
       } else {
         drawArmors(visual, armors);
       }

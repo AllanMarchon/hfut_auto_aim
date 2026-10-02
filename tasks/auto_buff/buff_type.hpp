@@ -81,6 +81,7 @@ public:
   double pnp_center_distance_m = 0.0;  // PnP R 中心到相机的直线距离
   double pnp_blade_horizontal_distance_m = 0.0;  // 待击打叶片中心的水平距离
   cv::Point2f pnp_r_projected_pixel{0.0F, 0.0F};  // PnP 反投影得到的 R 点
+  bool pnp_r_projection_valid = false;  // 当前帧有可显示的 PnP-R 投影，包括被拒绝的候选
 
   // 观测质量信息，由检测器在进入目标跟踪前填充。
   double observation_quality = 0.0;
