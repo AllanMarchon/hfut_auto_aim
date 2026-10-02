@@ -23,6 +23,13 @@ public:
     float quality = 0.0f;
     cv::Point2f center{0.0f, 0.0f};
     cv::Point2f r_center{0.0f, 0.0f};
+    cv::Point2f network_r_center{0.0f, 0.0f};
+    cv::Point2f geometric_r_center{0.0f, 0.0f};
+    cv::Point2f visual_r_center{0.0f, 0.0f};
+    float network_r_confidence = 0.0f;
+    bool network_r_valid = false;
+    bool geometric_r_valid = false;
+    bool visual_r_valid = false;
     std::vector<cv::Point2f> corners;
     std::vector<int> corner_indices;
     std::vector<float> keypoint_confidences;

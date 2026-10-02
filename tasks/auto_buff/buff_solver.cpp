@@ -236,7 +236,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       save_candidate(best_geometry);
     }
 
-    // R 点不参与五点迭代，但用来在八种角点对应关系中选择物理方向。
+    // R 点默认不参与五点迭代，只用于检验固定角点对应下的 IPPE 平面解。
     // 只记录四角误差和帧间变化合格的候选；R 误差优先，接近时才比较连续性。
     const bool r_candidate_valid = corner_candidate_valid &&
       r_error <= szu_r_reprojection_max_px_ + szu_r_reprojection_margin_px_ &&
@@ -304,22 +304,46 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     }
   };
 
-  if (use_szu_point_indices) {
-    // 先按网络原始编号恢复一组语义顺序，再枚举循环起点和方向。
-    // 四个共面点单独拟合时八种对应关系都可能有很小的角点误差，R 点负责确认物理方向。
-    for (int reversed = 0; reversed < 2; ++reversed) {
-      for (int shift = 0; shift < 4; ++shift) {
-        std::vector<cv::Point2f> candidate_points(4);
-        for (int i = 0; i < 4; ++i) {
-          const int index = reversed ? (shift - i + 4) % 4 : (shift + i) % 4;
-          candidate_points[i] = image_points_corners[index];
-        }
-        try_candidate(candidate_points);
-      }
-    }
-  } else {
-    try_candidate(image_points_corners);
-  }
+  // SZU 模型的角点通道有固定语义，已按上、右、下、左恢复，不再枚举对称排列。
+  try_candidate(image_points_corners);
+
+  const auto log_r_source_diagnostics = [&](const char * stage, const cv::Point2f & pnp_r,
+                                             double corner_error) {
+    const auto source_error = [&](const RPointSourceSummary & source) {
+      return source.count > 0 ? cv::norm(pnp_r - source.center) : -1.0;
+    };
+    const auto source_delta = [](const RPointSourceSummary & a, const RPointSourceSummary & b) {
+      return a.count > 0 && b.count > 0 ? cv::norm(a.center - b.center) : -1.0;
+    };
+    const auto source_x = [](const RPointSourceSummary & source) {
+      return source.count > 0 ? source.center.x : -1.0F;
+    };
+    const auto source_y = [](const RPointSourceSummary & source) {
+      return source.count > 0 ? source.center.y : -1.0F;
+    };
+    const auto & r_diagnostics = p.r_point_diagnostics;
+    tools::logger()->debug(
+      "[BuffSolver] {}: corners={:.2f}px "
+      "R(final/net/geo/visual)={:.2f}/{:.2f}/{:.2f}/{:.2f}px "
+      "src_delta(net-geo/net-vis/geo-vis)={:.1f}/{:.1f}/{:.1f}px "
+      "pixels pnp=({:.1f},{:.1f}) net=({:.1f},{:.1f}) geo=({:.1f},{:.1f}) "
+      "visual=({:.1f},{:.1f}) final=({:.1f},{:.1f}) "
+      "spread(final/net/geo/vis)={:.1f}/{:.1f}/{:.1f}/{:.1f}px "
+      "observations={} count(net/geo/vis)={}/{}/{} net_conf={:.3f}",
+      stage, corner_error, cv::norm(pnp_r - p.r_center), source_error(r_diagnostics.network),
+      source_error(r_diagnostics.geometry), source_error(r_diagnostics.visual),
+      source_delta(r_diagnostics.network, r_diagnostics.geometry),
+      source_delta(r_diagnostics.network, r_diagnostics.visual),
+      source_delta(r_diagnostics.geometry, r_diagnostics.visual), pnp_r.x, pnp_r.y,
+      source_x(r_diagnostics.network), source_y(r_diagnostics.network),
+      source_x(r_diagnostics.geometry), source_y(r_diagnostics.geometry),
+      source_x(r_diagnostics.visual), source_y(r_diagnostics.visual), p.r_center.x, p.r_center.y,
+      p.r_center_spread_px,
+      r_diagnostics.network.spread_px, r_diagnostics.geometry.spread_px,
+      r_diagnostics.visual.spread_px, r_diagnostics.detection_count,
+      r_diagnostics.network.count, r_diagnostics.geometry.count, r_diagnostics.visual.count,
+      r_diagnostics.network_confidence);
+  };
 
   const PnpCandidate * best_ptr = nullptr;
   const bool had_previous_pose = pose_valid_;
@@ -342,6 +366,20 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   }
   if (best_ptr == nullptr) {
     p.mark_unsolvable();
+    const PnpCandidate * diagnostic_candidate = best_r_unconstrained.valid
+      ? &best_r_unconstrained
+      : (best_geometry.valid ? &best_geometry : nullptr);
+    if (use_szu_point_indices && diagnostic_candidate != nullptr) {
+      std::vector<cv::Point2f> diagnostic_projected_r;
+      cv::projectPoints(
+        r_object_point, diagnostic_candidate->rvec, diagnostic_candidate->tvec, camera_matrix_,
+        distort_coeffs_, diagnostic_projected_r);
+      if (!diagnostic_projected_r.empty()) {
+        log_r_source_diagnostics(
+          "PnP 候选被拒绝的 R 来源诊断", diagnostic_projected_r.front(),
+          diagnostic_candidate->corner_error);
+      }
+    }
     if (had_previous_pose) {
       if (better_r_candidate_rejected_by_continuity) {
         tools::logger()->debug(
@@ -421,10 +459,11 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   p.pnp_r_reprojection_error_px =
     r_projected_point.empty() ? 0.0 : cv::norm(r_projected_point.front() - p.r_center);
   if (!r_projected_point.empty()) p.pnp_r_projected_pixel = r_projected_point.front();
-  if (use_szu_point_indices && p.pnp_r_reprojection_error_px > szu_r_reprojection_max_px_) {
-    tools::logger()->debug(
-      "[BuffSolver] 四角 PnP 已通过，但 R 点不一致: corners={:.2f}px R={:.2f}px",
-      p.pnp_reprojection_error_px, p.pnp_r_reprojection_error_px);
+  if (use_szu_point_indices && !r_projected_point.empty() &&
+      p.pnp_r_reprojection_error_px > szu_r_reprojection_max_px_) {
+    log_r_source_diagnostics(
+      "四角 PnP 已通过，但 R 点不一致", r_projected_point.front(),
+      p.pnp_reprojection_error_px);
   }
   p.pnp_center_distance_m = std::sqrt(
     tvec_[0] * tvec_[0] + tvec_[1] * tvec_[1] + tvec_[2] * tvec_[2]);

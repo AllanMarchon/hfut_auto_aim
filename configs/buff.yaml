@@ -45,7 +45,7 @@ szu_r_reprojection_margin_px: 20.0
 szu_pose_max_jump_deg: 30.0
 szu_pose_max_translation_jump_m: 0.75
 szu_pose_reacquire_after_rejections: 20
-# R 点默认只用于确认八种角点对应关系，不参与五点迭代；设为 true 才启用五点迭代约束。
+# R 点用于检验固定角点对应下的平面 PnP 解；五点迭代暂不启用。
 szu_use_r_in_pnp: false
 
 # SZU README 配图的原始编号里，0/1/3/4 是符叶四角，2 是 R 标中心。

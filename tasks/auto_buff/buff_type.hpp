@@ -19,6 +19,22 @@ enum FanBlade_type { _target, _unlight, _light };
 enum Track_status { TRACK, TEM_LOSE, LOSE };
 enum RuneDetectorBackend { SP25, SZU };
 
+struct RPointSourceSummary
+{
+  cv::Point2f center{0.0F, 0.0F};
+  int count = 0;
+  double spread_px = 0.0;
+};
+
+struct RPointDiagnostics
+{
+  RPointSourceSummary network;
+  RPointSourceSummary geometry;
+  RPointSourceSummary visual;
+  int detection_count = 0;
+  double network_confidence = 0.0;
+};
+
 class FanBlade
 {
 public:
@@ -70,6 +86,7 @@ public:
   double observation_quality = 0.0;
   double r_center_consistency_px = 0.0;
   double r_center_spread_px = 0.0;
+  RPointDiagnostics r_point_diagnostics;
 
   explicit PowerRune(
     std::vector<FanBlade> & ts, const cv::Point2f r_center,

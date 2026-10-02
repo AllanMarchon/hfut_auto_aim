@@ -233,6 +233,11 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   cv::Point2f r_center_sum(0.0f, 0.0f);
   double quality_sum = 0.0;
   int r_center_count = 0;
+  std::vector<std::pair<cv::Point2f, double>> network_r_samples;
+  std::vector<std::pair<cv::Point2f, double>> geometric_r_samples;
+  std::vector<std::pair<cv::Point2f, double>> visual_r_samples;
+  double network_r_confidence_sum = 0.0;
+  double network_r_confidence_weight = 0.0;
 
   for (const auto & result : results) {
     if (result.corners.size() != 4) continue;
@@ -244,6 +249,17 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
     r_center_sum += result.r_center * static_cast<float>(quality);
     quality_sum += quality;
     ++r_center_count;
+    if (result.network_r_valid) {
+      network_r_samples.emplace_back(result.network_r_center, quality);
+      network_r_confidence_sum += result.network_r_confidence * quality;
+      network_r_confidence_weight += quality;
+    }
+    if (result.geometric_r_valid) {
+      geometric_r_samples.emplace_back(result.geometric_r_center, quality);
+    }
+    if (result.visual_r_valid) {
+      visual_r_samples.emplace_back(result.visual_r_center, quality);
+    }
     if (blade.type == _target) {
       target_fanblades.emplace_back(std::move(blade));
     } else {
@@ -275,6 +291,22 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   fanblades.insert(fanblades.end(), other_fanblades.begin(), other_fanblades.end());
 
   const auto r_center = r_center_sum * static_cast<float>(1.0 / quality_sum);
+  const auto summarize_r_source = [](
+                                 const std::vector<std::pair<cv::Point2f, double>> & samples) {
+    RPointSourceSummary summary;
+    double weight_sum = 0.0;
+    for (const auto & sample : samples) {
+      summary.center += sample.first * static_cast<float>(sample.second);
+      weight_sum += sample.second;
+    }
+    if (weight_sum <= 0.0) return summary;
+    summary.center *= static_cast<float>(1.0 / weight_sum);
+    summary.count = static_cast<int>(samples.size());
+    for (const auto & sample : samples) {
+      summary.spread_px = std::max(summary.spread_px, cv::norm(sample.first - summary.center));
+    }
+    return summary;
+  };
   double r_center_spread = 0.0;
   for (const auto & result : results) {
     if (result.corners.size() == 4) {
@@ -302,6 +334,14 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   powerrune.observation_quality = quality_sum / static_cast<double>(r_center_count);
   powerrune.r_center_consistency_px = target_radius;
   powerrune.r_center_spread_px = r_center_spread;
+  powerrune.r_point_diagnostics.network = summarize_r_source(network_r_samples);
+  powerrune.r_point_diagnostics.geometry = summarize_r_source(geometric_r_samples);
+  powerrune.r_point_diagnostics.visual = summarize_r_source(visual_r_samples);
+  powerrune.r_point_diagnostics.detection_count = r_center_count;
+  if (network_r_confidence_weight > 0.0) {
+    powerrune.r_point_diagnostics.network_confidence =
+      network_r_confidence_sum / network_r_confidence_weight;
+  }
 
   /// handle error
   if (powerrune.is_unsolve()) {

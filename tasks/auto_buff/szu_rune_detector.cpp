@@ -295,6 +295,11 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::postprocess(
         invalid = true;
         break;
       }
+      if (k == r_center_index_) {
+        detection.network_r_center = cv::Point2f(x, y);
+        detection.network_r_confidence = keypoint_confidence;
+        detection.network_r_valid = true;
+      }
       const bool coordinate_in_image =
         x >= 0.0f && y >= 0.0f && x <= static_cast<float>(orig_w - 1) &&
         y <= static_cast<float>(orig_h - 1);
@@ -468,17 +473,21 @@ void SzuRuneDetector::refine_detections(
     for (const auto & corner : detection.corners) detection.center += corner;
     detection.center *= 0.25F;
 
-    cv::Point2f geometric_r_center;
+    cv::Point2f geometric_r_center{0.0F, 0.0F};
     const bool geometric_r_valid =
       detection.traditional_geometry_valid &&
       estimate_geometric_r_center(detection.corners, geometric_r_center);
+    detection.geometric_r_center = geometric_r_center;
+    detection.geometric_r_valid = geometric_r_valid;
     if (geometric_r_valid) {
       ++debug_stats_.traditional_geometry_pass;
     }
 
-    cv::Point2f visual_r_center;
+    cv::Point2f visual_r_center{0.0F, 0.0F};
     const bool visual_r_valid = traditional_r_refine_enabled_ &&
       refine_visual_r_center(gray, detection.r_center, detection.corners, visual_r_center);
+    detection.visual_r_center = visual_r_center;
+    detection.visual_r_valid = visual_r_valid;
     if (visual_r_valid) ++debug_stats_.traditional_r_geometry;
 
     const cv::Point2f network_r_center = detection.r_center;
