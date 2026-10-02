@@ -110,9 +110,11 @@ void Solver::solve(std::optional<PowerRune> & ps) const
 
   PnpCandidate best_geometry;
   PnpCandidate best_continuous;
+  PnpCandidate best_four_corner;
   const auto evaluate_pose = [&](const std::vector<cv::Point2f> & candidate_points,
                                  const cv::Vec3d & candidate_rvec,
-                                 const cv::Vec3d & candidate_tvec) {
+                                 const cv::Vec3d & candidate_tvec,
+                                 bool four_corner_initial) {
     if (!std::isfinite(candidate_tvec[0]) || !std::isfinite(candidate_tvec[1]) ||
         !std::isfinite(candidate_tvec[2]) || candidate_tvec[2] <= 0.0) {
       return;
@@ -167,6 +169,12 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       destination.valid = true;
     };
 
+    // 单独保留四角初始解，用来判断 R 点是否把本来正确的四角姿态拉坏。
+    if (four_corner_initial &&
+        (!best_four_corner.valid || corner_error < best_four_corner.corner_error)) {
+      save_candidate(best_four_corner);
+    }
+
     // 保留残差最小的候选，首帧或连续性失效时使用它恢复跟踪。
     if (!best_geometry.valid || score < best_geometry.score) {
       save_candidate(best_geometry);
@@ -190,7 +198,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       const bool solved = cv::solvePnP(
         object_points_corners, candidate_points, camera_matrix_, distort_coeffs_, candidate_rvec,
         candidate_tvec, false, cv::SOLVEPNP_IPPE);
-      if (solved) evaluate_pose(candidate_points, candidate_rvec, candidate_tvec);
+      if (solved) evaluate_pose(candidate_points, candidate_rvec, candidate_tvec, true);
       return;
     }
 
@@ -224,8 +232,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       const bool refined = cv::solvePnP(
         szu_object_points, image_points, camera_matrix_, distort_coeffs_, refined_rvec,
         refined_tvec, true, cv::SOLVEPNP_ITERATIVE);
-      evaluate_pose(candidate_points, initial_rvec, initial_tvec);
-      if (refined) evaluate_pose(candidate_points, refined_rvec, refined_tvec);
+      evaluate_pose(candidate_points, initial_rvec, initial_tvec, true);
+      if (refined) evaluate_pose(candidate_points, refined_rvec, refined_tvec, false);
     }
   };
 
@@ -246,6 +254,11 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     tools::logger()->debug(
       "[BuffSolver] SZU 五点 PnP 重投影误差偏大: corners={:.2f}px R={:.2f}px",
       best.corner_error, best.r_error);
+    if (best_four_corner.valid) {
+      tools::logger()->debug(
+        "[BuffSolver] 四角初始解诊断: corners={:.2f}px R={:.2f}px",
+        best_four_corner.corner_error, best_four_corner.r_error);
+    }
     return;
   }
 
