@@ -39,6 +39,8 @@ szu_reject_r_geometry: false
 # SZU 五点 PnP 的宽松保护阈值，避免关键点轻微抖动直接清空观测。
 szu_corner_reprojection_max_px: 15.0
 szu_r_reprojection_max_px: 50.0
+# 默认不让当前不一致的 R 点拉坏四角姿态；设为 true 才启用五点迭代约束。
+szu_use_r_in_pnp: false
 
 # SZU README 配图的原始编号里，0/1/3/4 是符叶四角，2 是 R 标中心。
 # 传统阶段关闭时强制四个符叶角点过关键点阈值；开启时允许三个网络点进入，由传统阶段尝试修正。

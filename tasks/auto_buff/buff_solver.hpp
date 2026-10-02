@@ -40,6 +40,7 @@ private:
   mutable bool pose_valid_{false};
   double szu_corner_reprojection_max_px_{15.0};
   double szu_r_reprojection_max_px_{50.0};
+  bool szu_use_r_in_pnp_{false};
 
   // 打符叶片四角的菱形几何模型，原点为 R 中心；SZU 映射在求解时按 [1, 0, 3, 4] 恢复。
   const std::vector<cv::Point3f> OBJECT_POINTS = {

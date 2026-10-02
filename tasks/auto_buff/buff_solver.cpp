@@ -20,6 +20,9 @@ Solver::Solver(const std::string & config_path) : R_gimbal2world_(Eigen::Matrix3
   szu_r_reprojection_max_px_ = yaml["szu_r_reprojection_max_px"]
                                  ? yaml["szu_r_reprojection_max_px"].as<double>()
                                  : szu_r_reprojection_max_px_;
+  szu_use_r_in_pnp_ = yaml["szu_use_r_in_pnp"]
+                        ? yaml["szu_use_r_in_pnp"].as<bool>()
+                        : szu_use_r_in_pnp_;
   if (!std::isfinite(szu_corner_reprojection_max_px_) ||
       !std::isfinite(szu_r_reprojection_max_px_) || szu_corner_reprojection_max_px_ <= 0.0 ||
       szu_r_reprojection_max_px_ <= 0.0) {
@@ -157,7 +160,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
                          0.25 * translation_delta_norm;
     }
 
-    const double score = use_szu_point_indices ? r_error + 0.25 * corner_error : corner_error;
+    const bool use_r_constraint = use_szu_point_indices && szu_use_r_in_pnp_;
+    const double score = use_r_constraint ? r_error + 0.25 * corner_error : corner_error;
     const auto save_candidate = [&](PnpCandidate & destination) {
       destination.rvec = candidate_rvec;
       destination.tvec = candidate_tvec;
@@ -183,8 +187,9 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     // 已有有效姿态时，只在误差合格的候选中优先选择最接近上一帧的姿态。
     // 四点共面存在镜像解，单帧残差不能保证解在帧间连续。
     const bool reprojection_valid =
-      !use_szu_point_indices || (corner_error <= szu_corner_reprojection_max_px_ &&
-                                 r_error <= szu_r_reprojection_max_px_);
+      !use_szu_point_indices ||
+      (corner_error <= szu_corner_reprojection_max_px_ &&
+       (!szu_use_r_in_pnp_ || r_error <= szu_r_reprojection_max_px_));
     if (use_szu_point_indices && pose_valid_ && reprojection_valid &&
         (!best_continuous.valid || continuity_score < best_continuous.continuity_score)) {
       save_candidate(best_continuous);
@@ -202,7 +207,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       return;
     }
 
-    // 先用四角 IPPE 得到两个平面姿态，再用 R 点对每个姿态做一次迭代细化。
+    // 先用四角 IPPE 得到平面姿态；R 点只有显式开启时才参与迭代细化。
     std::vector<cv::Mat> candidate_rvecs;
     std::vector<cv::Mat> candidate_tvecs;
     const int solution_count = cv::solvePnPGeneric(
@@ -225,15 +230,17 @@ void Solver::solve(std::optional<PowerRune> & ps) const
         tvec_mat.at<double>(0, 0), tvec_mat.at<double>(1, 0),
         tvec_mat.at<double>(2, 0)};
 
-      std::vector<cv::Point2f> image_points = candidate_points;
-      image_points.emplace_back(p.r_center);
-      cv::Vec3d refined_rvec = initial_rvec;
-      cv::Vec3d refined_tvec = initial_tvec;
-      const bool refined = cv::solvePnP(
-        szu_object_points, image_points, camera_matrix_, distort_coeffs_, refined_rvec,
-        refined_tvec, true, cv::SOLVEPNP_ITERATIVE);
       evaluate_pose(candidate_points, initial_rvec, initial_tvec, true);
-      if (refined) evaluate_pose(candidate_points, refined_rvec, refined_tvec, false);
+      if (szu_use_r_in_pnp_) {
+        std::vector<cv::Point2f> image_points = candidate_points;
+        image_points.emplace_back(p.r_center);
+        cv::Vec3d refined_rvec = initial_rvec;
+        cv::Vec3d refined_tvec = initial_tvec;
+        const bool refined = cv::solvePnP(
+          szu_object_points, image_points, camera_matrix_, distort_coeffs_, refined_rvec,
+          refined_tvec, true, cv::SOLVEPNP_ITERATIVE);
+        if (refined) evaluate_pose(candidate_points, refined_rvec, refined_tvec, false);
+      }
     }
   };
 
@@ -248,7 +255,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   }
   if (use_szu_point_indices &&
       (best.corner_error > szu_corner_reprojection_max_px_ ||
-       best.r_error > szu_r_reprojection_max_px_)) {
+       (szu_use_r_in_pnp_ && best.r_error > szu_r_reprojection_max_px_))) {
     pose_valid_ = false;
     p.mark_unsolvable();
     tools::logger()->debug(
@@ -266,7 +273,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   tvec_ = best.tvec;
   pose_valid_ = true;
 
-  // SZU 最终姿态由四角和 R 点共同约束；SP25 保持原四角路径。
+  // SZU 默认由四角求姿态，R 点保留为一致性诊断；显式开启时才使用五点约束。
   std::vector<cv::Point2f> projected_points;
   cv::projectPoints(
     object_points_corners, rvec_, tvec_, camera_matrix_, distort_coeffs_, projected_points);
@@ -284,6 +291,11 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   p.pnp_r_reprojection_error_px =
     r_projected_point.empty() ? 0.0 : cv::norm(r_projected_point.front() - p.r_center);
   if (!r_projected_point.empty()) p.pnp_r_projected_pixel = r_projected_point.front();
+  if (use_szu_point_indices && p.pnp_r_reprojection_error_px > szu_r_reprojection_max_px_) {
+    tools::logger()->debug(
+      "[BuffSolver] 四角 PnP 已通过，但 R 点不一致: corners={:.2f}px R={:.2f}px",
+      p.pnp_reprojection_error_px, p.pnp_r_reprojection_error_px);
+  }
   p.pnp_center_distance_m = std::sqrt(
     tvec_[0] * tvec_[0] + tvec_[1] * tvec_[1] + tvec_[2] * tvec_[2]);
   if (!std::isfinite(p.pnp_reprojection_error_px) ||
