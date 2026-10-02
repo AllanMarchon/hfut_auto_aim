@@ -95,10 +95,10 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   }
   const std::vector<cv::Point3f> object_points_corners(
     OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
-  // SZU 的第 2 个关键点是旋转中心，对应模型中的 700 mm 平面点；最后一个点是坐标基准点。
-  const std::vector<cv::Point3f> r_object_point{OBJECT_POINTS[4]};
+  // R 标中心是模型坐标原点，700 mm 点是待击打叶片中心。
+  const std::vector<cv::Point3f> r_object_point{OBJECT_POINTS.back()};
   std::vector<cv::Point3f> szu_object_points = object_points_corners;
-  szu_object_points.emplace_back(OBJECT_POINTS[4]);
+  szu_object_points.emplace_back(OBJECT_POINTS.back());
 
   struct PnpCandidate
   {
@@ -285,7 +285,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   }
   p.pnp_reprojection_error_px =
     std::sqrt(squared_error / static_cast<double>(projected_points.size()));
-  // R 点是能量机关旋转中心，对应模型中的 700 mm 平面点；坐标基准点仍用于平移解算。
+  // R 点是能量机关旋转中心，对应模型坐标原点；700 mm 点是待击打叶片中心。
   std::vector<cv::Point2f> r_projected_point;
   cv::projectPoints(
     r_object_point, rvec_, tvec_, camera_matrix_, distort_coeffs_, r_projected_point);

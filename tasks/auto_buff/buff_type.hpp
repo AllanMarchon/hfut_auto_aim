@@ -62,7 +62,7 @@ public:
   // PnP 诊断信息，由 Solver 填充；与跟踪状态分离，便于排查距离问题。
   double pnp_reprojection_error_px = 0.0;
   double pnp_r_reprojection_error_px = 0.0;
-  double pnp_center_distance_m = 0.0;  // PnP 坐标基准点到相机的直线距离
+  double pnp_center_distance_m = 0.0;  // PnP R 中心到相机的直线距离
   double pnp_blade_horizontal_distance_m = 0.0;  // 待击打叶片中心的水平距离
   cv::Point2f pnp_r_projected_pixel{0.0F, 0.0F};  // PnP 反投影得到的 R 点
 
