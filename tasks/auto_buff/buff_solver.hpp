@@ -20,6 +20,8 @@ public:
 
   void set_R_gimbal2world(const Eigen::Quaterniond & q);
 
+  void reset_pose() const;
+
   void solve(std::optional<PowerRune> & ps) const;
 
   // 调试用

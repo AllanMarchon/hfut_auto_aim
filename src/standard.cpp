@@ -60,6 +60,7 @@ void onSignal(int) { g_stop.store(true); }
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kRadToDeg = 180.0 / kPi;
+constexpr int kBuffPoseResetAfterMissingFrames = 7;
 
 struct Options {
   std::string hardware_config{"configs/hardware.yaml"};
@@ -1551,6 +1552,7 @@ int run(const Options& options) {
   const auto run_start = std::chrono::steady_clock::now();
   uint64_t frames = 0;
   int processed = 0;
+  int buff_pose_missing_frames = 0;
   const auto elapsedMs = [](const auto& start, const auto& end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
   };
@@ -1692,6 +1694,16 @@ int run(const Options& options) {
           pnp_roll_deg = power_rune->ypr_in_world[2] * kRadToDeg;
         }
         if (power_rune->is_unsolve()) power_rune.reset();
+      }
+      if (power_rune.has_value()) {
+        buff_pose_missing_frames = 0;
+      } else if (buff_pose_missing_frames < kBuffPoseResetAfterMissingFrames) {
+        ++buff_pose_missing_frames;
+        // 跟踪器连续丢失 7 帧会重置；PnP 同步清除旧姿态，避免重获时比较过期姿态。
+        if (buff_pose_missing_frames == kBuffPoseResetAfterMissingFrames) {
+          buff_solver->reset_pose();
+          std::fprintf(stderr, "[standard] 打符连续 7 帧无有效姿态，清除旧 PnP 姿态\n");
+        }
       }
       detect_end = std::chrono::steady_clock::now();
 

@@ -69,6 +69,12 @@ void Solver::set_R_gimbal2world(const Eigen::Quaterniond & q)
   R_gimbal2world_ = R_gimbal2imubody_.transpose() * R_imubody2imuabs * R_gimbal2imubody_;
 }
 
+void Solver::reset_pose() const
+{
+  pose_valid_ = false;
+  pose_rejection_count_ = 0;
+}
+
 void Solver::solve(std::optional<PowerRune> & ps) const
 {
   if (!ps.has_value()) return;
