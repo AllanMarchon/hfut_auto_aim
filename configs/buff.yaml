@@ -39,6 +39,12 @@ szu_reject_r_geometry: false
 # SZU 五点 PnP 的宽松保护阈值，避免关键点轻微抖动直接清空观测。
 szu_corner_reprojection_max_px: 15.0
 szu_r_reprojection_max_px: 50.0
+# R 点允许的诊断误差余量；只用于候选筛选，不会把 R 加入五点迭代。
+szu_r_reprojection_margin_px: 20.0
+# 连续帧姿态保护：超过这个旋转或平移变化的候选直接拒绝。
+szu_pose_max_jump_deg: 30.0
+szu_pose_max_translation_jump_m: 0.75
+szu_pose_reacquire_after_rejections: 20
 # R 点默认只用于确认八种角点对应关系，不参与五点迭代；设为 true 才启用五点迭代约束。
 szu_use_r_in_pnp: false
 

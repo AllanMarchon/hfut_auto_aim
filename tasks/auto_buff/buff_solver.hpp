@@ -38,8 +38,13 @@ private:
 
   mutable cv::Vec3d rvec_, tvec_;
   mutable bool pose_valid_{false};
+  mutable int pose_rejection_count_{0};
   double szu_corner_reprojection_max_px_{15.0};
   double szu_r_reprojection_max_px_{50.0};
+  double szu_r_reprojection_margin_px_{20.0};
+  double szu_pose_max_jump_rad_{30.0 * CV_PI / 180.0};
+  double szu_pose_max_translation_jump_m_{0.75};
+  int szu_pose_reacquire_after_rejections_{20};
   bool szu_use_r_in_pnp_{false};
 
   // 打符叶片四角的菱形几何模型，坐标原点为 R 中心；700 mm 点是待击打叶片中心。

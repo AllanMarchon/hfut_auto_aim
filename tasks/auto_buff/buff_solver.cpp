@@ -20,13 +20,30 @@ Solver::Solver(const std::string & config_path) : R_gimbal2world_(Eigen::Matrix3
   szu_r_reprojection_max_px_ = yaml["szu_r_reprojection_max_px"]
                                  ? yaml["szu_r_reprojection_max_px"].as<double>()
                                  : szu_r_reprojection_max_px_;
+  szu_r_reprojection_margin_px_ = yaml["szu_r_reprojection_margin_px"]
+                                    ? yaml["szu_r_reprojection_margin_px"].as<double>()
+                                    : szu_r_reprojection_margin_px_;
+  const double pose_max_jump_deg = yaml["szu_pose_max_jump_deg"]
+    ? yaml["szu_pose_max_jump_deg"].as<double>() : szu_pose_max_jump_deg_ * 180.0 / CV_PI;
+  szu_pose_max_jump_rad_ = pose_max_jump_deg * CV_PI / 180.0;
+  szu_pose_max_translation_jump_m_ = yaml["szu_pose_max_translation_jump_m"]
+    ? yaml["szu_pose_max_translation_jump_m"].as<double>()
+    : szu_pose_max_translation_jump_m_;
+  szu_pose_reacquire_after_rejections_ = yaml["szu_pose_reacquire_after_rejections"]
+    ? yaml["szu_pose_reacquire_after_rejections"].as<int>()
+    : szu_pose_reacquire_after_rejections_;
   szu_use_r_in_pnp_ = yaml["szu_use_r_in_pnp"]
                         ? yaml["szu_use_r_in_pnp"].as<bool>()
                         : szu_use_r_in_pnp_;
   if (!std::isfinite(szu_corner_reprojection_max_px_) ||
-      !std::isfinite(szu_r_reprojection_max_px_) || szu_corner_reprojection_max_px_ <= 0.0 ||
-      szu_r_reprojection_max_px_ <= 0.0) {
-    throw std::invalid_argument("SZU PnP 重投影误差阈值必须是有限正数");
+      !std::isfinite(szu_r_reprojection_max_px_) ||
+      !std::isfinite(szu_r_reprojection_margin_px_) ||
+      !std::isfinite(szu_pose_max_jump_rad_) ||
+      !std::isfinite(szu_pose_max_translation_jump_m_) ||
+      szu_corner_reprojection_max_px_ <= 0.0 || szu_r_reprojection_max_px_ <= 0.0 ||
+      szu_r_reprojection_margin_px_ < 0.0 || szu_pose_max_jump_rad_ <= 0.0 ||
+      szu_pose_max_translation_jump_m_ <= 0.0 || szu_pose_reacquire_after_rejections_ <= 0) {
+    throw std::invalid_argument("SZU PnP 配置必须是有限值且处于有效范围");
   }
 
   auto R_gimbal2imubody_data = yaml["R_gimbal2imubody"].as<std::vector<double>>();
@@ -109,13 +126,26 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     double r_error = 0.0;
     double score = 0.0;
     double continuity_score = 0.0;
+    double rotation_delta_rad = 0.0;
+    double translation_delta_m = 0.0;
     bool valid = false;
   };
 
   PnpCandidate best_geometry;
   PnpCandidate best_r_candidate;
+  PnpCandidate best_r_unconstrained;
   PnpCandidate best_continuous;
   PnpCandidate best_four_corner;
+  constexpr double r_error_tie_px = 3.0;
+  const auto prefer_r_candidate = [&](double candidate_r_error,
+                                      double candidate_continuity_score,
+                                      const PnpCandidate & current) {
+    if (!current.valid) return true;
+    // R 误差明显更小时优先相信物理对应关系，只有几像素内才用帧间连续性打破平局。
+    if (candidate_r_error + r_error_tie_px < current.r_error) return true;
+    if (current.r_error + r_error_tie_px < candidate_r_error) return false;
+    return candidate_continuity_score < current.continuity_score;
+  };
   const auto evaluate_pose = [&](const std::vector<cv::Point2f> & candidate_points,
                                  const cv::Vec3d & candidate_rvec,
                                  const cv::Vec3d & candidate_tvec,
@@ -147,6 +177,9 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     if (!std::isfinite(corner_error) || !std::isfinite(r_error)) return;
 
     double continuity_score = 0.0;
+    double candidate_rotation_delta_rad = 0.0;
+    double candidate_translation_delta_m = 0.0;
+    bool candidate_continuity_valid = true;
     if (use_szu_point_indices && pose_valid_) {
       cv::Mat candidate_rotation;
       cv::Mat previous_rotation;
@@ -158,8 +191,16 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       const double translation_delta_norm = std::sqrt(
         translation_delta[0] * translation_delta[0] + translation_delta[1] * translation_delta[1] +
         translation_delta[2] * translation_delta[2]);
-      continuity_score = cv::norm(candidate_rotation - previous_rotation) +
-                         0.25 * translation_delta_norm;
+      const cv::Mat relative_rotation = candidate_rotation * previous_rotation.t();
+      const double trace = relative_rotation.at<double>(0, 0) +
+        relative_rotation.at<double>(1, 1) + relative_rotation.at<double>(2, 2);
+      const double rotation_cos = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
+      const double rotation_delta_rad = std::acos(rotation_cos);
+      continuity_score = rotation_delta_rad + 0.25 * translation_delta_norm;
+      candidate_rotation_delta_rad = rotation_delta_rad;
+      candidate_translation_delta_m = translation_delta_norm;
+      candidate_continuity_valid = rotation_delta_rad <= szu_pose_max_jump_rad_ &&
+        translation_delta_norm <= szu_pose_max_translation_jump_m_;
     }
 
     const bool use_r_constraint = use_szu_point_indices && szu_use_r_in_pnp_;
@@ -172,6 +213,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       destination.r_error = r_error;
       destination.score = score;
       destination.continuity_score = continuity_score;
+      destination.rotation_delta_rad = candidate_rotation_delta_rad;
+      destination.translation_delta_m = candidate_translation_delta_m;
       destination.valid = true;
     };
 
@@ -181,15 +224,25 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       save_candidate(best_four_corner);
     }
 
+    const bool corner_candidate_valid = use_szu_point_indices &&
+      corner_error <= szu_corner_reprojection_max_px_;
+    if (corner_candidate_valid && prefer_r_candidate(
+          r_error, continuity_score, best_r_unconstrained)) {
+      save_candidate(best_r_unconstrained);
+    }
+
     // 保留只看四角误差的候选，R 点模型不一致时仍能保持原有四角链路。
     if (!best_geometry.valid || score < best_geometry.score) {
       save_candidate(best_geometry);
     }
 
     // R 点不参与五点迭代，但用来在八种角点对应关系中选择物理方向。
-    // 只记录四角误差合格的 R 候选，是否替换由最终的相对误差判断决定。
-    if (use_szu_point_indices && corner_error <= szu_corner_reprojection_max_px_ &&
-        (!best_r_candidate.valid || r_error < best_r_candidate.r_error)) {
+    // 只记录四角误差和帧间变化合格的候选；R 误差优先，接近时才比较连续性。
+    const bool r_candidate_valid = corner_candidate_valid &&
+      r_error <= szu_r_reprojection_max_px_ + szu_r_reprojection_margin_px_ &&
+      candidate_continuity_valid;
+    if (r_candidate_valid && prefer_r_candidate(
+          r_error, continuity_score, best_r_candidate)) {
       save_candidate(best_r_candidate);
     }
 
@@ -197,7 +250,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     // 四点共面存在镜像解，单帧残差不能保证解在帧间连续。
     const bool reprojection_valid =
       !use_szu_point_indices || corner_error <= szu_corner_reprojection_max_px_;
-    if (use_szu_point_indices && pose_valid_ && reprojection_valid &&
+    if (use_szu_point_indices && pose_valid_ && candidate_continuity_valid && reprojection_valid &&
         (!best_continuous.valid || continuity_score < best_continuous.continuity_score)) {
       save_candidate(best_continuous);
     }
@@ -268,21 +321,64 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     try_candidate(image_points_corners);
   }
 
-  const bool r_candidate_improves = use_szu_point_indices && best_r_candidate.valid &&
-    (!best_geometry.valid ||
-     best_r_candidate.r_error + 20.0 < best_geometry.r_error);
   const PnpCandidate * best_ptr = nullptr;
-  if (r_candidate_improves) {
+  const bool had_previous_pose = pose_valid_;
+  const bool better_r_candidate_rejected_by_continuity =
+    use_szu_point_indices && had_previous_pose && best_r_candidate.valid &&
+    best_r_unconstrained.valid &&
+    best_r_unconstrained.r_error + r_error_tie_px < best_r_candidate.r_error;
+  if (use_szu_point_indices && had_previous_pose) {
+    if (best_r_candidate.valid && !better_r_candidate_rejected_by_continuity) {
+      best_ptr = &best_r_candidate;
+    } else if (!better_r_candidate_rejected_by_continuity && best_continuous.valid &&
+               best_continuous.r_error <=
+                 szu_r_reprojection_max_px_ + szu_r_reprojection_margin_px_) {
+      best_ptr = &best_continuous;
+    }
+  } else if (use_szu_point_indices && best_r_candidate.valid) {
     best_ptr = &best_r_candidate;
-  } else if (best_continuous.valid) {
-    best_ptr = &best_continuous;
-  } else if (best_geometry.valid) {
+  } else if (!use_szu_point_indices && best_geometry.valid) {
     best_ptr = &best_geometry;
   }
   if (best_ptr == nullptr) {
-    pose_valid_ = false;
     p.mark_unsolvable();
-    tools::logger()->debug("[BuffSolver] solvePnP 失败或返回非有限平移");
+    if (had_previous_pose) {
+      if (better_r_candidate_rejected_by_continuity) {
+        tools::logger()->debug(
+          "[BuffSolver] 最低 R 误差候选被连续性门限挡住: best_R={:.2f}px "
+          "delta={:.1f}deg/{:.3f}m; 连续候选 R={:.2f}px，本帧不输出姿态",
+          best_r_unconstrained.r_error,
+          best_r_unconstrained.rotation_delta_rad * 180.0 / CV_PI,
+          best_r_unconstrained.translation_delta_m, best_r_candidate.r_error);
+      }
+      // 当前帧的姿态跳变超过限制时保留上一帧姿态，避免错误解污染跟踪器。
+      ++pose_rejection_count_;
+      if (best_geometry.valid) {
+        tools::logger()->debug(
+          "[BuffSolver] 拒绝 SZU PnP 候选: R={:.2f}px rotation_delta={:.1f}deg "
+          "translation_delta={:.3f}m rejected={}/{}，保留上一帧姿态",
+          best_geometry.r_error, best_geometry.rotation_delta_rad * 180.0 / CV_PI,
+          best_geometry.translation_delta_m, pose_rejection_count_,
+          szu_pose_reacquire_after_rejections_);
+      } else {
+        tools::logger()->debug(
+          "[BuffSolver] 本帧没有有效 SZU PnP 候选 rejected={}/{}，保留上一帧姿态",
+          pose_rejection_count_, szu_pose_reacquire_after_rejections_);
+      }
+      if (pose_rejection_count_ >= szu_pose_reacquire_after_rejections_) {
+        pose_valid_ = false;
+        pose_rejection_count_ = 0;
+        tools::logger()->debug("[BuffSolver] 连续姿态拒绝达到上限，等待 R 合格的新姿态重新初始化");
+      }
+    } else if (use_szu_point_indices) {
+      pose_valid_ = false;
+      tools::logger()->debug(
+        "[BuffSolver] SZU PnP 初始化候选的 R 误差超过 {:.1f}px，等待有效姿态",
+        szu_r_reprojection_max_px_ + szu_r_reprojection_margin_px_);
+    } else {
+      pose_valid_ = false;
+      tools::logger()->debug("[BuffSolver] solvePnP 失败或返回非有限平移");
+    }
     return;
   }
   const PnpCandidate & best = *best_ptr;
@@ -305,6 +401,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   rvec_ = best.rvec;
   tvec_ = best.tvec;
   pose_valid_ = true;
+  pose_rejection_count_ = 0;
 
   // SZU 默认由四角求姿态，R 点保留为一致性诊断；显式开启时才使用五点约束。
   std::vector<cv::Point2f> projected_points;
