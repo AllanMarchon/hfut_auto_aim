@@ -1661,6 +1661,7 @@ int run(const Options& options) {
     double pnp_r_reprojection_error_px = 0.0;
     double pnp_center_distance_m = 0.0;
     double pnp_blade_horizontal_distance_m = 0.0;
+    double pnp_blade_camera_distance_m = 0.0;
     double pnp_yaw_deg = 0.0;
     double pnp_pitch_deg = 0.0;
     double pnp_roll_deg = 0.0;
@@ -1684,6 +1685,7 @@ int run(const Options& options) {
         pnp_r_reprojection_error_px = power_rune->pnp_r_reprojection_error_px;
         pnp_center_distance_m = power_rune->pnp_center_distance_m;
         pnp_blade_horizontal_distance_m = power_rune->pnp_blade_horizontal_distance_m;
+        pnp_blade_camera_distance_m = power_rune->pnp_blade_camera_distance_m;
         if (!power_rune->is_unsolve()) {
           pnp_yaw_deg = power_rune->ypr_in_world[0] * kRadToDeg;
           pnp_pitch_deg = power_rune->ypr_in_world[1] * kRadToDeg;
@@ -1904,7 +1906,7 @@ int run(const Options& options) {
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg distance=%.3f "
-          "pnp=%.2fpx/%0.2fpx pnp_origin=%.3fm pnp_blade=%.3fm "
+          "pnp=%.2fpx/%0.2fpx pnp_origin=%.3fm pnp_blade=%.3fm pnp_blade_camera=%.3fm "
           "pnp_ypr=%.1f/%.1f/%.1fdeg "
           "sp_fire=%d fire=%d gate=%d latency=%.1fms "
           "timing=rx %.1f cam %.1f det %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
@@ -1920,8 +1922,8 @@ int run(const Options& options) {
           command.yaw_acc * kRadToDeg, command.pitch_acc * kRadToDeg,
           fire_gate.yaw_error_rad * kRadToDeg, fire_gate.pitch_error_rad * kRadToDeg,
           command.distance, pnp_reprojection_error_px, pnp_r_reprojection_error_px,
-          pnp_center_distance_m, pnp_blade_horizontal_distance_m, pnp_yaw_deg, pnp_pitch_deg,
-          pnp_roll_deg,
+          pnp_center_distance_m, pnp_blade_horizontal_distance_m, pnp_blade_camera_distance_m,
+          pnp_yaw_deg, pnp_pitch_deg, pnp_roll_deg,
           sp_command.shoot ? 1 : 0, command.fire_advice ? 1 : 0,
           fire_gate.blocked ? 1 : 0, elapsedMs(detect_start, aim_end),
           elapsedMs(serial_rx_start, serial_rx_end), elapsedMs(capture_start, capture_end),

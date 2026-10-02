@@ -528,6 +528,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   // 打符坐标系到相机坐标系
   Eigen::Vector3d xyz_in_camera = t_buff2camera;
   Eigen::Vector3d blade_xyz_in_camera = R_buff2camera * blade_xyz_in_buff + t_buff2camera;
+  p.pnp_blade_camera_distance_m = blade_xyz_in_camera.norm();
 
   // 相机坐标系到云台坐标系
   Eigen::Matrix3d R_buff2gimbal = R_camera2gimbal_ * R_buff2camera;
