@@ -361,12 +361,41 @@ void Solver::solve(std::optional<PowerRune> & ps) const
 
   const PnpCandidate * best_ptr = nullptr;
   const bool had_previous_pose = pose_valid_;
-  const bool better_r_candidate_rejected_by_continuity =
-    use_szu_point_indices && had_previous_pose && best_r_candidate.valid &&
+  const auto & r_diagnostics = p.r_point_diagnostics;
+  // 网络和视觉 R 相互印证时，才允许它们共同覆盖旧姿态的连续性判断。
+  constexpr double r_source_consensus_max_px = 12.0;
+  constexpr double strong_r_reprojection_max_px = 8.0;
+  const bool has_r_source_consensus =
+    r_diagnostics.network.count > 0 && r_diagnostics.visual.count > 0 &&
+    r_diagnostics.network_confidence >= 0.8 &&
+    cv::norm(r_diagnostics.network.center - r_diagnostics.visual.center) <=
+      r_source_consensus_max_px &&
     best_r_unconstrained.valid &&
-    best_r_unconstrained.r_error + r_error_tie_px < best_r_candidate.r_error;
+    cv::norm(best_r_unconstrained.projected_r - r_diagnostics.network.center) <=
+      r_source_consensus_max_px &&
+    cv::norm(best_r_unconstrained.projected_r - r_diagnostics.visual.center) <=
+      r_source_consensus_max_px;
+  const bool best_r_candidate_better_than_continuous =
+    best_r_unconstrained.valid &&
+    (!best_r_candidate.valid ||
+     best_r_unconstrained.r_error + r_error_tie_px < best_r_candidate.r_error);
+  const bool better_r_candidate_rejected_by_continuity =
+    use_szu_point_indices && had_previous_pose && best_r_candidate_better_than_continuous;
+  const bool accept_strong_r_reacquisition =
+    better_r_candidate_rejected_by_continuity && has_r_source_consensus &&
+    best_r_unconstrained.corner_error <= szu_corner_reprojection_max_px_ &&
+    best_r_unconstrained.r_error <= strong_r_reprojection_max_px &&
+    best_r_unconstrained.translation_delta_m <= szu_pose_max_translation_jump_m_;
   if (use_szu_point_indices && had_previous_pose) {
-    if (best_r_candidate.valid && !better_r_candidate_rejected_by_continuity) {
+    if (accept_strong_r_reacquisition) {
+      best_ptr = &best_r_unconstrained;
+      tools::logger()->debug(
+        "[BuffSolver] 网络与视觉 R 共识支持新姿态，接受 PnP 重获: R={:.2f}px "
+        "rotation_delta={:.1f}deg translation_delta={:.3f}m",
+        best_r_unconstrained.r_error,
+        best_r_unconstrained.rotation_delta_rad * 180.0 / CV_PI,
+        best_r_unconstrained.translation_delta_m);
+    } else if (best_r_candidate.valid && !better_r_candidate_rejected_by_continuity) {
       best_ptr = &best_r_candidate;
     } else if (!better_r_candidate_rejected_by_continuity && best_continuous.valid &&
                best_continuous.r_error <=
@@ -422,7 +451,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
           "delta={:.1f}deg/{:.3f}m; 连续候选 R={:.2f}px，本帧不输出姿态",
           best_r_unconstrained.r_error,
           best_r_unconstrained.rotation_delta_rad * 180.0 / CV_PI,
-          best_r_unconstrained.translation_delta_m, best_r_candidate.r_error);
+          best_r_unconstrained.translation_delta_m,
+          best_r_candidate.valid ? best_r_candidate.r_error : -1.0);
       }
       // 当前帧的姿态跳变超过限制时保留上一帧姿态，避免错误解污染跟踪器。
       ++pose_rejection_count_;
