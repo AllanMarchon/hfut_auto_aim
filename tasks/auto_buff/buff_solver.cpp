@@ -69,7 +69,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   image_points_corners.reserve(4);
   if (use_szu_point_indices) {
     // README 标注的环向顺序为 1(上)、0(右)、3(下)、4(左)。
-    // 直接按原始关键点编号恢复物理顺序，不能按像素极角或八种排列猜测。
+    // 先按原始关键点编号恢复一组物理顺序，后面再用 R 点确认方向。
     constexpr std::array<int, 4> szu_keypoint_order{1, 0, 3, 4};
     for (const int expected_index : szu_keypoint_order) {
       const auto it = std::find(
@@ -113,6 +113,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   };
 
   PnpCandidate best_geometry;
+  PnpCandidate best_r_candidate;
   PnpCandidate best_continuous;
   PnpCandidate best_four_corner;
   const auto evaluate_pose = [&](const std::vector<cv::Point2f> & candidate_points,
@@ -180,17 +181,22 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       save_candidate(best_four_corner);
     }
 
-    // 保留残差最小的候选，首帧或连续性失效时使用它恢复跟踪。
+    // 保留只看四角误差的候选，R 点模型不一致时仍能保持原有四角链路。
     if (!best_geometry.valid || score < best_geometry.score) {
       save_candidate(best_geometry);
+    }
+
+    // R 点不参与五点迭代，但用来在八种角点对应关系中选择物理方向。
+    // 只记录四角误差合格的 R 候选，是否替换由最终的相对误差判断决定。
+    if (use_szu_point_indices && corner_error <= szu_corner_reprojection_max_px_ &&
+        (!best_r_candidate.valid || r_error < best_r_candidate.r_error)) {
+      save_candidate(best_r_candidate);
     }
 
     // 已有有效姿态时，只在误差合格的候选中优先选择最接近上一帧的姿态。
     // 四点共面存在镜像解，单帧残差不能保证解在帧间连续。
     const bool reprojection_valid =
-      !use_szu_point_indices ||
-      (corner_error <= szu_corner_reprojection_max_px_ &&
-       (!szu_use_r_in_pnp_ || r_error <= szu_r_reprojection_max_px_));
+      !use_szu_point_indices || corner_error <= szu_corner_reprojection_max_px_;
     if (use_szu_point_indices && pose_valid_ && reprojection_valid &&
         (!best_continuous.valid || continuity_score < best_continuous.continuity_score)) {
       save_candidate(best_continuous);
@@ -245,15 +251,41 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     }
   };
 
-  try_candidate(image_points_corners);
+  if (use_szu_point_indices) {
+    // 先按网络原始编号恢复一组语义顺序，再枚举循环起点和方向。
+    // 四个共面点单独拟合时八种对应关系都可能有很小的角点误差，R 点负责确认物理方向。
+    for (int reversed = 0; reversed < 2; ++reversed) {
+      for (int shift = 0; shift < 4; ++shift) {
+        std::vector<cv::Point2f> candidate_points(4);
+        for (int i = 0; i < 4; ++i) {
+          const int index = reversed ? (shift - i + 4) % 4 : (shift + i) % 4;
+          candidate_points[i] = image_points_corners[index];
+        }
+        try_candidate(candidate_points);
+      }
+    }
+  } else {
+    try_candidate(image_points_corners);
+  }
 
-  const PnpCandidate & best = best_continuous.valid ? best_continuous : best_geometry;
-  if (!best.valid) {
+  const bool r_candidate_improves = use_szu_point_indices && best_r_candidate.valid &&
+    (!best_geometry.valid ||
+     best_r_candidate.r_error + 20.0 < best_geometry.r_error);
+  const PnpCandidate * best_ptr = nullptr;
+  if (r_candidate_improves) {
+    best_ptr = &best_r_candidate;
+  } else if (best_continuous.valid) {
+    best_ptr = &best_continuous;
+  } else if (best_geometry.valid) {
+    best_ptr = &best_geometry;
+  }
+  if (best_ptr == nullptr) {
     pose_valid_ = false;
     p.mark_unsolvable();
     tools::logger()->debug("[BuffSolver] solvePnP 失败或返回非有限平移");
     return;
   }
+  const PnpCandidate & best = *best_ptr;
   if (use_szu_point_indices &&
       (best.corner_error > szu_corner_reprojection_max_px_ ||
        (szu_use_r_in_pnp_ && best.r_error > szu_r_reprojection_max_px_))) {
