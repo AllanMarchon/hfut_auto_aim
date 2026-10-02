@@ -86,9 +86,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   std::vector<cv::Point2f> image_points_corners;
   image_points_corners.reserve(4);
   if (use_szu_point_indices) {
-    // README 标注的环向顺序为 1(上)、0(右)、3(下)、4(左)。
-    // 先按原始关键点编号恢复一组物理顺序，后面再用 R 点确认方向。
-    constexpr std::array<int, 4> szu_keypoint_order{1, 0, 3, 4};
+    // 模型坐标按顺时针排列：0 是远端，3 是顺时针侧点，4 是近端，1 是逆时针侧点。
+    constexpr std::array<int, 4> szu_keypoint_order{0, 3, 4, 1};
     for (const int expected_index : szu_keypoint_order) {
       const auto it = std::find(
         p.target().point_indices.begin(), p.target().point_indices.end(), expected_index);
@@ -122,6 +121,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   {
     cv::Vec3d rvec;
     cv::Vec3d tvec;
+    cv::Point2f projected_r{0.0F, 0.0F};
     std::vector<cv::Point2f> image_points;
     double corner_error = 0.0;
     double r_error = 0.0;
@@ -137,6 +137,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   PnpCandidate best_r_unconstrained;
   PnpCandidate best_continuous;
   PnpCandidate best_four_corner;
+  PnpCandidate best_five_point;
   constexpr double r_error_tie_px = 3.0;
   const auto prefer_r_candidate = [&](double candidate_r_error,
                                       double candidate_continuity_score,
@@ -209,6 +210,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     const auto save_candidate = [&](PnpCandidate & destination) {
       destination.rvec = candidate_rvec;
       destination.tvec = candidate_tvec;
+      destination.projected_r = projected_r.front();
       destination.image_points = candidate_points;
       destination.corner_error = corner_error;
       destination.r_error = r_error;
@@ -218,6 +220,11 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       destination.translation_delta_m = candidate_translation_delta_m;
       destination.valid = true;
     };
+
+    if (!four_corner_initial && use_r_constraint &&
+        (!best_five_point.valid || score < best_five_point.score)) {
+      save_candidate(best_five_point);
+    }
 
     // 单独保留四角初始解，用来判断 R 点是否把本来正确的四角姿态拉坏。
     if (four_corner_initial &&
@@ -305,7 +312,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     }
   };
 
-  // SZU 模型的角点通道有固定语义，已按上、右、下、左恢复，不再枚举对称排列。
+  // SZU 模型的角点通道有固定语义，已按外端、顺时针侧、内端、逆时针侧恢复。
   try_candidate(image_points_corners);
 
   const auto log_r_source_diagnostics = [&](const char * stage, const cv::Point2f & pnp_r,
@@ -367,6 +374,25 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   }
   if (best_ptr == nullptr) {
     p.mark_unsolvable();
+    if (use_szu_point_indices) {
+      const bool have_five_point = best_five_point.valid;
+      const bool five_point_corners_ok = have_five_point &&
+        best_five_point.corner_error <= szu_corner_reprojection_max_px_;
+      const bool five_point_r_ok = have_five_point &&
+        best_five_point.r_error <= szu_r_reprojection_max_px_;
+      const bool five_point_continuity_ok = have_five_point &&
+        best_five_point.rotation_delta_rad <= szu_pose_max_jump_rad_ &&
+        best_five_point.translation_delta_m <= szu_pose_max_translation_jump_m_;
+      tools::logger()->debug(
+        "[BuffSolver] 五点细化候选: enabled={} found={} corners={:.2f}px R={:.2f}px "
+        "pnp=({:.1f},{:.1f}) pass(corners/R/continuity)={}/{}/{}",
+        szu_use_r_in_pnp_, have_five_point,
+        have_five_point ? best_five_point.corner_error : -1.0,
+        have_five_point ? best_five_point.r_error : -1.0,
+        have_five_point ? best_five_point.projected_r.x : -1.0F,
+        have_five_point ? best_five_point.projected_r.y : -1.0F,
+        five_point_corners_ok, five_point_r_ok, five_point_continuity_ok);
+    }
     const PnpCandidate * diagnostic_candidate = best_r_unconstrained.valid
       ? &best_r_unconstrained
       : (best_geometry.valid ? &best_geometry : nullptr);

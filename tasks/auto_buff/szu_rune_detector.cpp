@@ -535,12 +535,12 @@ bool SzuRuneDetector::estimate_geometric_r_center(
 {
   if (corners.size() != 4) return false;
 
-  // detection.corners 的顺序是模型原始编号 [0, 1, 3, 4]：右、上、下、左。
-  // 透视变换必须改成环向顺序 [1, 0, 3, 4]：上、右、下、左。
+  // detection.corners 按原始编号 [0, 1, 3, 4] 保存：外端、逆时针侧、顺时针侧、内端。
+  // 透视变换按模型坐标顺时针顺序 [0, 3, 4, 1] 取点。
   const std::vector<cv::Point2f> object_points{
     {0.0F, 827.0F}, {127.0F, 700.0F}, {0.0F, 573.0F}, {-127.0F, 700.0F}};
   const std::vector<cv::Point2f> image_points{
-    corners[1], corners[0], corners[2], corners[3]};
+    corners[0], corners[2], corners[3], corners[1]};
   // 四角模型的坐标原点就是 R 中心，700 mm 高度对应待击打叶片中心。
   const std::vector<cv::Point2f> r_object_point{{0.0F, 0.0F}};
   try {
