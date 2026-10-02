@@ -113,20 +113,30 @@ Eigen::MatrixXd xyz2ypd_jacobian(const Eigen::Vector3d & xyz)
 {
   auto x = xyz[0], y = xyz[1], z = xyz[2];
 
-  auto dyaw_dx = -y / (x * x + y * y);
-  auto dyaw_dy = x / (x * x + y * y);
+  // 水平距离为零时，偏航角导数没有定义，返回零矩阵让滤波器跳过该方向更新。
+  const double horizontal_square = x * x + y * y;
+  const double distance_square = horizontal_square + z * z;
+  Eigen::MatrixXd J = Eigen::MatrixXd::Zero(3, 3);
+  if (!xyz.allFinite() || !std::isfinite(horizontal_square) ||
+      !std::isfinite(distance_square) || horizontal_square <= 1e-12 ||
+      distance_square <= 1e-12) {
+    return J;
+  }
+
+  auto dyaw_dx = -y / horizontal_square;
+  auto dyaw_dy = x / horizontal_square;
   auto dyaw_dz = 0.0;
 
-  auto dpitch_dx = -(x * z) / ((z * z / (x * x + y * y) + 1) * std::pow((x * x + y * y), 1.5));
-  auto dpitch_dy = -(y * z) / ((z * z / (x * x + y * y) + 1) * std::pow((x * x + y * y), 1.5));
-  auto dpitch_dz = 1 / ((z * z / (x * x + y * y) + 1) * std::pow((x * x + y * y), 0.5));
+  auto dpitch_dx = -(x * z) / ((z * z / horizontal_square + 1) * std::pow(horizontal_square, 1.5));
+  auto dpitch_dy = -(y * z) / ((z * z / horizontal_square + 1) * std::pow(horizontal_square, 1.5));
+  auto dpitch_dz = 1 / ((z * z / horizontal_square + 1) * std::pow(horizontal_square, 0.5));
 
-  auto ddistance_dx = x / std::pow((x * x + y * y + z * z), 0.5);
-  auto ddistance_dy = y / std::pow((x * x + y * y + z * z), 0.5);
-  auto ddistance_dz = z / std::pow((x * x + y * y + z * z), 0.5);
+  auto ddistance_dx = x / std::sqrt(distance_square);
+  auto ddistance_dy = y / std::sqrt(distance_square);
+  auto ddistance_dz = z / std::sqrt(distance_square);
 
   // clang-format off
-  Eigen::MatrixXd J{
+  J = Eigen::MatrixXd{
     {dyaw_dx, dyaw_dy, dyaw_dz},
     {dpitch_dx, dpitch_dy, dpitch_dz},
     {ddistance_dx, ddistance_dy, ddistance_dz}

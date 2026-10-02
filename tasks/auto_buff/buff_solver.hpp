@@ -42,7 +42,7 @@ private:
   double szu_r_reprojection_max_px_{50.0};
   bool szu_use_r_in_pnp_{false};
 
-  // 打符叶片四角的菱形几何模型，原点为 R 中心；SZU 映射在求解时按 [1, 0, 3, 4] 恢复。
+  // 打符叶片四角的菱形几何模型；SZU 的 R 中心是第 5 个点，坐标基准点是最后一个点。
   const std::vector<cv::Point3f> OBJECT_POINTS = {
     cv::Point3f(0, 0, 827e-3), cv::Point3f(0, 127e-3, 700e-3),
     cv::Point3f(0, 0, 573e-3), cv::Point3f(0, -127e-3, 700e-3),

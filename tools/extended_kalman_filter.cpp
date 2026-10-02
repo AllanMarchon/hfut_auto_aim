@@ -1,5 +1,6 @@
 #include "extended_kalman_filter.hpp"
 
+#include <cmath>
 #include <numeric>
 
 namespace tools
@@ -29,8 +30,17 @@ Eigen::VectorXd ExtendedKalmanFilter::predict(
   const Eigen::MatrixXd & F, const Eigen::MatrixXd & Q,
   std::function<Eigen::VectorXd(const Eigen::VectorXd &)> f)
 {
-  P = F * P * F.transpose() + Q;
-  x = f(x);
+  // 预测矩阵异常时保留上一帧，避免把非法协方差传给后续更新。
+  if (x.size() == 0 || !x.allFinite() || !P.allFinite() || !F.allFinite() || !Q.allFinite() ||
+      F.rows() != x.size() || F.cols() != x.size() || Q.rows() != x.size() ||
+      Q.cols() != x.size()) {
+    return x;
+  }
+  const Eigen::MatrixXd P_predicted = F * P * F.transpose() + Q;
+  const Eigen::VectorXd x_predicted = f(x);
+  if (!P_predicted.allFinite() || !x_predicted.allFinite()) return x;
+  P = P_predicted;
+  x = x_predicted;
   return x;
 }
 
@@ -46,21 +56,49 @@ Eigen::VectorXd ExtendedKalmanFilter::update(
   std::function<Eigen::VectorXd(const Eigen::VectorXd &)> h,
   std::function<Eigen::VectorXd(const Eigen::VectorXd &, const Eigen::VectorXd &)> z_subtract)
 {
+  // 输入或预测状态异常时保留上一帧，避免坏观测污染整个滤波器。
+  if (x.size() == 0 || !x.allFinite() || !P.allFinite() || !z.allFinite() || !H.allFinite() ||
+      !R.allFinite()) {
+    return x;
+  }
+
   Eigen::VectorXd x_prior = x;
-  Eigen::MatrixXd K = P * H.transpose() * (H * P * H.transpose() + R).inverse();
+  const Eigen::MatrixXd S = H * P * H.transpose() + R;
+  if (!S.allFinite() || S.rows() == 0 || S.rows() != S.cols()) return x;
+  Eigen::LDLT<Eigen::MatrixXd> S_factor(S);
+  if (S_factor.info() != Eigen::Success) return x;
+  Eigen::MatrixXd K = P * H.transpose() * S_factor.solve(Eigen::MatrixXd::Identity(S.rows(), S.cols()));
+  if (!K.allFinite()) return x;
 
   // Stable Compution of the Posterior Covariance
   // https://github.com/rlabbe/Kalman-and-Bayesian-Filters-in-Python/blob/master/07-Kalman-Filter-Math.ipynb
-  P = (I - K * H) * P * (I - K * H).transpose() + K * R * K.transpose();
+  const Eigen::MatrixXd P_updated =
+    (I - K * H) * P * (I - K * H).transpose() + K * R * K.transpose();
+  if (!P_updated.allFinite()) return x;
 
-  x = x_add(x, K * z_subtract(z, h(x)));
+  const Eigen::VectorXd residual_prior = z_subtract(z, h(x));
+  if (!residual_prior.allFinite()) return x;
+  const Eigen::VectorXd x_updated = x_add(x, K * residual_prior);
+  if (!x_updated.allFinite()) return x;
+  P = P_updated;
+  x = x_updated;
 
   /// 卡方检验
   Eigen::VectorXd residual = z_subtract(z, h(x));
   // 新增检验
-  Eigen::MatrixXd S = H * P * H.transpose() + R;
-  double nis = residual.transpose() * S.inverse() * residual;
-  double nees = (x - x_prior).transpose() * P.inverse() * (x - x_prior);
+  const Eigen::MatrixXd S_updated = H * P * H.transpose() + R;
+  Eigen::LDLT<Eigen::MatrixXd> S_updated_factor(S_updated);
+  double nis = 0.0;
+  if (S_updated.allFinite() && S_updated_factor.info() == Eigen::Success) {
+    const Eigen::VectorXd nis_solution = S_updated_factor.solve(residual);
+    if (nis_solution.allFinite()) nis = residual.transpose() * nis_solution;
+  }
+  double nees = 0.0;
+  Eigen::LDLT<Eigen::MatrixXd> P_factor(P);
+  if (P_factor.info() == Eigen::Success) {
+    const Eigen::VectorXd nees_solution = P_factor.solve(x - x_prior);
+    if (nees_solution.allFinite()) nees = (x - x_prior).transpose() * nees_solution;
+  }
 
   // 卡方检验阈值（自由度=4，取置信水平95%）
   constexpr double nis_threshold = 0.711;
@@ -80,10 +118,10 @@ Eigen::VectorXd ExtendedKalmanFilter::update(
   int recent_failures = std::accumulate(recent_nis_failures.begin(), recent_nis_failures.end(), 0);
   double recent_rate = static_cast<double>(recent_failures) / recent_nis_failures.size();
 
-  data["residual_yaw"] = residual[0];
-  data["residual_pitch"] = residual[1];
-  data["residual_distance"] = residual[2];
-  data["residual_angle"] = residual[3];
+  data["residual_yaw"] = residual.size() > 0 ? residual[0] : 0.0;
+  data["residual_pitch"] = residual.size() > 1 ? residual[1] : 0.0;
+  data["residual_distance"] = residual.size() > 2 ? residual[2] : 0.0;
+  data["residual_angle"] = residual.size() > 3 ? residual[3] : 0.0;
   data["nis"] = nis;
   data["nees"] = nees;
   data["recent_nis_failures"] = recent_rate;

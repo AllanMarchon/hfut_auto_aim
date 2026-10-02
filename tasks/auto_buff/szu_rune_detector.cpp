@@ -532,7 +532,8 @@ bool SzuRuneDetector::estimate_geometric_r_center(
     {0.0F, 827.0F}, {127.0F, 700.0F}, {0.0F, 573.0F}, {-127.0F, 700.0F}};
   const std::vector<cv::Point2f> image_points{
     corners[1], corners[0], corners[2], corners[3]};
-  const std::vector<cv::Point2f> r_object_point{{0.0F, 0.0F}};
+  // 四角模型的中心位于 700 mm 高度，(0, 0) 是坐标基准点而不是 R 点。
+  const std::vector<cv::Point2f> r_object_point{{0.0F, 700.0F}};
   try {
     const cv::Mat homography = cv::getPerspectiveTransform(object_points, image_points);
     std::vector<cv::Point2f> projected;

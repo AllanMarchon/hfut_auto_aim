@@ -361,7 +361,8 @@ Eigen::MatrixXd SmallTarget::h_jacobian() const
     {0.0, 0.0, 1.0,                      0.0,           -0.7 * sin_roll}
   };// 3*5
 
-  Eigen::VectorXd B_xyz = point_buff2world(Eigen::Vector3d(0.0, 0.0, 0.7));
+  // 雅可比必须基于当前候选状态计算，不能走未解算状态的保护分支。
+  Eigen::VectorXd B_xyz = point_buff2world(ekf_.x, Eigen::Vector3d(0.0, 0.0, 0.7));
   Eigen::MatrixXd H3 = tools::xyz2ypd_jacobian(B_xyz);// 3*3
   // clang-format on
 
@@ -728,7 +729,8 @@ Eigen::MatrixXd BigTarget::h_jacobian() const
     {0.0, 0.0, 1.0,                      0.0,           -0.7 * sin_roll}
   };// 3*5
 
-  Eigen::VectorXd B_xyz = point_buff2world(Eigen::Vector3d(0.0, 0.0, 0.7));
+  // 雅可比必须基于当前候选状态计算，不能走未解算状态的保护分支。
+  Eigen::VectorXd B_xyz = point_buff2world(ekf_.x, Eigen::Vector3d(0.0, 0.0, 0.7));
   Eigen::MatrixXd H3 = tools::xyz2ypd_jacobian(B_xyz);// 3*3
   // clang-format on
 
