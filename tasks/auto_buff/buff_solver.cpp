@@ -24,7 +24,7 @@ Solver::Solver(const std::string & config_path) : R_gimbal2world_(Eigen::Matrix3
                                     ? yaml["szu_r_reprojection_margin_px"].as<double>()
                                     : szu_r_reprojection_margin_px_;
   const double pose_max_jump_deg = yaml["szu_pose_max_jump_deg"]
-    ? yaml["szu_pose_max_jump_deg"].as<double>() : szu_pose_max_jump_deg_ * 180.0 / CV_PI;
+    ? yaml["szu_pose_max_jump_deg"].as<double>() : szu_pose_max_jump_rad_ * 180.0 / CV_PI;
   szu_pose_max_jump_rad_ = pose_max_jump_deg * CV_PI / 180.0;
   szu_pose_max_translation_jump_m_ = yaml["szu_pose_max_translation_jump_m"]
     ? yaml["szu_pose_max_translation_jump_m"].as<double>()
