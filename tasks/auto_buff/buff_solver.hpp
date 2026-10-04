@@ -41,6 +41,10 @@ private:
   mutable cv::Vec3d rvec_, tvec_;
   mutable bool pose_valid_{false};
   mutable int pose_rejection_count_{0};
+  // 保留符盘平面法向；R 中心向量以云台原点为参考并转换到世界轴，用于连续性判别。
+  mutable bool plane_normal_prior_valid_{false};
+  mutable Eigen::Vector3d plane_normal_world_prior_{1.0, 0.0, 0.0};
+  mutable Eigen::Vector3d r_center_from_gimbal_world_prior_{0.0, 0.0, 0.0};
   double szu_corner_reprojection_max_px_{15.0};
   double szu_r_reprojection_max_px_{50.0};
   double szu_r_reprojection_margin_px_{20.0};

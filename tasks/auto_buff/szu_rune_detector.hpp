@@ -115,6 +115,8 @@ private:
   int traditional_corner_window_{5};
   float traditional_max_shift_px_{8.0f};
   float traditional_r_max_shift_px_{24.0f};
+  cv::Mat camera_matrix_;
+  cv::Mat distort_coeffs_;
   DebugStats debug_stats_;
 };
 

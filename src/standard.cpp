@@ -1699,10 +1699,10 @@ int run(const Options& options) {
         buff_pose_missing_frames = 0;
       } else if (buff_pose_missing_frames < kBuffPoseResetAfterMissingFrames) {
         ++buff_pose_missing_frames;
-        // 跟踪器连续丢失 7 帧会重置；PnP 同步清除旧姿态，避免重获时比较过期姿态。
+        // 连续丢失 7 帧后清除当前有效 PnP 姿态；保留平面法向先验用于同一符盘重获判支。
         if (buff_pose_missing_frames == kBuffPoseResetAfterMissingFrames) {
           buff_solver->reset_pose();
-          std::fprintf(stderr, "[standard] 打符连续 7 帧无有效姿态，清除旧 PnP 姿态\n");
+          std::fprintf(stderr, "[standard] 打符连续 7 帧无有效姿态，重置当前 PnP 姿态\n");
         }
       }
       detect_end = std::chrono::steady_clock::now();

@@ -81,6 +81,20 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
     yaml, "szu_traditional_max_shift_px", traditional_max_shift_px_);
   traditional_r_max_shift_px_ = yaml_float(
     yaml, "szu_traditional_r_max_shift_px", traditional_r_max_shift_px_);
+  const auto camera_matrix_data = yaml["camera_matrix"].as<std::vector<double>>();
+  const auto distortion_data = yaml["distort_coeffs"].as<std::vector<double>>();
+  if (camera_matrix_data.size() != 9 || distortion_data.size() < 4) {
+    throw std::invalid_argument("SZU 几何 R 计算需要有效的相机内参与畸变参数");
+  }
+  camera_matrix_ = cv::Mat(3, 3, CV_64F);
+  for (size_t i = 0; i < camera_matrix_data.size(); ++i) {
+    camera_matrix_.at<double>(static_cast<int>(i / 3), static_cast<int>(i % 3)) =
+      camera_matrix_data[i];
+  }
+  distort_coeffs_ = cv::Mat(1, static_cast<int>(distortion_data.size()), CV_64F);
+  for (size_t i = 0; i < distortion_data.size(); ++i) {
+    distort_coeffs_.at<double>(0, static_cast<int>(i)) = distortion_data[i];
+  }
   corner_indices_ = yaml_int_vector(yaml, "szu_corner_indices", corner_indices_);
   r_center_index_ = yaml_int(yaml, "szu_r_center_index", r_center_index_);
   required_keypoint_indices_ =
@@ -541,17 +555,31 @@ bool SzuRuneDetector::estimate_geometric_r_center(
     {0.0F, 827.0F}, {127.0F, 700.0F}, {0.0F, 573.0F}, {-127.0F, 700.0F}};
   const std::vector<cv::Point2f> image_points{
     corners[0], corners[2], corners[3], corners[1]};
-  // 四角模型的坐标原点就是 R 中心，700 mm 高度对应待击打叶片中心。
+  // R 在四角包围区域外，先去畸变再做平面外推，避免把镜头畸变误当成透视变换。
   const std::vector<cv::Point2f> r_object_point{{0.0F, 0.0F}};
   try {
-    const cv::Mat homography = cv::getPerspectiveTransform(object_points, image_points);
-    std::vector<cv::Point2f> projected;
-    cv::perspectiveTransform(r_object_point, projected, homography);
-    if (projected.size() != 1 || !std::isfinite(projected.front().x) ||
-        !std::isfinite(projected.front().y)) {
+    std::vector<cv::Point2f> undistorted_points;
+    cv::undistortPoints(image_points, undistorted_points, camera_matrix_, distort_coeffs_);
+    const cv::Mat homography = cv::getPerspectiveTransform(object_points, undistorted_points);
+    std::vector<cv::Point2f> projected_undistorted;
+    cv::perspectiveTransform(r_object_point, projected_undistorted, homography);
+    if (projected_undistorted.size() != 1 ||
+        !std::isfinite(projected_undistorted.front().x) ||
+        !std::isfinite(projected_undistorted.front().y)) {
       return false;
     }
-    r_center = projected.front();
+
+    const cv::Point2f & normalized = projected_undistorted.front();
+    const std::vector<cv::Point3f> normalized_ray{{normalized.x, normalized.y, 1.0F}};
+    std::vector<cv::Point2f> projected_distorted;
+    cv::projectPoints(
+      normalized_ray, cv::Vec3d(0.0, 0.0, 0.0), cv::Vec3d(0.0, 0.0, 0.0), camera_matrix_,
+      distort_coeffs_, projected_distorted);
+    if (projected_distorted.size() != 1 || !std::isfinite(projected_distorted.front().x) ||
+        !std::isfinite(projected_distorted.front().y)) {
+      return false;
+    }
+    r_center = projected_distorted.front();
   } catch (const cv::Exception &) {
     return false;
   }

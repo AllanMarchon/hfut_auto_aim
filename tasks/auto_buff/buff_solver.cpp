@@ -71,6 +71,7 @@ void Solver::set_R_gimbal2world(const Eigen::Quaterniond & q)
 
 void Solver::reset_pose() const
 {
+  // 保留符盘法向先验，短暂丢帧后仍可选择正确的平面姿态分支。
   pose_valid_ = false;
   pose_rejection_count_ = 0;
 }
@@ -133,8 +134,10 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     double r_error = 0.0;
     double score = 0.0;
     double continuity_score = 0.0;
-    double rotation_delta_rad = 0.0;
-    double translation_delta_m = 0.0;
+    double plane_normal_delta_rad = 0.0;
+    double r_center_delta_m = 0.0;
+    Eigen::Vector3d plane_normal_world{1.0, 0.0, 0.0};
+    Eigen::Vector3d r_center_from_gimbal_world{0.0, 0.0, 0.0};
     bool valid = false;
   };
 
@@ -185,30 +188,44 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     if (!std::isfinite(corner_error) || !std::isfinite(r_error)) return;
 
     double continuity_score = 0.0;
-    double candidate_rotation_delta_rad = 0.0;
-    double candidate_translation_delta_m = 0.0;
+    double candidate_plane_normal_delta_rad = 0.0;
+    double candidate_r_center_delta_m = 0.0;
+    Eigen::Vector3d candidate_plane_normal_world{1.0, 0.0, 0.0};
+    Eigen::Vector3d candidate_r_center_from_gimbal_world{0.0, 0.0, 0.0};
     bool candidate_continuity_valid = true;
-    if (use_szu_point_indices && pose_valid_) {
+    if (use_szu_point_indices) {
       cv::Mat candidate_rotation;
-      cv::Mat previous_rotation;
       cv::Rodrigues(candidate_rvec, candidate_rotation);
-      cv::Rodrigues(rvec_, previous_rotation);
-      const cv::Vec3d translation_delta{
-        candidate_tvec[0] - tvec_[0], candidate_tvec[1] - tvec_[1],
-        candidate_tvec[2] - tvec_[2]};
-      const double translation_delta_norm = std::sqrt(
-        translation_delta[0] * translation_delta[0] + translation_delta[1] * translation_delta[1] +
-        translation_delta[2] * translation_delta[2]);
-      const cv::Mat relative_rotation = candidate_rotation * previous_rotation.t();
-      const double trace = relative_rotation.at<double>(0, 0) +
-        relative_rotation.at<double>(1, 1) + relative_rotation.at<double>(2, 2);
-      const double rotation_cos = std::clamp((trace - 1.0) * 0.5, -1.0, 1.0);
-      const double rotation_delta_rad = std::acos(rotation_cos);
-      continuity_score = rotation_delta_rad + 0.25 * translation_delta_norm;
-      candidate_rotation_delta_rad = rotation_delta_rad;
-      candidate_translation_delta_m = translation_delta_norm;
-      candidate_continuity_valid = rotation_delta_rad <= szu_pose_max_jump_rad_ &&
-        translation_delta_norm <= szu_pose_max_translation_jump_m_;
+      Eigen::Matrix3d buff2camera;
+      cv::cv2eigen(candidate_rotation, buff2camera);
+      const Eigen::Matrix3d buff2world = R_gimbal2world_ * R_camera2gimbal_ * buff2camera;
+      const Eigen::Vector3d camera_translation{
+        candidate_tvec[0], candidate_tvec[1], candidate_tvec[2]};
+      candidate_r_center_from_gimbal_world =
+        R_gimbal2world_ * (R_camera2gimbal_ * camera_translation + t_camera2gimbal_);
+      candidate_plane_normal_world = buff2world.col(0).normalized();
+
+      if (plane_normal_prior_valid_) {
+        // 符盘绕法向转动不改变平面朝向；比较法向所在直线，消除正反号表示差异。
+        const double normal_cos = std::clamp(
+          std::abs(candidate_plane_normal_world.dot(plane_normal_world_prior_)), 0.0, 1.0);
+        const double plane_normal_delta_rad = std::acos(normal_cos);
+        candidate_plane_normal_delta_rad = plane_normal_delta_rad;
+        continuity_score = plane_normal_delta_rad;
+        // 当前姿态有效时才硬拒绝跳变；失联重获时只用先验给候选排序。
+        if (pose_valid_) {
+          candidate_continuity_valid = plane_normal_delta_rad <= szu_pose_max_jump_rad_;
+          const double r_center_delta_norm =
+            (candidate_r_center_from_gimbal_world - r_center_from_gimbal_world_prior_).norm();
+          candidate_r_center_delta_m = r_center_delta_norm;
+          continuity_score += 0.25 * r_center_delta_norm;
+          candidate_continuity_valid = candidate_continuity_valid &&
+            r_center_delta_norm <= szu_pose_max_translation_jump_m_;
+        }
+      } else {
+        // 世界 Z 轴为竖直方向；符盘实体竖直，初次解算优先选择水平法向候选。
+        continuity_score = std::abs(candidate_plane_normal_world.z());
+      }
     }
 
     const bool use_r_constraint = use_szu_point_indices && szu_use_r_in_pnp_;
@@ -222,8 +239,10 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       destination.r_error = r_error;
       destination.score = score;
       destination.continuity_score = continuity_score;
-      destination.rotation_delta_rad = candidate_rotation_delta_rad;
-      destination.translation_delta_m = candidate_translation_delta_m;
+      destination.plane_normal_delta_rad = candidate_plane_normal_delta_rad;
+      destination.r_center_delta_m = candidate_r_center_delta_m;
+      destination.plane_normal_world = candidate_plane_normal_world;
+      destination.r_center_from_gimbal_world = candidate_r_center_from_gimbal_world;
       destination.valid = true;
     };
 
@@ -385,16 +404,17 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     better_r_candidate_rejected_by_continuity && has_r_source_consensus &&
     best_r_unconstrained.corner_error <= szu_corner_reprojection_max_px_ &&
     best_r_unconstrained.r_error <= strong_r_reprojection_max_px &&
-    best_r_unconstrained.translation_delta_m <= szu_pose_max_translation_jump_m_;
+    best_r_unconstrained.plane_normal_delta_rad <= szu_pose_max_jump_rad_ &&
+    best_r_unconstrained.r_center_delta_m <= szu_pose_max_translation_jump_m_;
   if (use_szu_point_indices && had_previous_pose) {
     if (accept_strong_r_reacquisition) {
       best_ptr = &best_r_unconstrained;
       tools::logger()->debug(
         "[BuffSolver] 网络与视觉 R 共识支持新姿态，接受 PnP 重获: R={:.2f}px "
-        "rotation_delta={:.1f}deg translation_delta={:.3f}m",
+        "plane_normal_delta={:.1f}deg R_from_gimbal_delta={:.3f}m",
         best_r_unconstrained.r_error,
-        best_r_unconstrained.rotation_delta_rad * 180.0 / CV_PI,
-        best_r_unconstrained.translation_delta_m);
+        best_r_unconstrained.plane_normal_delta_rad * 180.0 / CV_PI,
+        best_r_unconstrained.r_center_delta_m);
     } else if (best_r_candidate.valid && !better_r_candidate_rejected_by_continuity) {
       best_ptr = &best_r_candidate;
     } else if (!better_r_candidate_rejected_by_continuity && best_continuous.valid &&
@@ -416,8 +436,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       const bool five_point_r_ok = have_five_point &&
         best_five_point.r_error <= szu_r_reprojection_max_px_;
       const bool five_point_continuity_ok = have_five_point &&
-        best_five_point.rotation_delta_rad <= szu_pose_max_jump_rad_ &&
-        best_five_point.translation_delta_m <= szu_pose_max_translation_jump_m_;
+        best_five_point.plane_normal_delta_rad <= szu_pose_max_jump_rad_ &&
+        best_five_point.r_center_delta_m <= szu_pose_max_translation_jump_m_;
       tools::logger()->debug(
         "[BuffSolver] 五点细化候选: enabled={} found={} corners={:.2f}px R={:.2f}px "
         "pnp=({:.1f},{:.1f}) pass(corners/R/continuity)={}/{}/{}",
@@ -448,20 +468,20 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       if (better_r_candidate_rejected_by_continuity) {
         tools::logger()->debug(
           "[BuffSolver] 最低 R 误差候选被连续性门限挡住: best_R={:.2f}px "
-          "delta={:.1f}deg/{:.3f}m; 连续候选 R={:.2f}px，本帧不输出姿态",
+          "plane_normal_delta={:.1f}deg R_from_gimbal_delta={:.3f}m; 连续候选 R={:.2f}px，本帧不输出姿态",
           best_r_unconstrained.r_error,
-          best_r_unconstrained.rotation_delta_rad * 180.0 / CV_PI,
-          best_r_unconstrained.translation_delta_m,
+          best_r_unconstrained.plane_normal_delta_rad * 180.0 / CV_PI,
+          best_r_unconstrained.r_center_delta_m,
           best_r_candidate.valid ? best_r_candidate.r_error : -1.0);
       }
       // 当前帧的姿态跳变超过限制时保留上一帧姿态，避免错误解污染跟踪器。
       ++pose_rejection_count_;
       if (best_geometry.valid) {
         tools::logger()->debug(
-          "[BuffSolver] 拒绝 SZU PnP 候选: R={:.2f}px rotation_delta={:.1f}deg "
-          "translation_delta={:.3f}m rejected={}/{}，保留上一帧姿态",
-          best_geometry.r_error, best_geometry.rotation_delta_rad * 180.0 / CV_PI,
-          best_geometry.translation_delta_m, pose_rejection_count_,
+          "[BuffSolver] 拒绝 SZU PnP 候选: R={:.2f}px plane_normal_delta={:.1f}deg "
+          "R_from_gimbal_delta={:.3f}m rejected={}/{}，保留上一帧姿态",
+          best_geometry.r_error, best_geometry.plane_normal_delta_rad * 180.0 / CV_PI,
+          best_geometry.r_center_delta_m, pose_rejection_count_,
           szu_pose_reacquire_after_rejections_);
       } else {
         tools::logger()->debug(
@@ -512,6 +532,9 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   tvec_ = best.tvec;
   pose_valid_ = true;
   pose_rejection_count_ = 0;
+  plane_normal_world_prior_ = best.plane_normal_world.normalized();
+  r_center_from_gimbal_world_prior_ = best.r_center_from_gimbal_world;
+  plane_normal_prior_valid_ = true;
 
   // SZU 默认由四角求姿态，R 点保留为一致性诊断；显式开启时才使用五点约束。
   std::vector<cv::Point2f> projected_points;
