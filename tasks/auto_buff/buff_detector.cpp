@@ -238,6 +238,12 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   std::vector<std::pair<cv::Point2f, double>> visual_r_samples;
   double network_r_confidence_sum = 0.0;
   double network_r_confidence_weight = 0.0;
+  struct TargetRSample
+  {
+    cv::Point2f blade_center{0.0F, 0.0F};
+    cv::Point2f r_center{0.0F, 0.0F};
+  };
+  std::vector<TargetRSample> target_r_samples;
 
   for (const auto & result : results) {
     if (result.corners.size() != 4) continue;
@@ -261,6 +267,8 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
       visual_r_samples.emplace_back(result.visual_r_center, quality);
     }
     if (blade.type == _target) {
+      // PnP 只使用当前目标叶片的角点，R 也必须优先取同一叶片的检测结果。
+      target_r_samples.push_back({result.center, result.r_center});
       target_fanblades.emplace_back(std::move(blade));
     } else {
       other_fanblades.emplace_back(std::move(blade));
@@ -290,7 +298,22 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   fanblades.insert(fanblades.end(), target_fanblades.begin(), target_fanblades.end());
   fanblades.insert(fanblades.end(), other_fanblades.begin(), other_fanblades.end());
 
-  const auto r_center = r_center_sum * static_cast<float>(1.0 / quality_sum);
+  cv::Point2f r_center = r_center_sum * static_cast<float>(1.0 / quality_sum);
+  if (!target_r_samples.empty()) {
+    // 目标重排后，选择与最终 target 中心最近的 R 观测，避免多叶片平均把 PnP 的 R 约束错配。
+    const auto & selected_target_center = target_fanblades.front().center;
+    const auto selected_target_r = std::min_element(
+      target_r_samples.begin(), target_r_samples.end(), [&](const TargetRSample & a,
+                                                              const TargetRSample & b) {
+        return cv::norm(a.blade_center - selected_target_center) <
+               cv::norm(b.blade_center - selected_target_center);
+      });
+    if (selected_target_r != target_r_samples.end() &&
+        std::isfinite(selected_target_r->r_center.x) &&
+        std::isfinite(selected_target_r->r_center.y)) {
+      r_center = selected_target_r->r_center;
+    }
+  }
   const auto summarize_r_source = [](
                                  const std::vector<std::pair<cv::Point2f, double>> & samples) {
     RPointSourceSummary summary;
@@ -377,12 +400,13 @@ void Buff_Detector::log_szu_debug(
 
   tools::logger()->info(
     "[Buff_Detector] szu frame={} stage={} anchors={} conf={} kpt={} required={} nms={} results={} "
-    "target={} other={} traditional={}/{}/{}/{}/{}/{}/{} classes={}/{}/{} max_conf={:.3f} max_kpt={:.3f}",
+    "target={} other={} traditional={}/{}/{}/{}/{}/{}/{} geo_reject={} classes={}/{}/{} "
+    "max_conf={:.3f} max_kpt={:.3f}",
     szu_debug_frame_, stage, stats.anchors, stats.confidence_pass, stats.keypoint_pass,
     stats.required_keypoint_pass, stats.nms_output, raw_count, target_count, other_count,
     stats.traditional_attempted, stats.traditional_edge_refined, stats.traditional_corner_refined,
     stats.traditional_geometry_pass, stats.traditional_r_refined, stats.traditional_r_geometry,
-    stats.traditional_corner_fallback, stats.class_counts[0],
+    stats.traditional_corner_fallback, stats.traditional_geometry_rejected, stats.class_counts[0],
     stats.class_counts[1], stats.class_counts[2], stats.max_confidence, stats.max_keypoint_confidence);
 }
 

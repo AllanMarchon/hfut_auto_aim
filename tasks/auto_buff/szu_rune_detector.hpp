@@ -50,6 +50,7 @@ public:
     int traditional_edge_refined = 0;
     int traditional_corner_refined = 0;
     int traditional_geometry_pass = 0;
+    int traditional_geometry_rejected = 0;
     int traditional_r_refined = 0;
     int traditional_r_geometry = 0;
     int traditional_corner_fallback = 0;

@@ -12,8 +12,8 @@ model: assets/yolo11_buff_int8.xml
 # SZU 26 能量机关五点模型。输出类别：0=待击打叶片，1=小符已击中叶片，2=大符已击中叶片。
 szu_model: assets/szu_rune_model_0624.onnx
 device: GPU
-# 只影响 SZU 打符内部预处理；普通自瞄仍使用原始相机图像。4:3 模型在 5:4 相机上先中心裁剪。
-szu_preprocess_mode: center_crop
+# 只影响 SZU 打符内部预处理；普通自瞄仍使用原始相机图像。实车使用保持比例的信箱变换。
+szu_preprocess_mode: letterbox
 confidence: 0.7
 iou_threshold: 0.4
 # 类别和关键点阈值沿用模型 README 默认值；传统阶段只负责局部几何修正。
@@ -24,7 +24,7 @@ szu_nms_distance: 30.0
 szu_traditional_min_valid_keypoints: 3
 # 关闭传统阶段时使用的严格备用门槛。
 szu_min_valid_keypoints: 4
-# 网络点先沿 R 点到符叶的径向搜索亮暗边界，再用结构张量做备用亚像素精修；失败时保留网络原点。
+# 低置信角点才沿 R 点到符叶的径向搜索亮暗边界，再用结构张量做备用亚像素精修；高置信角点保留网络原点。
 szu_traditional_refine: true
 szu_traditional_r_refine: true
 szu_traditional_corner_window: 5

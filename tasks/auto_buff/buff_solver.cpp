@@ -264,17 +264,17 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       save_candidate(best_r_unconstrained);
     }
 
-    // 保留只看四角误差的候选，R 点模型不一致时仍能保持原有四角链路。
-    if (!best_geometry.valid || score < best_geometry.score) {
+    // 单独保留四角误差最小的候选，R 点模型不一致时仍能保持原有四角链路。
+    if (!best_geometry.valid || corner_error < best_geometry.corner_error) {
       save_candidate(best_geometry);
     }
 
-    // R 点默认不参与五点迭代，只用于检验固定角点对应下的 IPPE 平面解。
-    // 只记录四角误差和帧间变化合格的候选；R 误差优先，接近时才比较连续性。
+    // 只有显式开启 R 约束时，才用 R 误差筛选 IPPE 候选；关闭时 R 仅保留为诊断。
+    // 开启 R 约束时要求四角、R 和帧间连续性同时合格，R 误差优先，接近时才比较连续性。
     const bool r_candidate_valid = corner_candidate_valid &&
       r_error <= szu_r_reprojection_max_px_ + szu_r_reprojection_margin_px_ &&
       candidate_continuity_valid;
-    if (r_candidate_valid && prefer_r_candidate(
+    if (use_r_constraint && r_candidate_valid && prefer_r_candidate(
           r_error, continuity_score, best_r_candidate)) {
       save_candidate(best_r_candidate);
     }
@@ -395,7 +395,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     cv::norm(best_r_unconstrained.projected_r - r_diagnostics.visual.center) <=
       r_source_consensus_max_px;
   const bool best_r_candidate_better_than_continuous =
-    best_r_unconstrained.valid &&
+    szu_use_r_in_pnp_ && best_r_unconstrained.valid &&
     (!best_r_candidate.valid ||
      best_r_unconstrained.r_error + r_error_tie_px < best_r_candidate.r_error);
   const bool better_r_candidate_rejected_by_continuity =
@@ -407,7 +407,12 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     best_r_unconstrained.plane_normal_delta_rad <= szu_pose_max_jump_rad_ &&
     best_r_unconstrained.r_center_delta_m <= szu_pose_max_translation_jump_m_;
   if (use_szu_point_indices && had_previous_pose) {
-    if (accept_strong_r_reacquisition) {
+    if (!szu_use_r_in_pnp_) {
+      // 关闭 R 约束时只按四角重投影和帧间连续性选姿态，R 仅用于日志诊断。
+      if (best_continuous.valid) {
+        best_ptr = &best_continuous;
+      }
+    } else if (accept_strong_r_reacquisition) {
       best_ptr = &best_r_unconstrained;
       tools::logger()->debug(
         "[BuffSolver] 网络与视觉 R 共识支持新姿态，接受 PnP 重获: R={:.2f}px "
@@ -422,8 +427,11 @@ void Solver::solve(std::optional<PowerRune> & ps) const
                  szu_r_reprojection_max_px_ + szu_r_reprojection_margin_px_) {
       best_ptr = &best_continuous;
     }
-  } else if (use_szu_point_indices && best_r_candidate.valid) {
+  } else if (use_szu_point_indices && szu_use_r_in_pnp_ && best_r_candidate.valid) {
     best_ptr = &best_r_candidate;
+  } else if (use_szu_point_indices && !szu_use_r_in_pnp_ && best_geometry.valid) {
+    // 初始化时的无 R 基线同样只使用四角几何。
+    best_ptr = &best_geometry;
   } else if (!use_szu_point_indices && best_geometry.valid) {
     best_ptr = &best_geometry;
   }

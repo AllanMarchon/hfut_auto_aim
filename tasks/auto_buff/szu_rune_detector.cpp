@@ -448,7 +448,15 @@ void SzuRuneDetector::refine_detections(
     for (size_t corner_index = 0; corner_index < detection.corners.size(); ++corner_index) {
       auto & corner = detection.corners[corner_index];
       cv::Point2f refined = corner;
-      const bool radial_refined = refine_radial_edge(
+      const int original_index = detection.corner_indices[corner_index];
+      const bool confidence_valid =
+        original_index >= 0 &&
+        original_index < static_cast<int>(detection.keypoint_confidences.size()) &&
+        detection.keypoint_confidences[original_index] >= keypoint_confidence_threshold_;
+      // 高置信网络角点已经是 PnP 的主要观测，不能再被附近背景边缘无条件改写。
+      // 传统分支只尝试补回低置信角点，避免局部梯度把目标尺寸和姿态一起拉偏。
+      const bool allow_traditional_refine = !confidence_valid;
+      const bool radial_refined = allow_traditional_refine && refine_radial_edge(
         gray, gradient_x, gradient_y, detection.r_center, corner, refined);
       bool subpix_refined = false;
       if (radial_refined) {
@@ -462,11 +470,6 @@ void SzuRuneDetector::refine_detections(
         subpix_refined = true;
       }
 
-      const int original_index = detection.corner_indices[corner_index];
-      const bool confidence_valid =
-        original_index >= 0 &&
-        original_index < static_cast<int>(detection.keypoint_confidences.size()) &&
-        detection.keypoint_confidences[original_index] >= keypoint_confidence_threshold_;
       const bool coordinate_valid = std::isfinite(corner.x) && std::isfinite(corner.y) &&
         corner.x >= 0.0F && corner.y >= 0.0F && corner.x < image.cols && corner.y < image.rows;
       if (coordinate_valid) {
@@ -474,23 +477,39 @@ void SzuRuneDetector::refine_detections(
         // 低置信度角点只有找到真实边缘才算被传统视觉补回。
         if (confidence_valid || radial_refined_flags[corner_index]) ++evidence_corner_count;
       }
-      if (!radial_refined && !subpix_refined) {
+      if (allow_traditional_refine && !radial_refined && !subpix_refined) {
         ++debug_stats_.traditional_corner_fallback;
       }
     }
 
     detection.traditional_valid_corners = evidence_corner_count;
-    // 精修失败时保留网络点；这里的几何有效只表示四个坐标仍然有限，不作为丢帧条件。
-    detection.traditional_geometry_valid = finite_corner_count == 4;
+    // 几何中心必须建立在四个有证据的角点上，不能只因为坐标有限就把异常外推当成有效。
+    detection.traditional_geometry_valid = finite_corner_count == 4 && evidence_corner_count == 4;
     debug_stats_.traditional_corner_refined += refined_count;
     detection.center = cv::Point2f(0.0F, 0.0F);
     for (const auto & corner : detection.corners) detection.center += corner;
     detection.center *= 0.25F;
 
+    const cv::Point2f network_r_center = detection.r_center;
+    const bool network_r_valid = std::isfinite(network_r_center.x) &&
+      std::isfinite(network_r_center.y) && network_r_center.x >= 0.0F &&
+      network_r_center.y >= 0.0F && network_r_center.x < image.cols &&
+      network_r_center.y < image.rows;
+    const bool network_r_confidence_valid =
+      r_center_index_ >= 0 && r_center_index_ < static_cast<int>(detection.keypoint_confidences.size()) &&
+      detection.keypoint_confidences[r_center_index_] >= keypoint_confidence_threshold_;
+
     cv::Point2f geometric_r_center{0.0F, 0.0F};
-    const bool geometric_r_valid =
-      detection.traditional_geometry_valid &&
+    bool geometric_r_valid = detection.traditional_geometry_valid &&
       estimate_geometric_r_center(detection.corners, geometric_r_center);
+    // R 位于四角区域外，外推误差会被放大；与有效网络 R 不一致时只保留诊断结果，
+    // 不允许它进入 R 融合或 PnP 约束，避免 GEO-R 在背景边缘上乱跳。
+    if (geometric_r_valid && network_r_valid &&
+        cv::norm(geometric_r_center - network_r_center) > traditional_r_max_shift_px_) {
+      geometric_r_valid = false;
+      // 保留拒绝计数，避免诊断图上不再显示 GEO-R 后无法判断原因。
+      ++debug_stats_.traditional_geometry_rejected;
+    }
     detection.geometric_r_center = geometric_r_center;
     detection.geometric_r_valid = geometric_r_valid;
     if (geometric_r_valid) {
@@ -504,19 +523,11 @@ void SzuRuneDetector::refine_detections(
     detection.visual_r_valid = visual_r_valid;
     if (visual_r_valid) ++debug_stats_.traditional_r_geometry;
 
-    const cv::Point2f network_r_center = detection.r_center;
-    const bool network_r_valid = std::isfinite(network_r_center.x) &&
-      std::isfinite(network_r_center.y) && network_r_center.x >= 0.0F &&
-      network_r_center.y >= 0.0F && network_r_center.x < image.cols &&
-      network_r_center.y < image.rows;
-    const bool network_r_confidence_valid =
-      r_center_index_ >= 0 && r_center_index_ < static_cast<int>(detection.keypoint_confidences.size()) &&
-      detection.keypoint_confidences[r_center_index_] >= keypoint_confidence_threshold_;
-
-    // 先用四角的平面几何求 R 中心，再用网络和局部亮斑做小幅融合，避免视觉误检把中心拉走。
+    // 网络 R 高置信时直接保留网络观测；GEO/视觉只在网络 R 不可靠时参与补偿。
+    // 这样诊断源可以继续显示，但不会用启发式结果覆盖已经稳定的网络点。
     cv::Point2f selected_r_center = network_r_center;
     bool selected_r_refined = false;
-    if (geometric_r_valid) {
+    if (geometric_r_valid && (!network_r_valid || !network_r_confidence_valid)) {
       const double network_geometry_gap = network_r_valid
         ? cv::norm(geometric_r_center - network_r_center)
         : std::numeric_limits<double>::infinity();
@@ -529,7 +540,8 @@ void SzuRuneDetector::refine_detections(
         }
       }
     }
-    if (visual_r_valid && std::isfinite(selected_r_center.x) && std::isfinite(selected_r_center.y) &&
+    if (visual_r_valid && (!network_r_valid || !network_r_confidence_valid) &&
+        std::isfinite(selected_r_center.x) && std::isfinite(selected_r_center.y) &&
         cv::norm(visual_r_center - selected_r_center) <= traditional_r_max_shift_px_) {
       selected_r_center = selected_r_center * 0.75F + visual_r_center * 0.25F;
       selected_r_refined = true;
