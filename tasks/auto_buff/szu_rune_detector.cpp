@@ -81,6 +81,18 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
     yaml, "szu_traditional_max_shift_px", traditional_max_shift_px_);
   traditional_r_max_shift_px_ = yaml_float(
     yaml, "szu_traditional_r_max_shift_px", traditional_r_max_shift_px_);
+  const std::string enemy_color = yaml["enemy_color"]
+    ? yaml["enemy_color"].as<std::string>() : "red";
+  if (enemy_color != "red" && enemy_color != "blue") {
+    throw std::invalid_argument("enemy_color 必须是 red 或 blue");
+  }
+  enemy_red_ = enemy_color == "red";
+  r_color_roi_scale_ = yaml_float(yaml, "szu_r_color_roi_scale", r_color_roi_scale_);
+  r_color_red_threshold_ = yaml_float(
+    yaml, "szu_r_red_minus_blue_threshold", r_color_red_threshold_);
+  r_color_blue_threshold_ = yaml_float(
+    yaml, "szu_r_blue_minus_red_threshold", r_color_blue_threshold_);
+  r_color_kernel_size_ = yaml_int(yaml, "szu_r_color_kernel_size", r_color_kernel_size_);
   const auto camera_matrix_data = yaml["camera_matrix"].as<std::vector<double>>();
   const auto distortion_data = yaml["distort_coeffs"].as<std::vector<double>>();
   if (camera_matrix_data.size() != 9 || distortion_data.size() < 4) {
@@ -137,7 +149,13 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
   }
   if (traditional_corner_window_ < 1 || traditional_corner_window_ > 15 ||
       !std::isfinite(traditional_max_shift_px_) || traditional_max_shift_px_ <= 0.0f ||
-      !std::isfinite(traditional_r_max_shift_px_) || traditional_r_max_shift_px_ <= 0.0f) {
+      !std::isfinite(traditional_r_max_shift_px_) || traditional_r_max_shift_px_ <= 0.0f ||
+      !std::isfinite(r_color_roi_scale_) || r_color_roi_scale_ < 1.0f ||
+      !std::isfinite(r_color_red_threshold_) || r_color_red_threshold_ < 0.0f ||
+      r_color_red_threshold_ > 255.0f ||
+      !std::isfinite(r_color_blue_threshold_) || r_color_blue_threshold_ < 0.0f ||
+      r_color_blue_threshold_ > 255.0f || r_color_kernel_size_ < 1 ||
+      r_color_kernel_size_ % 2 == 0) {
     throw std::runtime_error("SZU 传统角点精修参数无效");
   }
   if (preprocess_mode_ != "letterbox" && preprocess_mode_ != "center_crop") {
@@ -497,15 +515,30 @@ void SzuRuneDetector::refine_detections(
       std::isfinite(network_r_center.y) && network_r_center.x >= 0.0F &&
       network_r_center.y >= 0.0F && network_r_center.x < image.cols &&
       network_r_center.y < image.rows;
-    // R 只采用模型直接输出，彻底移除 GEO-R 和 VIS-R 对目标中心的覆盖。
-    // R 位于四角区域外，几何外推和局部亮斑都可能在背景边缘上跳变；它们不能参与正常打符。
+    // R 的网络点是轮廓搜索的种子，不一定落在发光 R 图标的真实几何中心。
+    // 用受限颜色轮廓细化 R，只改善 R 观测和 pnp-r 诊断，不改变四角 PnP。
     detection.network_r_valid = network_r_valid;
     detection.geometric_r_center = cv::Point2f(0.0F, 0.0F);
     detection.geometric_r_valid = false;
     detection.visual_r_center = cv::Point2f(0.0F, 0.0F);
     detection.visual_r_valid = false;
     detection.traditional_r_refined = false;
-    if (network_r_valid) detection.r_center = network_r_center;
+    detection.r_center = network_r_center;
+    if (traditional_r_refine_enabled_ && network_r_valid) {
+      cv::Point2f visual_r_center;
+      if (refine_visual_r_center(image, network_r_center, detection.corners, visual_r_center)) {
+        const double shift = cv::norm(visual_r_center - network_r_center);
+        // 颜色分割只在网络点附近找到轮廓时生效，避免背景亮斑替换网络 R。
+        if (std::isfinite(shift) && shift <= traditional_r_max_shift_px_) {
+          detection.visual_r_center = visual_r_center;
+          detection.visual_r_valid = true;
+          detection.r_center = visual_r_center;
+          detection.traditional_r_refined = true;
+          ++debug_stats_.traditional_r_refined;
+          ++debug_stats_.traditional_r_geometry;
+        }
+      }
+    }
   }
 }
 
@@ -553,64 +586,90 @@ bool SzuRuneDetector::estimate_geometric_r_center(
 }
 
 bool SzuRuneDetector::refine_visual_r_center(
-  const cv::Mat & gray, const cv::Point2f & seed, const std::vector<cv::Point2f> & corners,
+  const cv::Mat & bgr_image, const cv::Point2f & seed, const std::vector<cv::Point2f> & corners,
   cv::Point2f & refined) const
 {
-  if (gray.empty() || gray.type() != CV_8UC1 || corners.size() != 4 ||
+  if (bgr_image.empty() || bgr_image.type() != CV_8UC3 || corners.size() != 4 ||
       !std::isfinite(seed.x) || !std::isfinite(seed.y)) {
     return false;
   }
 
-  std::vector<float> corner_distances;
-  corner_distances.reserve(corners.size());
+  std::vector<cv::Point2f> roi_points = corners;
+  roi_points.emplace_back(seed);
   for (const auto & corner : corners) {
     if (!std::isfinite(corner.x) || !std::isfinite(corner.y)) return false;
-    corner_distances.emplace_back(cv::norm(corner - seed));
   }
-  std::nth_element(
-    corner_distances.begin(), corner_distances.begin() + corner_distances.size() / 2,
-    corner_distances.end());
-  const float median_radius = corner_distances[corner_distances.size() / 2];
-  if (!std::isfinite(median_radius) || median_radius < 8.0F) return false;
-  const int radius = std::clamp(cvRound(median_radius * 0.45F), 8, 96);
-  const int x0 = std::max(0, cvFloor(seed.x) - radius);
-  const int y0 = std::max(0, cvFloor(seed.y) - radius);
-  const int x1 = std::min(gray.cols - 1, cvCeil(seed.x) + radius);
-  const int y1 = std::min(gray.rows - 1, cvCeil(seed.y) + radius);
-  if (x1 <= x0 || y1 <= y0) return false;
+  const cv::RotatedRect rotated_roi = cv::minAreaRect(roi_points);
+  if (!std::isfinite(rotated_roi.size.width) || !std::isfinite(rotated_roi.size.height) ||
+      rotated_roi.size.width < 1.0F || rotated_roi.size.height < 1.0F) {
+    return false;
+  }
+  cv::RotatedRect expanded_roi = rotated_roi;
+  expanded_roi.size *= r_color_roi_scale_;
+  const cv::Rect roi_rect = expanded_roi.boundingRect() &
+    cv::Rect(0, 0, bgr_image.cols, bgr_image.rows);
+  if (roi_rect.empty()) return false;
 
-  const cv::Rect roi_rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-  cv::Mat roi = gray(roi_rect);
+  std::vector<cv::Mat> channels;
+  cv::split(bgr_image(roi_rect), channels);
   cv::Mat binary;
-  cv::Scalar mean_value;
-  cv::Scalar stddev_value;
-  cv::meanStdDev(roi, mean_value, stddev_value);
-  const double adaptive_threshold = std::clamp(
-    mean_value[0] + 0.45 * stddev_value[0], 25.0, 190.0);
-  cv::threshold(roi, binary, adaptive_threshold, 255, cv::THRESH_BINARY);
-  cv::morphologyEx(
-    binary, binary, cv::MORPH_OPEN,
-    cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3)));
+  if (enemy_red_) {
+    cv::subtract(channels[2], channels[0], binary);
+    cv::GaussianBlur(binary, binary, cv::Size(r_color_kernel_size_, r_color_kernel_size_), 0.0);
+    cv::threshold(binary, binary, r_color_red_threshold_, 255, cv::THRESH_BINARY);
+  } else {
+    cv::subtract(channels[0], channels[2], binary);
+    cv::GaussianBlur(binary, binary, cv::Size(r_color_kernel_size_, r_color_kernel_size_), 0.0);
+    cv::threshold(binary, binary, r_color_blue_threshold_, 255, cv::THRESH_BINARY);
+  }
 
   std::vector<std::vector<cv::Point>> contours;
-  cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+  cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE, roi_rect.tl());
+  cv::Point2f blade_center(0.0F, 0.0F);
+  for (const auto & corner : corners) blade_center += corner;
+  blade_center *= 0.25F;
   double best_score = std::numeric_limits<double>::infinity();
   cv::Point2f best_center;
   for (const auto & contour : contours) {
+    if (contour.size() < 5) continue;
     const double area = std::abs(cv::contourArea(contour));
-    if (!std::isfinite(area) || area < 3.0 || area > static_cast<double>(roi_rect.area()) * 0.65) {
+    if (!std::isfinite(area) || area < 3.0 ||
+        area > static_cast<double>(roi_rect.area()) * 0.35) {
       continue;
     }
-    const cv::RotatedRect rotated_rect = cv::minAreaRect(contour);
-    const cv::Point2f candidate = rotated_rect.center + cv::Point2f(
-      static_cast<float>(roi_rect.x), static_cast<float>(roi_rect.y));
-    const double shift = cv::norm(candidate - seed);
+    // 网络 R 可能只落在轮廓边缘，允许有限的轮廓边界距离；但不能接受远处的同色背景。
+    const double seed_distance = cv::pointPolygonTest(contour, seed, true);
+    if (!std::isfinite(seed_distance) || seed_distance < -traditional_r_max_shift_px_) {
+      continue;
+    }
+    // 排除靶心和四个叶片角点所在的轮廓，防止 ROI 内的主体亮斑被误当成 R。
+    if (cv::pointPolygonTest(contour, blade_center, false) >= 0.0) continue;
+    bool contains_corner = false;
+    for (const auto & corner : corners) {
+      if (cv::pointPolygonTest(contour, corner, false) >= 0.0) {
+        contains_corner = true;
+        break;
+      }
+    }
+    if (contains_corner) continue;
+    cv::RotatedRect ellipse;
+    try {
+      ellipse = cv::fitEllipse(contour);
+    } catch (const cv::Exception &) {
+      // 退化轮廓可能只有近似共线的像素，不能让它中断整帧检测。
+      continue;
+    }
+    if (!std::isfinite(ellipse.center.x) || !std::isfinite(ellipse.center.y) ||
+        ellipse.size.width <= 0.0F || ellipse.size.height <= 0.0F) {
+      continue;
+    }
+    const double shift = cv::norm(ellipse.center - seed);
     if (!std::isfinite(shift) || shift > traditional_r_max_shift_px_) continue;
-    const double area_penalty = area < 8.0 ? 8.0 - area : 0.0;
-    const double score = shift + area_penalty;
+    const double outside_penalty = seed_distance < 0.0 ? -seed_distance : 0.0;
+    const double score = shift + outside_penalty + 0.01 * std::sqrt(area);
     if (score < best_score) {
       best_score = score;
-      best_center = candidate;
+      best_center = ellipse.center;
     }
   }
   if (!std::isfinite(best_score)) return false;

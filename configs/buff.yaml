@@ -26,12 +26,16 @@ szu_traditional_min_valid_keypoints: 3
 szu_min_valid_keypoints: 4
 # 低置信角点才沿模型 R 点到符叶的径向搜索亮暗边界，再用结构张量做备用亚像素精修；高置信角点保留网络原点。
 szu_traditional_refine: true
-# 兼容旧配置；GEO-R/VIS-R 已停用，此项不再参与正常打符。
-szu_traditional_r_refine: false
+# 用网络 R 作为种子，在受限敌方颜色轮廓中拟合真实 R 中心；失败时保留网络点。
+szu_traditional_r_refine: true
 szu_traditional_corner_window: 5
 szu_traditional_max_shift_px: 8.0
-# 兼容旧配置；当前不再使用几何外推或局部亮斑修正 R 点。
+# R 轮廓细化的最大允许偏移；该值只影响 R 观测，不参与四角 PnP 距离。
 szu_traditional_r_max_shift_px: 24.0
+szu_r_color_roi_scale: 1.4
+szu_r_red_minus_blue_threshold: 50.0
+szu_r_blue_minus_red_threshold: 62.0
+szu_r_color_kernel_size: 5
 # R 点集合的最大离群距离和目标叶片到 R 点的最小像素距离。
 szu_r_center_max_spread_px: 50.0
 szu_min_target_radius_px: 20.0
@@ -47,7 +51,7 @@ szu_r_reprojection_margin_px: 20.0
 szu_pose_max_jump_deg: 30.0
 szu_pose_max_translation_jump_m: 0.75
 szu_pose_reacquire_after_rejections: 20
-# 最终姿态和距离只用四个叶片角点求 PnP；R 点不拉动深度，只在误差有区分度时判别 IPPE 镜像分支。
+# 最终姿态和距离只用四个叶片角点求 PnP；R 点不拉动深度，pnp-r 只做一致性诊断。
 szu_use_r_in_pnp: false
 # R 标相对符盘旋转中心的法向偏移，单位米。R 标应比旋转中心更靠近相机；当前模型约定为负方向。
 # 只改这个值用于对照实验，不要把扫描日志中的瞬时最佳值直接当作最终标定值。

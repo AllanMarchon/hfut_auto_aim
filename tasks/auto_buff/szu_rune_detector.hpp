@@ -82,7 +82,7 @@ private:
   bool estimate_geometric_r_center(
     const std::vector<cv::Point2f> & corners, cv::Point2f & r_center) const;
   bool refine_visual_r_center(
-    const cv::Mat & gray, const cv::Point2f & seed, const std::vector<cv::Point2f> & corners,
+    const cv::Mat & bgr_image, const cv::Point2f & seed, const std::vector<cv::Point2f> & corners,
     cv::Point2f & refined) const;
   double corner_strength(
     const cv::Mat & gradient_x, const cv::Mat & gradient_y, const cv::Point2f & point) const;
@@ -113,9 +113,14 @@ private:
   int traditional_min_valid_keypoints_{3};
   bool traditional_refine_enabled_{true};
   bool traditional_r_refine_enabled_{true};
+  bool enemy_red_{true};
   int traditional_corner_window_{5};
   float traditional_max_shift_px_{8.0f};
   float traditional_r_max_shift_px_{24.0f};
+  float r_color_roi_scale_{1.4f};
+  float r_color_red_threshold_{50.0f};
+  float r_color_blue_threshold_{62.0f};
+  int r_color_kernel_size_{5};
   cv::Mat camera_matrix_;
   cv::Mat distort_coeffs_;
   DebugStats debug_stats_;
