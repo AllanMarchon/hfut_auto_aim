@@ -563,11 +563,15 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       pose_valid_ = false;
       ++pose_rejection_count_;
       if (pose_rejection_count_ >= szu_pose_reacquire_after_rejections_) {
-        // 旧先验已经无法解释当前观测时，放弃旧分支，下一帧允许冷启动重新判别。
-        plane_normal_prior_valid_ = false;
-        pose_rejection_count_ = 0;
-        tools::logger()->debug(
-          "[BuffSolver] SZU 四角 PnP 重获连续性连续失败达到上限，清除旧先验并允许冷启动");
+        // 小符换扇叶只改变盘面内角度，不能因为短时看不到目标就清除正确的法向先验。
+        // 清除先验会让下一帧重新按单帧 R 残差选择 IPPE，容易回到距离错误的镜像分支。
+        const bool newly_reached_limit =
+          pose_rejection_count_ == szu_pose_reacquire_after_rejections_;
+        pose_rejection_count_ = szu_pose_reacquire_after_rejections_;
+        if (newly_reached_limit) {
+          tools::logger()->debug(
+            "[BuffSolver] SZU 四角 PnP 连续重获失败，保留旧法向和符盘中心先验，拒绝冷启动镜像分支");
+        }
       } else {
         tools::logger()->debug(
           "[BuffSolver] SZU 四角 PnP 姿态连续性不通过，等待法向和符盘中心重新稳定 "
