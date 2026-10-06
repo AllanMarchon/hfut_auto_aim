@@ -37,14 +37,20 @@ Solver::Solver(const std::string & config_path) : R_gimbal2world_(Eigen::Matrix3
   szu_use_r_in_pnp_ = yaml["szu_use_r_in_pnp"]
                         ? yaml["szu_use_r_in_pnp"].as<bool>()
                         : szu_use_r_in_pnp_;
+  szu_r_object_normal_offset_m_ = yaml["szu_r_object_normal_offset_m"]
+    ? yaml["szu_r_object_normal_offset_m"].as<double>()
+    : szu_r_object_normal_offset_m_;
   if (!std::isfinite(szu_corner_reprojection_max_px_) ||
       !std::isfinite(szu_r_reprojection_max_px_) ||
       !std::isfinite(szu_r_reprojection_margin_px_) ||
       !std::isfinite(szu_pose_max_jump_rad_) ||
       !std::isfinite(szu_pose_max_translation_jump_m_) ||
+      !std::isfinite(szu_r_object_normal_offset_m_) ||
       szu_corner_reprojection_max_px_ <= 0.0 || szu_r_reprojection_max_px_ <= 0.0 ||
       szu_r_reprojection_margin_px_ < 0.0 || szu_pose_max_jump_rad_ <= 0.0 ||
-      szu_pose_max_translation_jump_m_ <= 0.0 || szu_pose_reacquire_after_rejections_ <= 0) {
+      szu_pose_max_translation_jump_m_ <= 0.0 || szu_pose_reacquire_after_rejections_ <= 0 ||
+      std::abs(szu_r_object_normal_offset_m_) < 1e-4 ||
+      std::abs(szu_r_object_normal_offset_m_) > 1.0) {
     throw std::invalid_argument("SZU PnP 配置必须是有限值且处于有效范围");
   }
 
@@ -120,13 +126,16 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   }
   const std::vector<cv::Point3f> object_points_corners(
     OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
-  // PnP 原点是符盘旋转中心；网络 R 点对应盘面前方的可见 R 标，二者相差 100 mm。
-  const std::vector<cv::Point3f> r_object_point{VISIBLE_R_OBJECT_POINT};
+  // PnP 原点是符盘旋转中心；网络 R 点对应更靠近相机的可见 R 标，位置由配置给出。
+  const cv::Point3f visible_r_object_point{
+    static_cast<float>(szu_r_object_normal_offset_m_), 0.0F, 0.0F};
+  const std::vector<cv::Point3f> r_object_point{visible_r_object_point};
   // 仅用于诊断 R 点法向符号，不能参与最终姿态选择。
-  const std::vector<cv::Point3f> opposite_r_object_point{{0.1F, 0.0F, 0.0F}};
+  const std::vector<cv::Point3f> opposite_r_object_point{{
+    static_cast<float>(-szu_r_object_normal_offset_m_), 0.0F, 0.0F}};
   std::vector<cv::Point3f> szu_object_points = object_points_corners;
   // 五点约束必须使用可见 R 标的三维位置，否则会把旋转中心误当成 R 标。
-  szu_object_points.emplace_back(VISIBLE_R_OBJECT_POINT);
+  szu_object_points.emplace_back(visible_r_object_point);
 
   struct PnpCandidate
   {
@@ -223,15 +232,13 @@ void Solver::solve(std::optional<PowerRune> & ps) const
         const double plane_normal_delta_rad = std::acos(normal_cos);
         candidate_plane_normal_delta_rad = plane_normal_delta_rad;
         continuity_score = plane_normal_delta_rad;
-        // 先验存在时始终用法向和 R 中心给候选排序；只有当前姿态仍有效时才硬拒绝跳变。
+        // 先验存在时始终用法向和符盘中心给候选排序，并在连续跟踪和重获阶段都拒绝明显跳变。
         const double r_center_delta_norm =
           (candidate_r_center_from_gimbal_world - r_center_from_gimbal_world_prior_).norm();
         candidate_r_center_delta_m = r_center_delta_norm;
         continuity_score += 0.25 * r_center_delta_norm;
-        if (pose_valid_) {
-          candidate_continuity_valid = plane_normal_delta_rad <= szu_pose_max_jump_rad_ &&
-            r_center_delta_norm <= szu_pose_max_translation_jump_m_;
-        }
+        candidate_continuity_valid = plane_normal_delta_rad <= szu_pose_max_jump_rad_ &&
+          r_center_delta_norm <= szu_pose_max_translation_jump_m_;
       } else {
         // 世界 Z 轴为竖直方向；符盘实体竖直，初次解算优先选择水平法向候选。
         continuity_score = std::abs(candidate_plane_normal_world.z());
@@ -443,16 +450,22 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     r_diagnostics.network.count > 0 && r_diagnostics.network_confidence >= 0.8 &&
     best_r_unconstrained.corner_error <= szu_corner_reprojection_max_px_ &&
     best_r_unconstrained.r_error <= szu_r_reprojection_max_px_ &&
+    (!plane_normal_prior_valid_ ||
+     (best_r_unconstrained.plane_normal_delta_rad <= szu_pose_max_jump_rad_ &&
+      best_r_unconstrained.r_center_delta_m <= szu_pose_max_translation_jump_m_)) &&
     (!std::isfinite(r_branch_second_error_px) ||
      r_branch_second_error_px - r_branch_best_error_px >= r_branch_min_separation_px);
-  if (use_szu_point_indices && had_previous_pose) {
+  const bool has_reacquire_prior = use_szu_point_indices && plane_normal_prior_valid_;
+  if (use_szu_point_indices && (had_previous_pose || has_reacquire_prior)) {
     if (!szu_use_r_in_pnp_) {
       // 小符未激活时目标扇叶会真实切换，不能比较盘面内 roll；但法向和 R 中心
       // 仍应连续，用它们挡住四角 IPPE 的镜像解或明显错误的角点姿态。
-      if (strong_r_branch_for_four_corner) {
-        best_ptr = &best_r_unconstrained;
-      } else if (best_continuous.valid) {
+      // R 标模型存在固定偏移时，不能让单帧 R 像素误差覆盖连续性；重获时也要
+      // 继续使用保留下来的法向和 R 中心先验，避免每次丢帧都重新落到另一个镜像解。
+      if (best_continuous.valid) {
         best_ptr = &best_continuous;
+      } else if (strong_r_branch_for_four_corner) {
+        best_ptr = &best_r_unconstrained;
       }
     } else if (accept_strong_r_reacquisition) {
       best_ptr = &best_r_unconstrained;
@@ -472,7 +485,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   } else if (use_szu_point_indices && szu_use_r_in_pnp_ && best_r_candidate.valid) {
     best_ptr = &best_r_candidate;
   } else if (use_szu_point_indices && !szu_use_r_in_pnp_) {
-    // 首次启动没有历史姿态时优先用 R 判别 IPPE 分支；R 不可靠时才退回角点误差。
+    // 首次启动没有历史姿态时才用 R 判别 IPPE 分支；一旦已有先验，上一分支的
+    // 连续性优先级高于当前帧的 R 像素残差。
     best_ptr = strong_r_branch_for_four_corner
       ? &best_r_unconstrained
       : (best_geometry.valid ? &best_geometry : nullptr);
@@ -545,10 +559,25 @@ void Solver::solve(std::optional<PowerRune> & ps) const
         pose_rejection_count_ = 0;
         tools::logger()->debug("[BuffSolver] 连续姿态拒绝达到上限，等待 R 合格的新姿态重新初始化");
       }
+    } else if (use_szu_point_indices && !szu_use_r_in_pnp_ && plane_normal_prior_valid_) {
+      pose_valid_ = false;
+      ++pose_rejection_count_;
+      if (pose_rejection_count_ >= szu_pose_reacquire_after_rejections_) {
+        // 旧先验已经无法解释当前观测时，放弃旧分支，下一帧允许冷启动重新判别。
+        plane_normal_prior_valid_ = false;
+        pose_rejection_count_ = 0;
+        tools::logger()->debug(
+          "[BuffSolver] SZU 四角 PnP 重获连续性连续失败达到上限，清除旧先验并允许冷启动");
+      } else {
+        tools::logger()->debug(
+          "[BuffSolver] SZU 四角 PnP 姿态连续性不通过，等待法向和符盘中心重新稳定 "
+          "reacquire={}/{}",
+          pose_rejection_count_, szu_pose_reacquire_after_rejections_);
+      }
     } else if (use_szu_point_indices && !szu_use_r_in_pnp_) {
       pose_valid_ = false;
       tools::logger()->debug(
-        "[BuffSolver] SZU 四角 PnP 姿态连续性不通过，等待法向和 R 中心重新稳定");
+        "[BuffSolver] SZU 四角 PnP 初始化候选无有效姿态，等待 R 或角点重新稳定");
     } else if (use_szu_point_indices) {
       pose_valid_ = false;
       tools::logger()->debug(

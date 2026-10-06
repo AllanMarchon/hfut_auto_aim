@@ -52,6 +52,9 @@ private:
   double szu_pose_max_translation_jump_m_{0.75};
   int szu_pose_reacquire_after_rejections_{20};
   bool szu_use_r_in_pnp_{false};
+  // R 标比符盘旋转中心更靠近相机；这里的正负号沿用符盘模型的 x 轴约定。
+  // 当前实测诊断支持负方向，保留为配置项便于以后用同一套程序对照验证。
+  double szu_r_object_normal_offset_m_{-0.1};
   mutable int r_offset_diagnostic_counter_{0};
 
   // 前四点按外端、顺时针侧、内端、逆时针侧排列；坐标原点是符盘旋转中心，700 mm 点是叶片中心。
@@ -60,9 +63,6 @@ private:
     cv::Point3f(0, 0, 573e-3), cv::Point3f(0, -127e-3, 700e-3),
     cv::Point3f(0, 0, 700e-3), cv::Point3f(0, 0, 220e-3),
     cv::Point3f(0, 0, 0)};  // 单位：米
-
-  // 网络检测到的是可见 R 标中心，它位于符盘平面法向负方向约 100 mm，不能与旋转中心混用。
-  const cv::Point3f VISIBLE_R_OBJECT_POINT{-0.1F, 0.0F, 0.0F};
 
 };
 }  // namespace auto_buff
