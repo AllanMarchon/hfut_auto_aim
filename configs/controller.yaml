@@ -13,7 +13,8 @@ gimbal_pipeline:
       planner:
         mode: mpc
 
-      # SP TinyMPC 参数，只有 planner.mode: mpc 时使用。
+      # SP TinyMPC 参数。普通自瞄使用时由 auto_aim::Planner 读取；
+      # smallbuff 使用同一组二阶约束和权重生成小符参考轨迹。
       # yaw_offset / pitch_offset 单位：度；max_*_acc 单位：rad/s²。
       # MPC 模式下 max_*_acc 同时作为 TinyMPC 内部约束和最终串口下发云台加速度限幅。
       mpc_planner:

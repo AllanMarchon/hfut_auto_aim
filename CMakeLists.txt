@@ -102,10 +102,11 @@ target_link_libraries(auto_aim PUBLIC
   ${HFUT_SPDLOG_TARGET}
 )
 
-# SP25 打符核心。打符运动前馈独立于普通自瞄 TinyMPC。
+# SP25 打符核心。小符 MPC 复用普通自瞄的 TinyMPC 求解器，但不改变普通自瞄链路。
 add_library(auto_buff STATIC
   tasks/auto_buff/buff_aimer.cpp
   tasks/auto_buff/buff_detector.cpp
+  tasks/auto_buff/buff_mpc_planner.cpp
   tasks/auto_buff/buff_solver.cpp
   tasks/auto_buff/buff_target.cpp
   tasks/auto_buff/buff_type.cpp
@@ -115,6 +116,7 @@ add_library(auto_buff STATIC
 target_include_directories(auto_buff PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(auto_buff PUBLIC
   tools
+  tinympcstatic
   Eigen3::Eigen
   ${OpenCV_LIBS}
   yaml-cpp
