@@ -407,11 +407,22 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     best_r_unconstrained.r_error <= strong_r_reprojection_max_px &&
     best_r_unconstrained.plane_normal_delta_rad <= szu_pose_max_jump_rad_ &&
     best_r_unconstrained.r_center_delta_m <= szu_pose_max_translation_jump_m_;
+  // R 不参与最终四角 PnP，但它是区分共面 IPPE 正反镜像解的唯一同帧依据。
+  // 只有 R 反投影足够近时才用它切换分支，R 自身异常时仍退回角点和历史连续性。
+  const bool strong_r_branch_for_four_corner =
+    use_szu_point_indices && !szu_use_r_in_pnp_ && best_r_unconstrained.valid &&
+    r_diagnostics.network.count > 0 && r_diagnostics.network_confidence >= 0.8 &&
+    best_r_unconstrained.corner_error <= szu_corner_reprojection_max_px_ &&
+    best_r_unconstrained.r_error <= strong_r_reprojection_max_px;
   if (use_szu_point_indices && had_previous_pose) {
     if (!szu_use_r_in_pnp_) {
       // 小符未激活时目标扇叶会真实切换，不能比较盘面内 roll；但法向和 R 中心
       // 仍应连续，用它们挡住四角 IPPE 的镜像解或明显错误的角点姿态。
-      if (best_continuous.valid) best_ptr = &best_continuous;
+      if (strong_r_branch_for_four_corner) {
+        best_ptr = &best_r_unconstrained;
+      } else if (best_continuous.valid) {
+        best_ptr = &best_continuous;
+      }
     } else if (accept_strong_r_reacquisition) {
       best_ptr = &best_r_unconstrained;
       tools::logger()->debug(
@@ -430,9 +441,9 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   } else if (use_szu_point_indices && szu_use_r_in_pnp_ && best_r_candidate.valid) {
     best_ptr = &best_r_candidate;
   } else if (use_szu_point_indices && !szu_use_r_in_pnp_) {
-    // 有先验时优先使用连续候选；真正首次启动没有先验时才退回最小角点误差。
-    best_ptr = best_continuous.valid
-      ? &best_continuous
+    // 首次启动没有历史姿态时优先用 R 判别 IPPE 分支；R 不可靠时才退回角点误差。
+    best_ptr = strong_r_branch_for_four_corner
+      ? &best_r_unconstrained
       : (best_geometry.valid ? &best_geometry : nullptr);
   } else if (!use_szu_point_indices && best_geometry.valid) {
     best_ptr = &best_geometry;
