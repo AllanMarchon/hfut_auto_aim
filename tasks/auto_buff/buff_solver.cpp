@@ -88,7 +88,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
 {
   if (!ps.has_value()) return;
   PowerRune & p = ps.value();
-  // 当前观测无效时保留上一帧有效姿态；由外层连续丢帧计数决定何时真正重置。
+  // 当前观测无效时保留内部 PnP 先验；由外层连续丢帧计数决定何时进入重获。
   const bool had_previous_pose = pose_valid_;
   p.pnp_r_projection_valid = false;
   if (p.fanblades.empty() || p.target().points.size() < 4) {
@@ -232,13 +232,16 @@ void Solver::solve(std::optional<PowerRune> & ps) const
         const double plane_normal_delta_rad = std::acos(normal_cos);
         candidate_plane_normal_delta_rad = plane_normal_delta_rad;
         continuity_score = plane_normal_delta_rad;
-        // 先验存在时始终用法向和符盘中心给候选排序，并在连续跟踪和重获阶段都拒绝明显跳变。
+        // 先验存在时始终用法向和符盘中心给候选排序。连续跟踪阶段用门限硬拒绝
+        // 明显跳变；外层 reset_pose() 后属于重获阶段，先验只用于排序，不能把两个
+        // IPPE 候选同时判死，否则云台移动后会永久停在 tracked=0。
         const double r_center_delta_norm =
           (candidate_r_center_from_gimbal_world - r_center_from_gimbal_world_prior_).norm();
         candidate_r_center_delta_m = r_center_delta_norm;
         continuity_score += 0.25 * r_center_delta_norm;
-        candidate_continuity_valid = plane_normal_delta_rad <= szu_pose_max_jump_rad_ &&
-          r_center_delta_norm <= szu_pose_max_translation_jump_m_;
+        candidate_continuity_valid = !pose_valid_ ||
+          (plane_normal_delta_rad <= szu_pose_max_jump_rad_ &&
+           r_center_delta_norm <= szu_pose_max_translation_jump_m_);
       } else {
         // 世界 Z 轴为竖直方向；符盘实体竖直，初次解算优先选择水平法向候选。
         continuity_score = std::abs(candidate_plane_normal_world.z());
@@ -540,18 +543,18 @@ void Solver::solve(std::optional<PowerRune> & ps) const
           best_r_unconstrained.r_center_delta_m,
           best_r_candidate.valid ? best_r_candidate.r_error : -1.0);
       }
-      // 当前帧的姿态跳变超过限制时保留上一帧姿态，避免错误解污染跟踪器。
+      // 当前帧的姿态跳变超过限制时暂不采用候选，避免错误解污染跟踪器。
       ++pose_rejection_count_;
       if (best_geometry.valid) {
         tools::logger()->debug(
           "[BuffSolver] 拒绝 SZU PnP 候选: corners={:.2f}px plane_normal_delta={:.1f}deg "
-          "R_from_gimbal_delta={:.3f}m rejected={}/{}，保留上一帧姿态",
+          "R_from_gimbal_delta={:.3f}m rejected={}/{}，本帧不输出姿态",
           best_geometry.corner_error, best_geometry.plane_normal_delta_rad * 180.0 / CV_PI,
           best_geometry.r_center_delta_m, pose_rejection_count_,
           szu_pose_reacquire_after_rejections_);
       } else {
         tools::logger()->debug(
-          "[BuffSolver] 本帧没有有效 SZU PnP 候选 rejected={}/{}，保留上一帧姿态",
+          "[BuffSolver] 本帧没有有效 SZU PnP 候选 rejected={}/{}，本帧不输出姿态",
           pose_rejection_count_, szu_pose_reacquire_after_rejections_);
       }
       if (pose_rejection_count_ >= szu_pose_reacquire_after_rejections_) {
