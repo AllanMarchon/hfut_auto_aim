@@ -6,6 +6,7 @@
 #include <iterator>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include "tools/logger.hpp"
 
@@ -150,6 +151,9 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   PnpCandidate best_continuous;
   PnpCandidate best_four_corner;
   PnpCandidate best_five_point;
+  // 保存两个四角 IPPE 候选，诊断 R 点偏移时需要分别比较它们。
+  std::vector<PnpCandidate> four_corner_candidates;
+  four_corner_candidates.reserve(2);
   constexpr double r_error_tie_px = 3.0;
   // 记录两个四角 IPPE 候选的 R 误差，用相对差异判断镜像分支，而不是要求 R 绝对误差必须接近零。
   double r_branch_best_error_px = std::numeric_limits<double>::infinity();
@@ -251,6 +255,12 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       destination.r_center_from_gimbal_world = candidate_r_center_from_gimbal_world;
       destination.valid = true;
     };
+
+    if (four_corner_initial && use_szu_point_indices && !szu_use_r_in_pnp_) {
+      PnpCandidate snapshot;
+      save_candidate(snapshot);
+      four_corner_candidates.emplace_back(std::move(snapshot));
+    }
 
     if (!four_corner_initial && use_r_constraint &&
         (!best_five_point.valid || score < best_five_point.score)) {
@@ -646,6 +656,93 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       network.count > 0 ? network.center.x : -1.0F,
       network.count > 0 ? network.center.y : -1.0F,
       p.r_point_diagnostics.network_confidence);
+
+    struct ROffsetFit
+    {
+      double offset_m = 0.0;
+      double error_px = std::numeric_limits<double>::infinity();
+      cv::Point2f projected{0.0F, 0.0F};
+      bool valid = false;
+      bool at_scan_edge = false;
+    };
+    const auto scan_r_offset = [&](const PnpCandidate & candidate) {
+      ROffsetFit result;
+      if (!candidate.valid) return result;
+
+      // 只扫描法向位置，不把扫描结果用于控制或候选选择，避免诊断改变实车行为。
+      constexpr double scan_min_m = -0.30;
+      constexpr double scan_max_m = 0.30;
+      constexpr double scan_step_m = 0.01;
+      const int scan_count = static_cast<int>(std::lround(
+        (scan_max_m - scan_min_m) / scan_step_m));
+      std::vector<cv::Point3f> scan_points;
+      scan_points.reserve(static_cast<size_t>(scan_count + 1));
+      for (int i = 0; i <= scan_count; ++i) {
+        scan_points.emplace_back(
+          static_cast<float>(scan_min_m + scan_step_m * static_cast<double>(i)), 0.0F, 0.0F);
+      }
+      std::vector<cv::Point2f> projected_points;
+      cv::projectPoints(
+        scan_points, candidate.rvec, candidate.tvec, camera_matrix_, distort_coeffs_,
+        projected_points);
+      if (projected_points.size() != scan_points.size()) return result;
+
+      for (size_t i = 0; i < projected_points.size(); ++i) {
+        const double error = cv::norm(projected_points[i] - p.r_center);
+        if (error < result.error_px) {
+          result.offset_m = scan_points[i].x;
+          result.error_px = error;
+          result.projected = projected_points[i];
+          result.valid = true;
+        }
+      }
+      result.at_scan_edge = result.valid &&
+        (std::abs(result.offset_m - scan_min_m) < 0.5 * scan_step_m ||
+         std::abs(result.offset_m - scan_max_m) < 0.5 * scan_step_m);
+      return result;
+    };
+    const auto candidate_origin_distance = [](const PnpCandidate & candidate) {
+      return candidate.valid
+        ? std::sqrt(
+            candidate.tvec[0] * candidate.tvec[0] + candidate.tvec[1] * candidate.tvec[1] +
+            candidate.tvec[2] * candidate.tvec[2])
+        : 0.0;
+    };
+    const auto selected_fit = scan_r_offset(best);
+    const auto best_r_fit = scan_r_offset(best_r_unconstrained);
+    const auto continuous_fit = scan_r_offset(best_continuous);
+    const auto geometry_fit = scan_r_offset(best_geometry);
+    const auto branch0_fit = four_corner_candidates.size() > 0
+      ? scan_r_offset(four_corner_candidates[0]) : ROffsetFit{};
+    const auto branch1_fit = four_corner_candidates.size() > 1
+      ? scan_r_offset(four_corner_candidates[1]) : ROffsetFit{};
+    const auto format_fit = [](const ROffsetFit & fit) {
+      return fit.valid ? fit.offset_m : 0.0;
+    };
+    const auto error_fit = [](const ROffsetFit & fit) {
+      return fit.valid ? fit.error_px : -1.0;
+    };
+    const auto edge_fit = [](const ROffsetFit & fit) { return fit.valid && fit.at_scan_edge; };
+    const cv::Point2f selected_delta = best.valid ? best.projected_r - p.r_center : cv::Point2f{};
+    tools::logger()->debug(
+      "[BuffSolver] R 偏移扫描: selected(off/min/origin)={:.3f}/{:.2f}/{:.3f} "
+      "delta(pnp-net)=({:.1f},{:.1f}) "
+      "branch0(off/min/origin)={:.3f}/{:.2f}/{:.3f} "
+      "branch1(off/min/origin)={:.3f}/{:.2f}/{:.3f} "
+      "bestR={:.3f}/{:.2f} continuous={:.3f}/{:.2f} geometry={:.3f}/{:.2f} "
+      "edge={}/{}/{}/{} net=({:.1f},{:.1f}) final=({:.1f},{:.1f})",
+      format_fit(selected_fit), error_fit(selected_fit), candidate_origin_distance(best),
+      selected_delta.x, selected_delta.y,
+      format_fit(branch0_fit), error_fit(branch0_fit),
+      four_corner_candidates.size() > 0 ? candidate_origin_distance(four_corner_candidates[0]) : 0.0,
+      format_fit(branch1_fit), error_fit(branch1_fit),
+      four_corner_candidates.size() > 1 ? candidate_origin_distance(four_corner_candidates[1]) : 0.0,
+      format_fit(best_r_fit), error_fit(best_r_fit),
+      format_fit(continuous_fit), error_fit(continuous_fit),
+      format_fit(geometry_fit), error_fit(geometry_fit),
+      edge_fit(selected_fit), edge_fit(branch0_fit), edge_fit(branch1_fit), edge_fit(best_r_fit),
+      network.count > 0 ? network.center.x : -1.0F,
+      network.count > 0 ? network.center.y : -1.0F, p.r_center.x, p.r_center.y);
   }
   p.pnp_center_distance_m = std::sqrt(
     tvec_[0] * tvec_[0] + tvec_[1] * tvec_[1] + tvec_[2] * tvec_[2]);
