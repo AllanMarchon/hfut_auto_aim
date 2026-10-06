@@ -459,15 +459,17 @@ void SzuRuneDetector::refine_detections(
       const bool radial_refined = allow_traditional_refine && refine_radial_edge(
         gray, gradient_x, gradient_y, detection.r_center, corner, refined);
       bool subpix_refined = false;
-      if (radial_refined) {
-        corner = refined;
-        radial_refined_flags[corner_index] = true;
-        ++refined_count;
-        ++debug_stats_.traditional_edge_refined;
-      } else if (refine_corner_subpix(gray, gradient_x, gradient_y, corner, refined)) {
-        corner = refined;
-        ++refined_count;
-        subpix_refined = true;
+      if (allow_traditional_refine) {
+        if (radial_refined) {
+          corner = refined;
+          radial_refined_flags[corner_index] = true;
+          ++refined_count;
+          ++debug_stats_.traditional_edge_refined;
+        } else if (refine_corner_subpix(gray, gradient_x, gradient_y, corner, refined)) {
+          corner = refined;
+          ++refined_count;
+          subpix_refined = true;
+        }
       }
 
       const bool coordinate_valid = std::isfinite(corner.x) && std::isfinite(corner.y) &&
@@ -495,64 +497,15 @@ void SzuRuneDetector::refine_detections(
       std::isfinite(network_r_center.y) && network_r_center.x >= 0.0F &&
       network_r_center.y >= 0.0F && network_r_center.x < image.cols &&
       network_r_center.y < image.rows;
-    const bool network_r_confidence_valid =
-      r_center_index_ >= 0 && r_center_index_ < static_cast<int>(detection.keypoint_confidences.size()) &&
-      detection.keypoint_confidences[r_center_index_] >= keypoint_confidence_threshold_;
-
-    cv::Point2f geometric_r_center{0.0F, 0.0F};
-    bool geometric_r_valid = detection.traditional_geometry_valid &&
-      estimate_geometric_r_center(detection.corners, geometric_r_center);
-    // R 位于四角区域外，外推误差会被放大；与有效网络 R 不一致时只保留诊断结果，
-    // 不允许它进入 R 融合或 PnP 约束，避免 GEO-R 在背景边缘上乱跳。
-    if (geometric_r_valid && network_r_valid &&
-        cv::norm(geometric_r_center - network_r_center) > traditional_r_max_shift_px_) {
-      geometric_r_valid = false;
-      // 保留拒绝计数，避免诊断图上不再显示 GEO-R 后无法判断原因。
-      ++debug_stats_.traditional_geometry_rejected;
-    }
-    detection.geometric_r_center = geometric_r_center;
-    detection.geometric_r_valid = geometric_r_valid;
-    if (geometric_r_valid) {
-      ++debug_stats_.traditional_geometry_pass;
-    }
-
-    cv::Point2f visual_r_center{0.0F, 0.0F};
-    const bool visual_r_valid = traditional_r_refine_enabled_ &&
-      refine_visual_r_center(gray, detection.r_center, detection.corners, visual_r_center);
-    detection.visual_r_center = visual_r_center;
-    detection.visual_r_valid = visual_r_valid;
-    if (visual_r_valid) ++debug_stats_.traditional_r_geometry;
-
-    // 网络 R 高置信时直接保留网络观测；GEO/视觉只在网络 R 不可靠时参与补偿。
-    // 这样诊断源可以继续显示，但不会用启发式结果覆盖已经稳定的网络点。
-    cv::Point2f selected_r_center = network_r_center;
-    bool selected_r_refined = false;
-    if (geometric_r_valid && (!network_r_valid || !network_r_confidence_valid)) {
-      const double network_geometry_gap = network_r_valid
-        ? cv::norm(geometric_r_center - network_r_center)
-        : std::numeric_limits<double>::infinity();
-      if (!network_r_valid || !network_r_confidence_valid ||
-          network_geometry_gap <= traditional_r_max_shift_px_) {
-        selected_r_center = geometric_r_center;
-        selected_r_refined = true;
-        if (network_r_valid && std::isfinite(network_geometry_gap)) {
-          selected_r_center = selected_r_center * 0.70F + network_r_center * 0.30F;
-        }
-      }
-    }
-    if (visual_r_valid && (!network_r_valid || !network_r_confidence_valid) &&
-        std::isfinite(selected_r_center.x) && std::isfinite(selected_r_center.y) &&
-        cv::norm(visual_r_center - selected_r_center) <= traditional_r_max_shift_px_) {
-      selected_r_center = selected_r_center * 0.75F + visual_r_center * 0.25F;
-      selected_r_refined = true;
-    }
-    if (std::isfinite(selected_r_center.x) && std::isfinite(selected_r_center.y) &&
-        selected_r_center.x >= 0.0F && selected_r_center.y >= 0.0F &&
-        selected_r_center.x < image.cols && selected_r_center.y < image.rows) {
-      detection.r_center = selected_r_center;
-      detection.traditional_r_refined = selected_r_refined;
-      if (selected_r_refined) ++debug_stats_.traditional_r_refined;
-    }
+    // R 只采用模型直接输出，彻底移除 GEO-R 和 VIS-R 对目标中心的覆盖。
+    // R 位于四角区域外，几何外推和局部亮斑都可能在背景边缘上跳变；它们不能参与正常打符。
+    detection.network_r_valid = network_r_valid;
+    detection.geometric_r_center = cv::Point2f(0.0F, 0.0F);
+    detection.geometric_r_valid = false;
+    detection.visual_r_center = cv::Point2f(0.0F, 0.0F);
+    detection.visual_r_valid = false;
+    detection.traditional_r_refined = false;
+    if (network_r_valid) detection.r_center = network_r_center;
   }
 }
 

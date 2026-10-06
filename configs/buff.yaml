@@ -24,12 +24,13 @@ szu_nms_distance: 30.0
 szu_traditional_min_valid_keypoints: 3
 # 关闭传统阶段时使用的严格备用门槛。
 szu_min_valid_keypoints: 4
-# 低置信角点才沿 R 点到符叶的径向搜索亮暗边界，再用结构张量做备用亚像素精修；高置信角点保留网络原点。
+# 低置信角点才沿模型 R 点到符叶的径向搜索亮暗边界，再用结构张量做备用亚像素精修；高置信角点保留网络原点。
 szu_traditional_refine: true
-szu_traditional_r_refine: true
+# 兼容旧配置；GEO-R/VIS-R 已停用，此项不再参与正常打符。
+szu_traditional_r_refine: false
 szu_traditional_corner_window: 5
 szu_traditional_max_shift_px: 8.0
-# R 点使用四角平面几何和局部亮斑做小幅融合，偏差过大时保留网络 R 点。
+# 兼容旧配置；当前不再使用几何外推或局部亮斑修正 R 点。
 szu_traditional_r_max_shift_px: 24.0
 # R 点集合的最大离群距离和目标叶片到 R 点的最小像素距离。
 szu_r_center_max_spread_px: 50.0
@@ -39,15 +40,15 @@ szu_reject_r_geometry: false
 # SZU 五点 PnP 的宽松保护阈值，避免关键点轻微抖动直接清空观测。
 szu_corner_reprojection_max_px: 15.0
 szu_r_reprojection_max_px: 50.0
-# R 点允许的诊断误差余量；只用于候选筛选，不会把 R 加入五点迭代。
+# R 点允许的诊断误差余量；仅在显式重新开启 R 约束时用于候选筛选。
 szu_r_reprojection_margin_px: 20.0
 # 有效跟踪帧比较世界坐标下的符盘法向和相对云台原点的 R 中心向量；重获时法向只用于候选排序。
 # R 中心向量没有底盘平移补偿，底盘移动时只适合作为短时连续性参考。
 szu_pose_max_jump_deg: 30.0
 szu_pose_max_translation_jump_m: 0.75
 szu_pose_reacquire_after_rejections: 20
-# 网络 R 点与四角共同细化姿态；候选仍受四角和 R 重投影门槛限制。
-szu_use_r_in_pnp: true
+# 只用四个叶片角点求 PnP；R 点保留用于重投影诊断，避免 R 像素中心误差把深度拉偏。
+szu_use_r_in_pnp: false
 
 # SZU 五点编号：0 是远离 R 的外端，1 在 0 的逆时针侧，3 在顺时针侧，4 是朝 R 的内端，2 是 R 标中心。
 # 传统阶段关闭时强制四个符叶角点过关键点阈值；开启时允许三个网络点进入，由传统阶段尝试修正。

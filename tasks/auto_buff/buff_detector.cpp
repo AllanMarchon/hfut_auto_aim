@@ -246,7 +246,8 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   std::vector<TargetRSample> target_r_samples;
 
   for (const auto & result : results) {
-    if (result.corners.size() != 4) continue;
+    // 正常打符只接受模型给出的有效 R；不再用 GEO-R 或 VIS-R 外推补点。
+    if (result.corners.size() != 4 || !result.network_r_valid) continue;
     FanBlade blade(
       result.corners, result.center, classify_szu_blade(result.class_id, rune_type), result.class_id,
       result.confidence);
@@ -332,7 +333,8 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   };
   double r_center_spread = 0.0;
   for (const auto & result : results) {
-    if (result.corners.size() == 4) {
+    // 只统计已经进入正常打符链路的网络 R；被过滤的检测不能污染 R 一致性诊断。
+    if (result.corners.size() == 4 && result.network_r_valid) {
       r_center_spread = std::max(r_center_spread, cv::norm(result.r_center - r_center));
     }
   }
