@@ -53,12 +53,15 @@ private:
   int szu_pose_reacquire_after_rejections_{20};
   bool szu_use_r_in_pnp_{false};
 
-  // 前四点按外端、顺时针侧、内端、逆时针侧排列；坐标原点为 R 中心，700 mm 点是叶片中心。
+  // 前四点按外端、顺时针侧、内端、逆时针侧排列；坐标原点是符盘旋转中心，700 mm 点是叶片中心。
   const std::vector<cv::Point3f> OBJECT_POINTS = {
     cv::Point3f(0, 0, 827e-3), cv::Point3f(0, 127e-3, 700e-3),
     cv::Point3f(0, 0, 573e-3), cv::Point3f(0, -127e-3, 700e-3),
     cv::Point3f(0, 0, 700e-3), cv::Point3f(0, 0, 220e-3),
     cv::Point3f(0, 0, 0)};  // 单位：米
+
+  // 网络检测到的是可见 R 标中心，它位于符盘平面法向负方向约 100 mm，不能与旋转中心混用。
+  const cv::Point3f VISIBLE_R_OBJECT_POINT{-0.1F, 0.0F, 0.0F};
 
 };
 }  // namespace auto_buff

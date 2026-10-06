@@ -118,10 +118,11 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   }
   const std::vector<cv::Point3f> object_points_corners(
     OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
-  // R 标中心是模型坐标原点，700 mm 点是待击打叶片中心。
-  const std::vector<cv::Point3f> r_object_point{OBJECT_POINTS.back()};
+  // PnP 原点是符盘旋转中心；网络 R 点对应盘面前方的可见 R 标，二者相差 100 mm。
+  const std::vector<cv::Point3f> r_object_point{VISIBLE_R_OBJECT_POINT};
   std::vector<cv::Point3f> szu_object_points = object_points_corners;
-  szu_object_points.emplace_back(OBJECT_POINTS.back());
+  // 五点约束必须使用可见 R 标的三维位置，否则会把旋转中心误当成 R 标。
+  szu_object_points.emplace_back(VISIBLE_R_OBJECT_POINT);
 
   struct PnpCandidate
   {
@@ -572,7 +573,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   }
   p.pnp_reprojection_error_px =
     std::sqrt(squared_error / static_cast<double>(projected_points.size()));
-  // R 点是能量机关旋转中心，对应模型坐标原点；700 mm 点是待击打叶片中心。
+  // 这里反投影的是可见 R 标，不是符盘旋转中心；旋转中心距离仍由 tvec 单独计算。
   std::vector<cv::Point2f> r_projected_point;
   cv::projectPoints(
     r_object_point, rvec_, tvec_, camera_matrix_, distort_coeffs_, r_projected_point);
