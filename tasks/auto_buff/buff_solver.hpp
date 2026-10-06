@@ -48,8 +48,9 @@ private:
   double szu_corner_reprojection_max_px_{15.0};
   double szu_r_reprojection_max_px_{50.0};
   double szu_r_reprojection_margin_px_{20.0};
-  double szu_pose_max_jump_rad_{30.0 * CV_PI / 180.0};
-  double szu_pose_max_translation_jump_m_{0.75};
+  // 小符短时丢帧后符盘本体不会在世界坐标中瞬移；收紧门限可以拦住另一组 IPPE 镜像解。
+  double szu_pose_max_jump_rad_{15.0 * CV_PI / 180.0};
+  double szu_pose_max_translation_jump_m_{0.35};
   int szu_pose_reacquire_after_rejections_{20};
   bool szu_use_r_in_pnp_{false};
   // R 标比符盘旋转中心更靠近相机；这里的正负号沿用符盘模型的 x 轴约定。

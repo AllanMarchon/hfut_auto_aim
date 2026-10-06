@@ -46,10 +46,11 @@ szu_corner_reprojection_max_px: 15.0
 szu_r_reprojection_max_px: 50.0
 # R 点允许的额外误差余量，仅在显式重新开启 R 约束时用于五点候选筛选。
 szu_r_reprojection_margin_px: 20.0
-# 有效跟踪帧比较世界坐标下的符盘法向和相对云台原点的 R 中心向量；重获时法向只用于候选排序。
+# 有效跟踪帧比较世界坐标下的符盘法向和相对云台原点的 R 中心向量；短时重获也必须通过同一门限。
+# 随机换扇叶只改变盘面内位置，符盘法向和中心不会在相邻帧跳变；较紧门限用于拦住 IPPE 镜像解。
 # R 中心向量没有底盘平移补偿，底盘移动时只适合作为短时连续性参考。
-szu_pose_max_jump_deg: 30.0
-szu_pose_max_translation_jump_m: 0.75
+szu_pose_max_jump_deg: 15.0
+szu_pose_max_translation_jump_m: 0.35
 szu_pose_reacquire_after_rejections: 20
 # 最终姿态和距离只用四个叶片角点求 PnP；R 点不拉动深度，pnp-r 只做一致性诊断。
 szu_use_r_in_pnp: false

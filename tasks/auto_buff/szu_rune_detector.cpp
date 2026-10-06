@@ -610,71 +610,85 @@ bool SzuRuneDetector::refine_visual_r_center(
     cv::Rect(0, 0, bgr_image.cols, bgr_image.rows);
   if (roi_rect.empty()) return false;
 
-  std::vector<cv::Mat> channels;
-  cv::split(bgr_image(roi_rect), channels);
-  cv::Mat binary;
-  if (enemy_red_) {
-    cv::subtract(channels[2], channels[0], binary);
-    cv::GaussianBlur(binary, binary, cv::Size(r_color_kernel_size_, r_color_kernel_size_), 0.0);
-    cv::threshold(binary, binary, r_color_red_threshold_, 255, cv::THRESH_BINARY);
-  } else {
-    cv::subtract(channels[0], channels[2], binary);
-    cv::GaussianBlur(binary, binary, cv::Size(r_color_kernel_size_, r_color_kernel_size_), 0.0);
-    cv::threshold(binary, binary, r_color_blue_threshold_, 255, cv::THRESH_BINARY);
-  }
-
-  std::vector<std::vector<cv::Point>> contours;
-  cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE, roi_rect.tl());
   cv::Point2f blade_center(0.0F, 0.0F);
   for (const auto & corner : corners) blade_center += corner;
   blade_center *= 0.25F;
-  double best_score = std::numeric_limits<double>::infinity();
-  cv::Point2f best_center;
-  for (const auto & contour : contours) {
-    if (contour.size() < 5) continue;
-    const double area = std::abs(cv::contourArea(contour));
-    if (!std::isfinite(area) || area < 3.0 ||
-        area > static_cast<double>(roi_rect.area()) * 0.35) {
-      continue;
-    }
-    // 网络 R 可能只落在轮廓边缘，允许有限的轮廓边界距离；但不能接受远处的同色背景。
-    const double seed_distance = cv::pointPolygonTest(contour, seed, true);
-    if (!std::isfinite(seed_distance) || seed_distance < -traditional_r_max_shift_px_) {
-      continue;
-    }
-    // 排除靶心和四个叶片角点所在的轮廓，防止 ROI 内的主体亮斑被误当成 R。
-    if (cv::pointPolygonTest(contour, blade_center, false) >= 0.0) continue;
-    bool contains_corner = false;
-    for (const auto & corner : corners) {
-      if (cv::pointPolygonTest(contour, corner, false) >= 0.0) {
-        contains_corner = true;
-        break;
+  // 参考 fuchen 的实现，R 轮廓必须靠近网络种子，并且不能吞掉靶心或四个角点。
+  // 颜色分割优先；部分相机曝光下颜色差分会断裂，再用同一 ROI 内的亮度轮廓兜底。
+  const auto find_center = [&](const cv::Mat & binary, cv::Point2f & center) {
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE, roi_rect.tl());
+    double best_score = std::numeric_limits<double>::infinity();
+    cv::Point2f best_center;
+    for (const auto & contour : contours) {
+      if (contour.size() < 5) continue;
+      const double area = std::abs(cv::contourArea(contour));
+      if (!std::isfinite(area) || area <= 0.0) continue;
+
+      // 网络 R 可能落在轮廓边缘；允许有限的边界距离，但不接受远处同色背景。
+      const double seed_distance = cv::pointPolygonTest(contour, seed, true);
+      if (!std::isfinite(seed_distance) || seed_distance < -traditional_r_max_shift_px_) {
+        continue;
+      }
+      // 排除靶心和四个叶片角点所在的轮廓，防止主体亮斑替换 R。
+      if (cv::pointPolygonTest(contour, blade_center, false) >= 0.0) continue;
+      bool contains_corner = false;
+      for (const auto & corner : corners) {
+        if (cv::pointPolygonTest(contour, corner, false) >= 0.0) {
+          contains_corner = true;
+          break;
+        }
+      }
+      if (contains_corner) continue;
+
+      cv::RotatedRect ellipse;
+      try {
+        ellipse = cv::fitEllipse(contour);
+      } catch (const cv::Exception &) {
+        // 退化轮廓可能只有近似共线的像素，不能让它中断整帧检测。
+        continue;
+      }
+      if (!std::isfinite(ellipse.center.x) || !std::isfinite(ellipse.center.y) ||
+          ellipse.size.width <= 0.0F || ellipse.size.height <= 0.0F) {
+        continue;
+      }
+      const double shift = cv::norm(ellipse.center - seed);
+      if (!std::isfinite(shift) || shift > traditional_r_max_shift_px_) continue;
+      // 轮廓越大越可能是相连的叶片区域；只作为很小的次级惩罚，不覆盖距离种子远近。
+      const double outside_penalty = seed_distance < 0.0 ? -seed_distance : 0.0;
+      const double score = shift + outside_penalty + 0.01 * std::sqrt(area);
+      if (score < best_score) {
+        best_score = score;
+        best_center = ellipse.center;
       }
     }
-    if (contains_corner) continue;
-    cv::RotatedRect ellipse;
-    try {
-      ellipse = cv::fitEllipse(contour);
-    } catch (const cv::Exception &) {
-      // 退化轮廓可能只有近似共线的像素，不能让它中断整帧检测。
-      continue;
-    }
-    if (!std::isfinite(ellipse.center.x) || !std::isfinite(ellipse.center.y) ||
-        ellipse.size.width <= 0.0F || ellipse.size.height <= 0.0F) {
-      continue;
-    }
-    const double shift = cv::norm(ellipse.center - seed);
-    if (!std::isfinite(shift) || shift > traditional_r_max_shift_px_) continue;
-    const double outside_penalty = seed_distance < 0.0 ? -seed_distance : 0.0;
-    const double score = shift + outside_penalty + 0.01 * std::sqrt(area);
-    if (score < best_score) {
-      best_score = score;
-      best_center = ellipse.center;
-    }
+    if (!std::isfinite(best_score)) return false;
+    center = best_center;
+    return std::isfinite(center.x) && std::isfinite(center.y);
+  };
+
+  std::vector<cv::Mat> channels;
+  cv::split(bgr_image(roi_rect), channels);
+  cv::Mat color_difference;
+  if (enemy_red_) {
+    cv::subtract(channels[2], channels[0], color_difference);
+    cv::GaussianBlur(
+      color_difference, color_difference, cv::Size(r_color_kernel_size_, r_color_kernel_size_), 0.0);
+    cv::threshold(color_difference, color_difference, r_color_red_threshold_, 255, cv::THRESH_BINARY);
+  } else {
+    cv::subtract(channels[0], channels[2], color_difference);
+    cv::GaussianBlur(
+      color_difference, color_difference, cv::Size(r_color_kernel_size_, r_color_kernel_size_), 0.0);
+    cv::threshold(color_difference, color_difference, r_color_blue_threshold_, 255, cv::THRESH_BINARY);
   }
-  if (!std::isfinite(best_score)) return false;
-  refined = best_center;
-  return std::isfinite(refined.x) && std::isfinite(refined.y);
+  if (find_center(color_difference, refined)) return true;
+
+  // 颜色差分断裂时只在网络 R 附近使用亮度轮廓，避免恢复成全图传统检测。
+  cv::Mat gray;
+  cv::cvtColor(bgr_image(roi_rect), gray, cv::COLOR_BGR2GRAY);
+  cv::GaussianBlur(gray, gray, cv::Size(r_color_kernel_size_, r_color_kernel_size_), 0.0);
+  cv::threshold(gray, gray, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+  return find_center(gray, refined);
 }
 
 bool SzuRuneDetector::refine_radial_edge(

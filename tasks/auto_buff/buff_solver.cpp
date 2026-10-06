@@ -759,7 +759,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       "branch0(off/min/origin)={:.3f}/{:.2f}/{:.3f} "
       "branch1(off/min/origin)={:.3f}/{:.2f}/{:.3f} "
       "bestR={:.3f}/{:.2f} continuous={:.3f}/{:.2f} geometry={:.3f}/{:.2f} "
-      "edge={}/{}/{}/{} net=({:.1f},{:.1f}) final=({:.1f},{:.1f})",
+      "edge={}/{}/{}/{} net=({:.1f},{:.1f}) final=({:.1f},{:.1f}) "
+      "visual=({:.1f},{:.1f}) visual_count={}",
       format_fit(selected_fit), error_fit(selected_fit), candidate_origin_distance(best),
       selected_delta.x, selected_delta.y,
       format_fit(branch0_fit), error_fit(branch0_fit),
@@ -771,7 +772,10 @@ void Solver::solve(std::optional<PowerRune> & ps) const
       format_fit(geometry_fit), error_fit(geometry_fit),
       edge_fit(selected_fit), edge_fit(branch0_fit), edge_fit(branch1_fit), edge_fit(best_r_fit),
       network.count > 0 ? network.center.x : -1.0F,
-      network.count > 0 ? network.center.y : -1.0F, p.r_center.x, p.r_center.y);
+      network.count > 0 ? network.center.y : -1.0F, p.r_center.x, p.r_center.y,
+      r_diagnostics.visual.count > 0 ? r_diagnostics.visual.center.x : -1.0F,
+      r_diagnostics.visual.count > 0 ? r_diagnostics.visual.center.y : -1.0F,
+      r_diagnostics.visual.count);
   }
   p.pnp_center_distance_m = std::sqrt(
     tvec_[0] * tvec_[0] + tvec_[1] * tvec_[1] + tvec_[2] * tvec_[2]);
