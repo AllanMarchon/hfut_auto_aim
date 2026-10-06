@@ -63,9 +63,12 @@ std::vector<double> readMpcVector(const YAML::Node & node, const char * key, std
 
 void setupSolver(
   TinySolver ** solver, const YAML::Node & node, const char * max_acc_key,
-  const char * q_key, const char * r_key)
+  const char * q_key, const char * r_key,
+  const std::optional<double> & max_acceleration_override)
 {
-  const double max_acc = readMpcDouble(node, max_acc_key);
+  const double max_acc = max_acceleration_override.has_value()
+                           ? *max_acceleration_override
+                           : readMpcDouble(node, max_acc_key);
   if (max_acc <= 0.0) {
     throw std::invalid_argument(std::string("controller.mpc_planner.") + max_acc_key + " 必须 > 0");
   }
@@ -98,11 +101,53 @@ void setupSolver(
 }
 }  // namespace
 
+SmallBuffMpcOverrides loadSmallBuffMpcOverrides(const std::string & buff_config)
+{
+  SmallBuffMpcOverrides result;
+  const auto root = YAML::LoadFile(buff_config);
+  const auto node = root["smallbuff_mpc"];
+  if (!node) return result;
+
+  const auto readPositive = [&](const char * key, const char * unit) -> std::optional<double> {
+    if (!node[key]) return std::nullopt;
+    const double value = node[key].as<double>();
+    if (!std::isfinite(value) || value <= 0.0) {
+      throw std::invalid_argument(
+        std::string("buff.smallbuff_mpc.") + key + " 必须是有限正数 (" + unit + ")");
+    }
+    return value;
+  };
+  const auto readNonNegative = [&](const char * key) -> std::optional<double> {
+    if (!node[key]) return std::nullopt;
+    const double value = node[key].as<double>();
+    if (!std::isfinite(value) || value < 0.0) {
+      throw std::invalid_argument(
+        std::string("buff.smallbuff_mpc.") + key + " 必须是有限非负数");
+    }
+    return value;
+  };
+
+  result.max_yaw_acceleration_rad_s2 = readPositive("max_yaw_acceleration", "rad/s^2");
+  result.max_pitch_acceleration_rad_s2 = readPositive("max_pitch_acceleration", "rad/s^2");
+  result.yaw_error_gain = readNonNegative("yaw_error_gain");
+  result.pitch_error_gain = readNonNegative("pitch_error_gain");
+  const auto max_yaw_velocity_deg_s = readPositive("max_yaw_velocity", "deg/s");
+  const auto max_pitch_velocity_deg_s = readPositive("max_pitch_velocity", "deg/s");
+  if (max_yaw_velocity_deg_s.has_value()) {
+    result.max_yaw_velocity_rad_s = *max_yaw_velocity_deg_s * kDegToRad;
+  }
+  if (max_pitch_velocity_deg_s.has_value()) {
+    result.max_pitch_velocity_rad_s = *max_pitch_velocity_deg_s * kDegToRad;
+  }
+  return result;
+}
+
 MpcPlanner::MpcPlanner(
   const std::string & controller_config, const std::string & buff_config)
 {
-  setupYawSolver(controller_config);
-  setupPitchSolver(controller_config);
+  const auto overrides = loadSmallBuffMpcOverrides(buff_config);
+  setupYawSolver(controller_config, overrides.max_yaw_acceleration_rad_s2);
+  setupPitchSolver(controller_config, overrides.max_pitch_acceleration_rad_s2);
 
   const auto buff = YAML::LoadFile(buff_config);
   yaw_offset_ = buff["yaw_offset"].as<double>(0.0) * kDegToRad;
@@ -114,16 +159,22 @@ MpcPlanner::MpcPlanner(
   }
 }
 
-void MpcPlanner::setupYawSolver(const std::string & controller_config)
+void MpcPlanner::setupYawSolver(
+  const std::string & controller_config,
+  const std::optional<double> & max_acceleration_override)
 {
   const auto node = mpcNode(controller_config);
-  setupSolver(&yaw_solver_, node, "max_yaw_acc", "Q_yaw", "R_yaw");
+  setupSolver(
+    &yaw_solver_, node, "max_yaw_acc", "Q_yaw", "R_yaw", max_acceleration_override);
 }
 
-void MpcPlanner::setupPitchSolver(const std::string & controller_config)
+void MpcPlanner::setupPitchSolver(
+  const std::string & controller_config,
+  const std::optional<double> & max_acceleration_override)
 {
   const auto node = mpcNode(controller_config);
-  setupSolver(&pitch_solver_, node, "max_pitch_acc", "Q_pitch", "R_pitch");
+  setupSolver(
+    &pitch_solver_, node, "max_pitch_acc", "Q_pitch", "R_pitch", max_acceleration_override);
 }
 
 MpcPlanner::AimSample MpcPlanner::aimAt(

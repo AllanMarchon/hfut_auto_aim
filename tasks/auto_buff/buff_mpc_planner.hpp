@@ -2,6 +2,7 @@
 #define AUTO_BUFF__MPC_PLANNER_HPP
 
 #include <chrono>
+#include <optional>
 #include <string>
 
 #include "tasks/auto_aim/planner/planner.hpp"
@@ -10,6 +11,20 @@
 
 namespace auto_buff
 {
+
+// 小符专用控制覆盖项。未填写的字段继续使用 controller.yaml 的值。
+// 速度字段在读取 YAML 后统一转换为弧度每秒，便于直接送入控制器。
+struct SmallBuffMpcOverrides
+{
+  std::optional<double> max_yaw_acceleration_rad_s2;
+  std::optional<double> max_pitch_acceleration_rad_s2;
+  std::optional<double> yaw_error_gain;
+  std::optional<double> pitch_error_gain;
+  std::optional<double> max_yaw_velocity_rad_s;
+  std::optional<double> max_pitch_velocity_rad_s;
+};
+
+SmallBuffMpcOverrides loadSmallBuffMpcOverrides(const std::string & buff_config);
 
 // 小符 MPC 的一次规划结果。角度仍使用 Buff Aimer 的世界坐标约定，
 // standard.cpp 会在串口边界统一处理 yaw/pitch 符号。
@@ -48,8 +63,12 @@ private:
   bool warned_solver_status_ = false;
 
   AimSample aimAt(SmallTarget target, double prediction_time, double bullet_speed) const;
-  void setupYawSolver(const std::string & controller_config);
-  void setupPitchSolver(const std::string & controller_config);
+  void setupYawSolver(
+    const std::string & controller_config,
+    const std::optional<double> & max_acceleration_override);
+  void setupPitchSolver(
+    const std::string & controller_config,
+    const std::optional<double> & max_acceleration_override);
 };
 
 }  // namespace auto_buff

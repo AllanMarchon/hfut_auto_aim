@@ -1396,7 +1396,34 @@ int run(const Options& options) {
   if (!camera->open()) throw std::runtime_error("相机打开失败: " + camera->errorMessage());
 
   const auto serial_config = makeSerialConfig(options);
-  const auto command_limiter_config = loadCommandLimiterConfig(options.controller_config);
+  auto command_limiter_config = loadCommandLimiterConfig(options.controller_config);
+  if (options.aim_task == "smallbuff") {
+    // 小符云台能力和反馈增益单独从 buff.yaml 读取，避免被普通自瞄的激进参数带着震动。
+    const auto buff_mpc_overrides = auto_buff::loadSmallBuffMpcOverrides(adapted_config_path);
+    if (buff_mpc_overrides.max_yaw_acceleration_rad_s2.has_value()) {
+      command_limiter_config.max_yaw_acc_rad_s2 =
+        *buff_mpc_overrides.max_yaw_acceleration_rad_s2;
+    }
+    if (buff_mpc_overrides.max_pitch_acceleration_rad_s2.has_value()) {
+      command_limiter_config.max_pitch_acc_rad_s2 =
+        *buff_mpc_overrides.max_pitch_acceleration_rad_s2;
+    }
+    if (buff_mpc_overrides.yaw_error_gain.has_value()) {
+      command_limiter_config.serial_command_yaw_error_gain = *buff_mpc_overrides.yaw_error_gain;
+    }
+    if (buff_mpc_overrides.pitch_error_gain.has_value()) {
+      command_limiter_config.serial_command_pitch_error_gain =
+        *buff_mpc_overrides.pitch_error_gain;
+    }
+    if (buff_mpc_overrides.max_yaw_velocity_rad_s.has_value()) {
+      command_limiter_config.serial_command_max_yaw_velocity_rad_s =
+        *buff_mpc_overrides.max_yaw_velocity_rad_s;
+    }
+    if (buff_mpc_overrides.max_pitch_velocity_rad_s.has_value()) {
+      command_limiter_config.serial_command_max_pitch_velocity_rad_s =
+        *buff_mpc_overrides.max_pitch_velocity_rad_s;
+    }
+  }
   const bool use_buff_mpc_planner =
       options.aim_task == "smallbuff" && plannerModeUsesMpc(command_limiter_config.planner_mode);
   hfut::io::HfutSerialGimbalConfig gimbal_config;

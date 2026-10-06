@@ -96,6 +96,18 @@ motion_feedforward:
   max_yaw_acceleration: 50.0  # rad/s^2；打符专用上限
   max_pitch_acceleration: 80.0  # rad/s^2；打符专用上限
 
+# 小符 TinyMPC 专用控制参数。只在 smallbuff 模式覆盖 controller.yaml，
+# 普通自瞄和大符不受影响。7m 左右先用较保守的云台能力，换叶片时会更平顺。
+# max_*_acceleration 同时限制 MPC 输入和最终下发加速度，单位 rad/s^2。
+# *_error_gain 单位 1/s；速度上限单位 deg/s。
+smallbuff_mpc:
+  max_yaw_acceleration: 10.0
+  max_pitch_acceleration: 15.0
+  yaw_error_gain: 2.0
+  pitch_error_gain: 2.0
+  max_yaw_velocity: 80.0
+  max_pitch_velocity: 60.0
+
 #####-----启动时会被 hardware.yaml 覆盖的实车标定参数-----#####
 image_width: 1280
 image_height: 1024
