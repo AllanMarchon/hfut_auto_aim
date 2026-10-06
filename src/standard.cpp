@@ -1418,6 +1418,9 @@ int run(const Options& options) {
           ? loadOutpostCommandLimiterConfig(options.controller_config, command_limiter_config)
           : command_limiter_config;
   SimpleCommandGuard command_guard(command_limiter_config);
+  // 小符的规划速度会在 command_guard 中叠加反馈误差；该适配器随后按最终速度
+  // 重新计算加速度，保证下发的速度和加速度属于同一条控制轨迹。
+  FinalVelocityAccelerationAdapter buff_motion_adapter(command_limiter_config);
   FinalVelocityAccelerationAdapter mpc_motion_adapter(command_limiter_config);
   FinalVelocityAccelerationAdapter outpost_mpc_motion_adapter(outpost_limiter_config);
 
@@ -1820,10 +1823,19 @@ int run(const Options& options) {
     }
     const double raw_desired_yaw = command.yaw;
     const double raw_desired_pitch = command.pitch;
+    const auto command_time = std::chrono::steady_clock::now();
     if (!use_mpc_planner) {
       buff_motion_applied = command_guard.apply(
-          command, latest_feedback, track_state, std::chrono::steady_clock::now(),
+          command, latest_feedback, track_state, command_time,
           use_buff_task && buff_motion.motion_valid);
+    }
+    if (options.aim_task == "smallbuff") {
+      // 普通自瞄 MPC 在反馈误差补偿后会重新生成最终加速度。小符的 Aimer
+      // 也走同一阶段，避免把补偿前的规划加速度和补偿后的速度一起发下去。
+      buff_motion_adapter.apply(command, command_time);
+    } else if (use_buff_task) {
+      // 大符暂时保持原有输出语义，避免本次小符控制改动影响其他打符模式。
+      buff_motion_adapter.reset();
     }
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
