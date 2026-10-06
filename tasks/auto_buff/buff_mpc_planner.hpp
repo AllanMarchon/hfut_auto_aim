@@ -27,7 +27,7 @@ public:
   MpcPlanner(const std::string & controller_config, const std::string & buff_config);
 
   BuffMpcPlan plan(
-    const Target & target, double bullet_speed,
+    const SmallTarget & target, double bullet_speed,
     std::chrono::steady_clock::time_point timestamp, bool fire_advice);
 
 private:
@@ -47,7 +47,7 @@ private:
   TinySolver * pitch_solver_ = nullptr;
   bool warned_solver_status_ = false;
 
-  AimSample aimAt(Target target, double prediction_time, double bullet_speed) const;
+  AimSample aimAt(SmallTarget target, double prediction_time, double bullet_speed) const;
   void setupYawSolver(const std::string & controller_config);
   void setupPitchSolver(const std::string & controller_config);
 };

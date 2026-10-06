@@ -127,7 +127,7 @@ void MpcPlanner::setupPitchSolver(const std::string & controller_config)
 }
 
 MpcPlanner::AimSample MpcPlanner::aimAt(
-  Target target, double prediction_time, double bullet_speed) const
+  SmallTarget target, double prediction_time, double bullet_speed) const
 {
   AimSample result;
   if (target.is_unsolve() || !std::isfinite(prediction_time)) return result;
@@ -158,7 +158,7 @@ MpcPlanner::AimSample MpcPlanner::aimAt(
 }
 
 BuffMpcPlan MpcPlanner::plan(
-  const Target & target, double bullet_speed,
+  const SmallTarget & target, double bullet_speed,
   std::chrono::steady_clock::time_point timestamp, bool fire_advice)
 {
   BuffMpcPlan result;
