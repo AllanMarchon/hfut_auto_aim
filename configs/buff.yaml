@@ -37,17 +37,17 @@ szu_r_center_max_spread_px: 50.0
 szu_min_target_radius_px: 20.0
 # 默认只记录 R 点几何异常，不用经验阈值直接丢弃整帧。
 szu_reject_r_geometry: false
-# SZU 五点 PnP 的宽松保护阈值，避免关键点轻微抖动直接清空观测。
+# SZU R/五点 PnP 的宽松保护阈值；R 误差可有建模偏差，但超过此值不再用于镜像分支判别。
 szu_corner_reprojection_max_px: 15.0
 szu_r_reprojection_max_px: 50.0
-# R 点允许的诊断误差余量；仅在显式重新开启 R 约束时用于候选筛选。
+# R 点允许的额外误差余量，仅在显式重新开启 R 约束时用于五点候选筛选。
 szu_r_reprojection_margin_px: 20.0
 # 有效跟踪帧比较世界坐标下的符盘法向和相对云台原点的 R 中心向量；重获时法向只用于候选排序。
 # R 中心向量没有底盘平移补偿，底盘移动时只适合作为短时连续性参考。
 szu_pose_max_jump_deg: 30.0
 szu_pose_max_translation_jump_m: 0.75
 szu_pose_reacquire_after_rejections: 20
-# 只用四个叶片角点求 PnP；R 点保留用于重投影诊断，避免 R 像素中心误差把深度拉偏。
+# 最终姿态和距离只用四个叶片角点求 PnP；R 点不拉动深度，只在误差有区分度时判别 IPPE 镜像分支。
 szu_use_r_in_pnp: false
 
 # SZU 五点编号：0 是远离 R 的外端，1 在 0 的逆时针侧，3 在顺时针侧，4 是朝 R 的内端，2 是 R 标中心。

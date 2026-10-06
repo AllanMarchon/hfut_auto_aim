@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 
 #include "tools/logger.hpp"
@@ -120,6 +121,8 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     OBJECT_POINTS.begin(), OBJECT_POINTS.begin() + 4);
   // PnP 原点是符盘旋转中心；网络 R 点对应盘面前方的可见 R 标，二者相差 100 mm。
   const std::vector<cv::Point3f> r_object_point{VISIBLE_R_OBJECT_POINT};
+  // 仅用于诊断 R 点法向符号，不能参与最终姿态选择。
+  const std::vector<cv::Point3f> opposite_r_object_point{{0.1F, 0.0F, 0.0F}};
   std::vector<cv::Point3f> szu_object_points = object_points_corners;
   // 五点约束必须使用可见 R 标的三维位置，否则会把旋转中心误当成 R 标。
   szu_object_points.emplace_back(VISIBLE_R_OBJECT_POINT);
@@ -148,6 +151,9 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   PnpCandidate best_four_corner;
   PnpCandidate best_five_point;
   constexpr double r_error_tie_px = 3.0;
+  // 记录两个四角 IPPE 候选的 R 误差，用相对差异判断镜像分支，而不是要求 R 绝对误差必须接近零。
+  double r_branch_best_error_px = std::numeric_limits<double>::infinity();
+  double r_branch_second_error_px = std::numeric_limits<double>::infinity();
   const auto prefer_r_candidate = [&](double candidate_r_error,
                                       double candidate_continuity_score,
                                       const PnpCandidate & current) {
@@ -259,6 +265,14 @@ void Solver::solve(std::optional<PowerRune> & ps) const
 
     const bool corner_candidate_valid = use_szu_point_indices &&
       corner_error <= szu_corner_reprojection_max_px_;
+    if (corner_candidate_valid) {
+      if (r_error < r_branch_best_error_px) {
+        r_branch_second_error_px = r_branch_best_error_px;
+        r_branch_best_error_px = r_error;
+      } else if (r_error < r_branch_second_error_px) {
+        r_branch_second_error_px = r_error;
+      }
+    }
     if (corner_candidate_valid && prefer_r_candidate(
           r_error, continuity_score, best_r_unconstrained)) {
       save_candidate(best_r_unconstrained);
@@ -386,6 +400,9 @@ void Solver::solve(std::optional<PowerRune> & ps) const
   // 网络和视觉 R 相互印证时，才允许它们共同覆盖旧姿态的连续性判断。
   constexpr double r_source_consensus_max_px = 12.0;
   constexpr double strong_r_reprojection_max_px = 8.0;
+  // 可见 R 的模型位置与网络像素中心可能存在固定建模误差；只要 R 候选在宽松保护范围内，
+  // 且明显优于另一个 IPPE 镜像解，就可以用它判支，不能再用 8px 的绝对门槛把 R 完全禁用。
+  constexpr double r_branch_min_separation_px = 12.0;
   const bool has_r_source_consensus =
     r_diagnostics.network.count > 0 && r_diagnostics.visual.count > 0 &&
     r_diagnostics.network_confidence >= 0.8 &&
@@ -409,12 +426,15 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     best_r_unconstrained.plane_normal_delta_rad <= szu_pose_max_jump_rad_ &&
     best_r_unconstrained.r_center_delta_m <= szu_pose_max_translation_jump_m_;
   // R 不参与最终四角 PnP，但它是区分共面 IPPE 正反镜像解的唯一同帧依据。
-  // 只有 R 反投影足够近时才用它切换分支，R 自身异常时仍退回角点和历史连续性。
+  // 用绝对误差上限和两个候选的相对差异共同判定；R 有系统偏差时仍能选出正确镜像，
+  // 两个候选接近或 R 明显异常时则退回角点和历史连续性。
   const bool strong_r_branch_for_four_corner =
     use_szu_point_indices && !szu_use_r_in_pnp_ && best_r_unconstrained.valid &&
     r_diagnostics.network.count > 0 && r_diagnostics.network_confidence >= 0.8 &&
     best_r_unconstrained.corner_error <= szu_corner_reprojection_max_px_ &&
-    best_r_unconstrained.r_error <= strong_r_reprojection_max_px;
+    best_r_unconstrained.r_error <= szu_r_reprojection_max_px_ &&
+    (!std::isfinite(r_branch_second_error_px) ||
+     r_branch_second_error_px - r_branch_best_error_px >= r_branch_min_separation_px);
   if (use_szu_point_indices && had_previous_pose) {
     if (!szu_use_r_in_pnp_) {
       // 小符未激活时目标扇叶会真实切换，不能比较盘面内 roll；但法向和 R 中心
@@ -588,6 +608,44 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     log_r_source_diagnostics(
       "四角 PnP 已通过，但 R 点不一致", r_projected_point.front(),
       p.pnp_reprojection_error_px);
+  }
+  if (use_szu_point_indices && !r_projected_point.empty() &&
+      p.pnp_r_reprojection_error_px > 8.0 &&
+      (++r_offset_diagnostic_counter_ % 30 == 0)) {
+    const auto project_r_error = [&](const PnpCandidate & candidate,
+                                     const std::vector<cv::Point3f> & object_point) {
+      if (!candidate.valid) return -1.0;
+      std::vector<cv::Point2f> projected;
+      cv::projectPoints(
+        object_point, candidate.rvec, candidate.tvec, camera_matrix_, distort_coeffs_, projected);
+      return projected.empty() ? -1.0 : cv::norm(projected.front() - p.r_center);
+    };
+    const double opposite_error = project_r_error(best, opposite_r_object_point);
+    const double best_r_opposite_error =
+      project_r_error(best_r_unconstrained, opposite_r_object_point);
+    const double continuous_opposite_error =
+      project_r_error(best_continuous, opposite_r_object_point);
+    const double geometry_opposite_error =
+      project_r_error(best_geometry, opposite_r_object_point);
+    const double r_branch_gap = std::isfinite(r_branch_second_error_px)
+      ? r_branch_second_error_px - r_branch_best_error_px : -1.0;
+    const auto & network = p.r_point_diagnostics.network;
+    tools::logger()->debug(
+      "[BuffSolver] R 偏移对照: selected(-/+)= {:.2f}/{:.2f}px "
+      "bestR(-/+)= {:.2f}/{:.2f}px continuous(-/+)= {:.2f}/{:.2f}px "
+      "geometry(-/+)= {:.2f}/{:.2f}px branch(best/second/gap)={:.2f}/{:.2f}/{:.2f}px "
+      "net=({:.1f},{:.1f}) conf={:.3f}",
+      p.pnp_r_reprojection_error_px, opposite_error,
+      best_r_unconstrained.valid ? best_r_unconstrained.r_error : -1.0,
+      best_r_opposite_error,
+      best_continuous.valid ? best_continuous.r_error : -1.0,
+      continuous_opposite_error,
+      best_geometry.valid ? best_geometry.r_error : -1.0,
+      geometry_opposite_error,
+      r_branch_best_error_px, r_branch_second_error_px, r_branch_gap,
+      network.count > 0 ? network.center.x : -1.0F,
+      network.count > 0 ? network.center.y : -1.0F,
+      p.r_point_diagnostics.network_confidence);
   }
   p.pnp_center_distance_m = std::sqrt(
     tvec_[0] * tvec_[0] + tvec_[1] * tvec_[1] + tvec_[2] * tvec_[2]);

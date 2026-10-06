@@ -52,6 +52,7 @@ private:
   double szu_pose_max_translation_jump_m_{0.75};
   int szu_pose_reacquire_after_rejections_{20};
   bool szu_use_r_in_pnp_{false};
+  mutable int r_offset_diagnostic_counter_{0};
 
   // 前四点按外端、顺时针侧、内端、逆时针侧排列；坐标原点是符盘旋转中心，700 mm 点是叶片中心。
   const std::vector<cv::Point3f> OBJECT_POINTS = {
