@@ -516,8 +516,9 @@ bool SzuRuneDetector::estimate_geometric_r_center(
 
   // detection.corners 按原始编号 [0, 1, 3, 4] 保存：外端、逆时针侧、顺时针侧、内端。
   // 透视变换按模型坐标顺时针顺序 [0, 3, 4, 1] 取点。
+  // 与 Solver 使用同一套 SZU 26 叶片几何；这里的单位是毫米，仅用于停用中的 GEO-R 诊断。
   const std::vector<cv::Point2f> object_points{
-    {0.0F, 827.0F}, {127.0F, 700.0F}, {0.0F, 573.0F}, {-127.0F, 700.0F}};
+    {0.0F, 850.0F}, {150.0F, 700.0F}, {0.0F, 550.0F}, {-150.0F, 700.0F}};
   const std::vector<cv::Point2f> image_points{
     corners[0], corners[2], corners[3], corners[1]};
   // R 在四角包围区域外，先去畸变再做平面外推，避免把镜头畸变误当成透视变换。

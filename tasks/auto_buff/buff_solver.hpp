@@ -58,9 +58,11 @@ private:
   mutable int r_offset_diagnostic_counter_{0};
 
   // 前四点按外端、顺时针侧、内端、逆时针侧排列；坐标原点是符盘旋转中心，700 mm 点是叶片中心。
+  // 这里采用 SZU 26 模型的实际几何：叶片中心到四个边缘点的半径为 150 mm。
+  // 旧版 127 mm 是早期菱形模型尺寸，会把同一组像素拟合成偏近的距离。
   const std::vector<cv::Point3f> OBJECT_POINTS = {
-    cv::Point3f(0, 0, 827e-3), cv::Point3f(0, 127e-3, 700e-3),
-    cv::Point3f(0, 0, 573e-3), cv::Point3f(0, -127e-3, 700e-3),
+    cv::Point3f(0, 0, 850e-3), cv::Point3f(0, 150e-3, 700e-3),
+    cv::Point3f(0, 0, 550e-3), cv::Point3f(0, -150e-3, 700e-3),
     cv::Point3f(0, 0, 700e-3), cv::Point3f(0, 0, 220e-3),
     cv::Point3f(0, 0, 0)};  // 单位：米
 
