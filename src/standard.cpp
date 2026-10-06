@@ -473,6 +473,76 @@ class FinalVelocityAccelerationAdapter {
   std::chrono::steady_clock::time_point last_time_{};
 };
 
+// 小符 MPC 的角度输出保护。
+// MPC 的参考角在换亮扇叶时可能一次跳过几度；如果把这个角度直接交给下位机，
+// 即使目标仍处于 tracking，云台也会先猛甩再反向修正。这里按实际帧间隔限制
+// 目标角单帧变化，并由后面的加速度适配器继续限制速度变化。普通自瞄和大符不使用。
+class SmallBuffMpcOutputFilter {
+ public:
+  explicit SmallBuffMpcOutputFilter(CommandLimiterConfig config) : config_(config) {}
+
+  void reset() { have_last_ = false; }
+
+  bool apply(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
+             std::chrono::steady_clock::time_point now) {
+    if (command.mode != hfut::GimbalMode::normal_measurement) {
+      reset();
+      return false;
+    }
+
+    double dt = 1.0 / 60.0;
+    if (have_last_) {
+      dt = std::chrono::duration<double>(now - last_time_).count();
+      if (!std::isfinite(dt) || dt <= 1e-4 || dt > config_.reset_timeout_s) {
+        have_last_ = false;
+        dt = 1.0 / 60.0;
+      }
+    }
+
+    if (!have_last_) {
+      // 重获时从当前反馈角开始渐入，避免上一片叶片的角度直接跳到新叶片。
+      last_yaw_ = feedback.yaw_rad;
+      last_pitch_ = feedback.pitch_rad;
+      have_last_ = true;
+    }
+
+    const double desired_yaw = tools::limit_rad(command.yaw);
+    const double desired_pitch = command.pitch;
+    const double yaw_delta = tools::limit_rad(desired_yaw - last_yaw_);
+    const double pitch_delta = desired_pitch - last_pitch_;
+    const double max_yaw_step = config_.serial_command_max_yaw_velocity_rad_s * dt;
+    const double max_pitch_step = config_.serial_command_max_pitch_velocity_rad_s * dt;
+    if (!std::isfinite(max_yaw_step) || !std::isfinite(max_pitch_step) ||
+        max_yaw_step <= 0.0 || max_pitch_step <= 0.0) {
+      reset();
+      return false;
+    }
+
+    const double limited_yaw_delta = std::clamp(yaw_delta, -max_yaw_step, max_yaw_step);
+    const double limited_pitch_delta = std::clamp(pitch_delta, -max_pitch_step, max_pitch_step);
+    const double output_yaw = tools::limit_rad(last_yaw_ + limited_yaw_delta);
+    const double output_pitch = last_pitch_ + limited_pitch_delta;
+    command.yaw = output_yaw;
+    command.pitch = output_pitch;
+    command.yaw_vel = limited_yaw_delta / dt;
+    command.pitch_vel = limited_pitch_delta / dt;
+    command.yaw_diff = tools::limit_rad(command.yaw - feedback.yaw_rad);
+    command.pitch_diff = command.pitch - feedback.pitch_rad;
+
+    last_yaw_ = output_yaw;
+    last_pitch_ = output_pitch;
+    last_time_ = now;
+    return true;
+  }
+
+ private:
+  CommandLimiterConfig config_;
+  bool have_last_{false};
+  double last_yaw_{0.0};
+  double last_pitch_{0.0};
+  std::chrono::steady_clock::time_point last_time_{};
+};
+
 FireGateResult applyFireGate(hfut::GimbalCommand& command,
                              double desired_yaw,
                              double desired_pitch,
@@ -1452,6 +1522,7 @@ int run(const Options& options) {
   // 重新计算加速度，保证下发的速度和加速度属于同一条控制轨迹。
   FinalVelocityAccelerationAdapter buff_motion_adapter(command_limiter_config);
   FinalVelocityAccelerationAdapter buff_mpc_motion_adapter(command_limiter_config);
+  SmallBuffMpcOutputFilter buff_mpc_output_filter(command_limiter_config);
   FinalVelocityAccelerationAdapter mpc_motion_adapter(command_limiter_config);
   FinalVelocityAccelerationAdapter outpost_mpc_motion_adapter(outpost_limiter_config);
 
@@ -1783,16 +1854,19 @@ int run(const Options& options) {
           sp_command = buff_motion.command;
         }
       }
-      if (use_buff_mpc_planner && sp_command.control && buff_small_target->is_tracking_ready()) {
+      // 小符是否进入 MPC 只看 EKF 是否已经稳定跟踪，不再受 Aimer 的换叶片
+      // 角度门控影响。Aimer 的 control=false 只用于暂时禁止开火，不能让云台
+      // 在 tracking 状态下退回无效测量并在下一帧突然接回新角度。
+      if (use_buff_mpc_planner && buff_small_target->is_tracking_ready()) {
         buff_mpc_output = buff_mpc_planner->plan(
-            *buff_small_target, bullet_speed, timestamp, sp_command.shoot);
+            *buff_small_target, bullet_speed, timestamp, sp_command.control && sp_command.shoot);
       }
-      if (sp_command.control) {
-        command_distance = buff_mpc_output.valid
-                               ? buff_mpc_output.distance
-                               : (sp_command.horizon_distance > 0.0
-                                      ? sp_command.horizon_distance
-                                      : buff_aimer->last_distance());
+      if (buff_mpc_output.valid) {
+        command_distance = buff_mpc_output.distance;
+      } else if (sp_command.control) {
+        command_distance = sp_command.horizon_distance > 0.0
+                               ? sp_command.horizon_distance
+                               : buff_aimer->last_distance();
       }
       tracked_count = buff_tracking_ready ? 1 : 0;
       track_state = buff_tracking_ready ? "tracking" : (power_rune.has_value() ? "detecting" : "lost");
@@ -1845,6 +1919,8 @@ int run(const Options& options) {
     hfut::GimbalCommand command = convertCommand(
         sp_command, command_distance, latest_feedback, options.enable_fire, *active_limiter_config);
     const bool use_buff_mpc_output = use_buff_mpc_planner && buff_mpc_output.valid;
+    double raw_desired_yaw = command.yaw;
+    double raw_desired_pitch = command.pitch;
     if (use_buff_task && !use_buff_mpc_output && buff_motion.motion_valid) {
       command.yaw_vel = active_limiter_config->feedback_yaw_to_world_sign * buff_motion.yaw_velocity;
       command.yaw_acc = active_limiter_config->feedback_yaw_to_world_sign * buff_motion.yaw_acceleration;
@@ -1852,14 +1928,20 @@ int run(const Options& options) {
       command.pitch_acc = active_limiter_config->sp_pitch_to_command_sign * buff_motion.pitch_acceleration;
     }
     if (use_buff_mpc_output) {
-      // 小符 MPC 输出已经包含二阶轨迹，和普通自瞄 MPC 一样跳过角度二次限幅，
-      // 只在这里统一叠加电控需要的反馈误差速度。
+      // 小符 MPC 输出已经包含二阶轨迹；这里保留有效姿态，即使 Aimer 正在
+      // 换叶片保护期内，也不能把 tracking 目标错误地标成 no_valid_measurement。
+      command.mode = hfut::GimbalMode::normal_measurement;
+      command.fire_advice = options.enable_fire && buff_mpc_output.plan.fire;
       command.yaw = active_limiter_config->feedback_yaw_to_world_sign * buff_mpc_output.plan.yaw;
       command.pitch = active_limiter_config->sp_pitch_to_command_sign * buff_mpc_output.plan.pitch;
-      command.yaw_diff = tools::limit_rad(command.yaw - latest_feedback.yaw_rad);
-      command.pitch_diff = command.pitch - latest_feedback.pitch_rad;
       command.yaw_vel = active_limiter_config->feedback_yaw_to_world_sign * buff_mpc_output.plan.yaw_vel;
       command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * buff_mpc_output.plan.pitch_vel;
+      raw_desired_yaw = command.yaw;
+      raw_desired_pitch = command.pitch;
+      // 换亮扇叶时先限制角度渐变，再叠加电控需要的反馈误差速度。
+      buff_mpc_output_filter.apply(command, latest_feedback, std::chrono::steady_clock::now());
+      command.yaw_diff = tools::limit_rad(command.yaw - latest_feedback.yaw_rad);
+      command.pitch_diff = command.pitch - latest_feedback.pitch_rad;
       if (velocityModeUsesFeedbackError(active_limiter_config->serial_command_velocity_mode)) {
         command.yaw_vel += active_limiter_config->serial_command_yaw_error_gain * command.yaw_diff;
         command.pitch_vel += active_limiter_config->serial_command_pitch_error_gain * command.pitch_diff;
@@ -1888,8 +1970,6 @@ int run(const Options& options) {
       mpc_motion_adapter.reset();
       outpost_mpc_motion_adapter.reset();
     }
-    const double raw_desired_yaw = command.yaw;
-    const double raw_desired_pitch = command.pitch;
     const auto command_time = std::chrono::steady_clock::now();
     if (!use_mpc_planner && !use_buff_mpc_output) {
       buff_motion_applied = command_guard.apply(
@@ -1901,6 +1981,7 @@ int run(const Options& options) {
     } else if (options.aim_task == "smallbuff") {
       // MPC 暂停或换扇叶时不沿用上一段 MPC 的速度历史，避免恢复后首帧产生加速度尖峰。
       buff_mpc_motion_adapter.reset();
+      buff_mpc_output_filter.reset();
       // 普通自瞄 MPC 在反馈误差补偿后会重新生成最终加速度。小符的 Aimer
       // 也走同一阶段，避免把补偿前的规划加速度和补偿后的速度一起发下去。
       buff_motion_adapter.apply(command, command_time);

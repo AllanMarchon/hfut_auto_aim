@@ -99,7 +99,7 @@ motion_feedforward:
 # 小符 TinyMPC 专用控制参数。只在 smallbuff 模式覆盖 controller.yaml，
 # 普通自瞄和大符不受影响。7m 左右先用较保守的云台能力，换叶片时会更平顺。
 # max_*_acceleration 同时限制 MPC 输入和最终下发加速度，单位 rad/s^2。
-# *_error_gain 单位 1/s；速度上限单位 deg/s。
+# *_error_gain 单位 1/s；速度上限单位 deg/s，同时作为换亮扇叶时的角度渐入上限。
 smallbuff_mpc:
   max_yaw_acceleration: 10.0
   max_pitch_acceleration: 15.0
