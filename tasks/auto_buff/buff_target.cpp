@@ -1,6 +1,7 @@
 #include "buff_target.hpp"
 
 #include <cmath>
+#include <limits>
 
 namespace auto_buff
 {
@@ -8,10 +9,22 @@ namespace auto_buff
 
 Voter::Voter() : clockwise_(0) {}
 
+void Voter::reset() { clockwise_ = 0; }
+
 void Voter::vote(const double angle_last, const double angle_now)
 {
   if (std::abs(clockwise_) > 50) return;
-  if (angle_last > angle_now)
+  // roll 经过 +-pi 时不能直接比较大小，否则一次环绕就会把旋转方向投反。
+  // 同时忽略过小和过大的跳变：前者主要是滤波后的量化误差，后者通常是
+  // PnP 镜像或换叶片瞬间的异常观测，不应改变整段跟踪的旋转方向。
+  const double delta = tools::limit_rad(angle_now - angle_last);
+  constexpr double kMinVoteDelta = 0.25 * CV_PI / 180.0;
+  constexpr double kMaxVoteDelta = 30.0 * CV_PI / 180.0;
+  if (!std::isfinite(delta) || std::abs(delta) < kMinVoteDelta ||
+      std::abs(delta) > kMaxVoteDelta) {
+    return;
+  }
+  if (delta < 0.0)
     clockwise_--;
   else
     clockwise_++;
@@ -155,6 +168,7 @@ void SmallTarget::predict(double dt)
 void SmallTarget::init(double nowtime, const PowerRune & p)
 {
   // 初始化内部变量
+  voter.reset();
   lasttime_ = nowtime;
 
   // 初始状态协方差矩阵
@@ -222,19 +236,29 @@ void SmallTarget::update(double nowtime, const PowerRune & p)
   const Eigen::VectorXd & ypr = p.ypr_in_world;
   const Eigen::VectorXd & B_ypd = p.blade_ypd_in_world;  // center of blade
 
-  // 处理扇叶跳变 angle/row
-  if (abs(ypr[2] - ekf_.x[5]) > CV_PI / 12) {
-    for (int i = -5; i <= 5; i++) {
-      double angle_c = ekf_.x[5] + i * 2 * CV_PI / 5;
-      if (std::fabs(angle_c - ypr[2]) < CV_PI / 5) {
-        ekf_.x[5] += i * 2 * CV_PI / 5;
-        break;
-      }
+  // 五个叶片的 roll 在图像上只相差一个 72 度周期。先把网络/PnP 的
+  // 观测解缠到 EKF 当前状态附近，再把同一个等价观测同时用于投票和 EKF，
+  // 避免“投票用的是一套角度、滤波用的是另一套角度”造成速度方向来回翻转。
+  constexpr double kBladePeriod = 2.0 * CV_PI / 5.0;
+  constexpr double kMaxRollStep = 30.0 * CV_PI / 180.0;
+  double roll_measurement = ypr[2];
+  double best_roll_delta = std::numeric_limits<double>::infinity();
+  for (int i = -10; i <= 10; ++i) {
+    const double candidate = ypr[2] + static_cast<double>(i) * kBladePeriod;
+    const double delta = std::abs(candidate - ekf_.x[5]);
+    if (delta < best_roll_delta) {
+      best_roll_delta = delta;
+      roll_measurement = candidate;
     }
+  }
+  if (!std::isfinite(best_roll_delta) || best_roll_delta > kMaxRollStep) {
+    // 该帧的 roll 无法和当前状态建立可信对应关系，只保留预测值；R/叶片
+    // 的其他位置观测仍然继续参与 EKF，不让一次镜像解污染旋转方向。
+    roll_measurement = ekf_.x[5];
   }
 
   // vote判断是顺时针还是逆时针旋转
-  voter.vote(ekf_.x[5], ypr[2]);
+  voter.vote(ekf_.x[5], roll_measurement);
   if (voter.clockwise() * ekf_.x[6] < 0) ekf_.x[6] *= -1;  // spd
 
   // 预测下一个状态
@@ -280,7 +304,7 @@ void SmallTarget::update(double nowtime, const PowerRune & p)
     return c;
   };
 
-  Eigen::VectorXd z1{{R_ypd[0], R_ypd[1], R_ypd[2], ypr[2]}};  // R_ypd roll
+  Eigen::VectorXd z1{{R_ypd[0], R_ypd[1], R_ypd[2], roll_measurement}};  // R_ypd roll
 
   ekf_.update(z1, H1, R1, z_subtract1);
 
@@ -497,6 +521,7 @@ void BigTarget::predict(double dt)
 void BigTarget::init(double nowtime, const PowerRune & p)
 {
   // 初始化内部变量
+  voter.reset();
   lasttime_ = nowtime;
   unsolvable_ = true;
 

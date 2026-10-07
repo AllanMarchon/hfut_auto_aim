@@ -21,6 +21,7 @@ class Voter
 {
 public:
   Voter();
+  void reset();
   void vote(const double angle_last, const double angle_now);
   int clockwise();
 

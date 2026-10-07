@@ -25,6 +25,14 @@ struct AimMotionCommand
   bool motion_valid = false;
 };
 
+// Aimer 的两个状态语义必须分开：control 表示瞄准角是否通过换叶片保护，
+// shoot 表示本帧是否刚好满足开火间隔。MPC 只需要其中的 shoot。
+struct FireDecision
+{
+  bool control = false;
+  bool shoot = false;
+};
+
 class Aimer
 {
 public:
@@ -38,6 +46,10 @@ public:
     Target & target, Target & past_target, Target & future_target,
     std::chrono::steady_clock::time_point & timestamp, double bullet_speed,
     bool to_now = true, bool enable_motion_feedforward = true);
+
+  // MPC 模式只复用 Aimer 的换叶片/开火状态机，不再重复计算瞄准角和运动前馈。
+  FireDecision fireAdvice(double yaw, double pitch, std::chrono::steady_clock::time_point now);
+  void resetFireState();
 
   double last_distance() const { return last_distance_; }
 
@@ -66,6 +78,9 @@ private:
   double last_distance_ = 0;
 
   std::chrono::steady_clock::time_point last_fire_t_;
+
+  bool updateControlState(double yaw, double pitch);
+  bool consumeFireAdvice(std::chrono::steady_clock::time_point now);
 
   bool get_send_angle(
     auto_buff::Target & target, const double predict_time, const double bullet_speed,

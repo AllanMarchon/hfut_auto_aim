@@ -7,6 +7,7 @@
 
 #include "tasks/auto_aim/planner/planner.hpp"
 #include "tasks/auto_aim/planner/tinympc/tiny_api.hpp"
+#include "buff_aimer.hpp"
 #include "buff_target.hpp"
 
 namespace auto_buff
@@ -43,7 +44,8 @@ public:
 
   BuffMpcPlan plan(
     const SmallTarget & target, double bullet_speed,
-    std::chrono::steady_clock::time_point timestamp, bool fire_advice);
+    std::chrono::steady_clock::time_point timestamp,
+    double current_yaw, double current_pitch);
 
 private:
   struct AimSample
@@ -69,6 +71,26 @@ private:
   void setupPitchSolver(
     const std::string & controller_config,
     const std::optional<double> & max_acceleration_override);
+};
+
+// 小符控制器的唯一入口：把轨迹规划、换叶片保护和开火节拍收在同一个
+// 状态对象里，standard.cpp 不再同时拼接多套小符输出。
+class SmallBuffController
+{
+public:
+  SmallBuffController(
+    const std::string & controller_config, const std::string & buff_config, Aimer & aimer);
+
+  BuffMpcPlan update(
+    const SmallTarget & target, double bullet_speed,
+    std::chrono::steady_clock::time_point timestamp,
+    double current_yaw, double current_pitch);
+
+  void reset();
+
+private:
+  MpcPlanner planner_;
+  Aimer & aimer_;
 };
 
 }  // namespace auto_buff

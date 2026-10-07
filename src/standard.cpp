@@ -424,7 +424,9 @@ class SimpleCommandGuard {
 
 class FinalVelocityAccelerationAdapter {
  public:
-  explicit FinalVelocityAccelerationAdapter(CommandLimiterConfig config) : config_(config) {}
+  explicit FinalVelocityAccelerationAdapter(CommandLimiterConfig config,
+                                            bool enforce_velocity_ramp = false)
+  : config_(config), enforce_velocity_ramp_(enforce_velocity_ramp) {}
 
   void reset() { have_last_ = false; }
 
@@ -436,6 +438,16 @@ class FinalVelocityAccelerationAdapter {
       return;
     }
     if (!have_last_) {
+      if (enforce_velocity_ramp_) {
+        // 重获后的首帧没有上一帧速度，按 60 Hz 的保守步长从零开始，
+        // 避免反馈误差补偿在重获瞬间直接打满。
+        const double max_yaw_velocity_step = config_.max_yaw_acc_rad_s2 / 60.0;
+        const double max_pitch_velocity_step = config_.max_pitch_acc_rad_s2 / 60.0;
+        command.yaw_vel = std::clamp(command.yaw_vel, -max_yaw_velocity_step,
+                                     max_yaw_velocity_step);
+        command.pitch_vel = std::clamp(command.pitch_vel, -max_pitch_velocity_step,
+                                       max_pitch_velocity_step);
+      }
       command.yaw_acc = 0.0;
       command.pitch_acc = 0.0;
       save(command, now);
@@ -448,6 +460,19 @@ class FinalVelocityAccelerationAdapter {
       command.pitch_acc = 0.0;
       save(command, now);
       return;
+    }
+
+    if (enforce_velocity_ramp_) {
+      // 小符 MPC 的反馈误差补偿在本适配器之前叠加；速度字段本身也必须
+      // 遵守同一条加速度斜坡，否则只限制 acc 字段仍可能让下位机瞬时冲变。
+      const double max_yaw_velocity_step = config_.max_yaw_acc_rad_s2 * dt;
+      const double max_pitch_velocity_step = config_.max_pitch_acc_rad_s2 * dt;
+      command.yaw_vel = std::clamp(
+        command.yaw_vel, last_yaw_vel_ - max_yaw_velocity_step,
+        last_yaw_vel_ + max_yaw_velocity_step);
+      command.pitch_vel = std::clamp(
+        command.pitch_vel, last_pitch_vel_ - max_pitch_velocity_step,
+        last_pitch_vel_ + max_pitch_velocity_step);
     }
 
     command.yaw_acc = std::clamp((command.yaw_vel - last_yaw_vel_) / dt,
@@ -467,6 +492,7 @@ class FinalVelocityAccelerationAdapter {
   }
 
   CommandLimiterConfig config_;
+  bool enforce_velocity_ramp_{false};
   bool have_last_{false};
   double last_yaw_vel_{0.0};
   double last_pitch_vel_{0.0};
@@ -476,12 +502,16 @@ class FinalVelocityAccelerationAdapter {
 // 小符 MPC 的角度输出保护。
 // MPC 的参考角在换亮扇叶时可能一次跳过几度；如果把这个角度直接交给下位机，
 // 即使目标仍处于 tracking，云台也会先猛甩再反向修正。这里按实际帧间隔限制
-// 目标角单帧变化，并由后面的加速度适配器继续限制速度变化。普通自瞄和大符不使用。
+// 目标角单帧变化，并在同一处生成最终速度和加速度。普通自瞄和大符不使用。
 class SmallBuffMpcOutputFilter {
  public:
   explicit SmallBuffMpcOutputFilter(CommandLimiterConfig config) : config_(config) {}
 
-  void reset() { have_last_ = false; }
+  void reset() {
+    have_last_ = false;
+    last_yaw_vel_ = 0.0;
+    last_pitch_vel_ = 0.0;
+  }
 
   bool apply(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
              std::chrono::steady_clock::time_point now) {
@@ -495,10 +525,13 @@ class SmallBuffMpcOutputFilter {
       dt = std::chrono::duration<double>(now - last_time_).count();
       if (!std::isfinite(dt) || dt <= 1e-4 || dt > config_.reset_timeout_s) {
         have_last_ = false;
+        last_yaw_vel_ = 0.0;
+        last_pitch_vel_ = 0.0;
         dt = 1.0 / 60.0;
       }
     }
 
+    const bool had_last = have_last_;
     if (!have_last_) {
       // 重获时从当前反馈角开始渐入，避免上一片叶片的角度直接跳到新叶片。
       last_yaw_ = feedback.yaw_rad;
@@ -520,17 +553,64 @@ class SmallBuffMpcOutputFilter {
 
     const double limited_yaw_delta = std::clamp(yaw_delta, -max_yaw_step, max_yaw_step);
     const double limited_pitch_delta = std::clamp(pitch_delta, -max_pitch_step, max_pitch_step);
-    const double output_yaw = tools::limit_rad(last_yaw_ + limited_yaw_delta);
-    const double output_pitch = last_pitch_ + limited_pitch_delta;
+
+    // 仅限制目标角步长还不够：目标叶片切换时，速度可能在相邻两帧直接从
+    // +max 变成 -max，下位机仍会产生明显反冲。这里在小符专用滤波器内
+    // 先按配置的角加速度限制速度变化，再用该速度积分角度，保证角度、速度、
+    // 加速度三个字段描述的是同一条平滑轨迹。
+    // 角度保护后的差分是最终输出轨迹的速度来源；不再把 MPC 原始速度
+    // 和另一层 adapter 叠加，保证角度、速度、加速度描述同一条轨迹。
+    const double requested_yaw_vel = limited_yaw_delta / dt;
+    const double requested_pitch_vel = limited_pitch_delta / dt;
+    const double max_yaw_velocity_step = config_.max_yaw_acc_rad_s2 * dt;
+    const double max_pitch_velocity_step = config_.max_pitch_acc_rad_s2 * dt;
+    if (!std::isfinite(max_yaw_velocity_step) || !std::isfinite(max_pitch_velocity_step) ||
+        max_yaw_velocity_step <= 0.0 || max_pitch_velocity_step <= 0.0) {
+      reset();
+      return false;
+    }
+    const double filtered_yaw_vel = std::clamp(
+      requested_yaw_vel, last_yaw_vel_ - max_yaw_velocity_step,
+      last_yaw_vel_ + max_yaw_velocity_step);
+    const double filtered_pitch_vel = std::clamp(
+      requested_pitch_vel, last_pitch_vel_ - max_pitch_velocity_step,
+      last_pitch_vel_ + max_pitch_velocity_step);
+    const double output_yaw = tools::limit_rad(last_yaw_ + filtered_yaw_vel * dt);
+    const double output_pitch = last_pitch_ + filtered_pitch_vel * dt;
     command.yaw = output_yaw;
     command.pitch = output_pitch;
-    command.yaw_vel = limited_yaw_delta / dt;
-    command.pitch_vel = limited_pitch_delta / dt;
+    command.yaw_vel = filtered_yaw_vel;
+    command.pitch_vel = filtered_pitch_vel;
     command.yaw_diff = tools::limit_rad(command.yaw - feedback.yaw_rad);
     command.pitch_diff = command.pitch - feedback.pitch_rad;
 
+    if (velocityModeUsesFeedbackError(config_.serial_command_velocity_mode)) {
+      command.yaw_vel += config_.serial_command_yaw_error_gain * command.yaw_diff;
+      command.pitch_vel += config_.serial_command_pitch_error_gain * command.pitch_diff;
+    }
+    command.yaw_vel = std::clamp(command.yaw_vel,
+                                 -config_.serial_command_max_yaw_velocity_rad_s,
+                                 config_.serial_command_max_yaw_velocity_rad_s);
+    command.pitch_vel = std::clamp(command.pitch_vel,
+                                   -config_.serial_command_max_pitch_velocity_rad_s,
+                                   config_.serial_command_max_pitch_velocity_rad_s);
+    if (had_last) {
+      command.yaw_acc = std::clamp((command.yaw_vel - last_yaw_vel_) / dt,
+                                   -config_.max_yaw_acc_rad_s2,
+                                   config_.max_yaw_acc_rad_s2);
+      command.pitch_acc = std::clamp((command.pitch_vel - last_pitch_vel_) / dt,
+                                     -config_.max_pitch_acc_rad_s2,
+                                     config_.max_pitch_acc_rad_s2);
+    } else {
+      command.yaw_acc = 0.0;
+      command.pitch_acc = 0.0;
+    }
+
     last_yaw_ = output_yaw;
     last_pitch_ = output_pitch;
+    // 保存反馈补偿后的最终速度，下一帧加速度才与实际下发字段一致。
+    last_yaw_vel_ = command.yaw_vel;
+    last_pitch_vel_ = command.pitch_vel;
     last_time_ = now;
     return true;
   }
@@ -540,6 +620,8 @@ class SmallBuffMpcOutputFilter {
   bool have_last_{false};
   double last_yaw_{0.0};
   double last_pitch_{0.0};
+  double last_yaw_vel_{0.0};
+  double last_pitch_vel_{0.0};
   std::chrono::steady_clock::time_point last_time_{};
 };
 
@@ -1518,10 +1600,9 @@ int run(const Options& options) {
           ? loadOutpostCommandLimiterConfig(options.controller_config, command_limiter_config)
           : command_limiter_config;
   SimpleCommandGuard command_guard(command_limiter_config);
-  // 小符的规划速度会在 command_guard 中叠加反馈误差；该适配器随后按最终速度
-  // 重新计算加速度，保证下发的速度和加速度属于同一条控制轨迹。
+  // 旧 Aimer 链路的运动前馈适配器；小符 MPC 使用自己的单一输出器，
+  // 普通自瞄 MPC 使用下方独立的适配器。
   FinalVelocityAccelerationAdapter buff_motion_adapter(command_limiter_config);
-  FinalVelocityAccelerationAdapter buff_mpc_motion_adapter(command_limiter_config);
   SmallBuffMpcOutputFilter buff_mpc_output_filter(command_limiter_config);
   FinalVelocityAccelerationAdapter mpc_motion_adapter(command_limiter_config);
   FinalVelocityAccelerationAdapter outpost_mpc_motion_adapter(outpost_limiter_config);
@@ -1532,7 +1613,7 @@ int run(const Options& options) {
   std::unique_ptr<auto_aim::Aimer> aimer;
   std::unique_ptr<auto_aim::Shooter> shooter;
   std::unique_ptr<auto_buff::Buff_Detector> buff_detector;
-  std::unique_ptr<auto_buff::MpcPlanner> buff_mpc_planner;
+  std::unique_ptr<auto_buff::SmallBuffController> small_buff_controller;
   std::unique_ptr<auto_buff::Solver> buff_solver;
   std::unique_ptr<auto_buff::SmallTarget> buff_small_target;
   std::unique_ptr<auto_buff::BigTarget> buff_big_target;
@@ -1544,8 +1625,8 @@ int run(const Options& options) {
     buff_big_target = std::make_unique<auto_buff::BigTarget>();
     buff_aimer = std::make_unique<auto_buff::Aimer>(adapted_config_path);
     if (use_buff_mpc_planner) {
-      buff_mpc_planner = std::make_unique<auto_buff::MpcPlanner>(
-          options.controller_config, adapted_config_path);
+      small_buff_controller = std::make_unique<auto_buff::SmallBuffController>(
+          options.controller_config, adapted_config_path, *buff_aimer);
     }
   } else {
     detector = std::make_unique<auto_aim::YOLO>(adapted_config_path, false);
@@ -1833,7 +1914,10 @@ int run(const Options& options) {
       track_end = std::chrono::steady_clock::now();
 
       aim_start = track_end;
-      if (options.aim_task == "smallbuff") {
+      if (options.aim_task == "smallbuff" && use_buff_mpc_planner) {
+        // 小符 MPC 的规划、换叶片保护和开火节拍由同一个控制器完成。
+        // 这里不再调用旧 Aimer 的弹道/运动前馈，避免同一帧生成两套命令。
+      } else if (options.aim_task == "smallbuff") {
         if (!buff_small_target->is_unsolve()) {
           auto target_copy = *buff_small_target;
           auto past_target = *buff_small_target;
@@ -1854,12 +1938,16 @@ int run(const Options& options) {
           sp_command = buff_motion.command;
         }
       }
-      // 小符是否进入 MPC 只看 EKF 是否已经稳定跟踪，不再受 Aimer 的换叶片
-      // 角度门控影响。Aimer 的 control=false 只用于暂时禁止开火，不能让云台
-      // 在 tracking 状态下退回无效测量并在下一帧突然接回新角度。
-      if (use_buff_mpc_planner && buff_small_target->is_tracking_ready()) {
-        buff_mpc_output = buff_mpc_planner->plan(
-            *buff_small_target, bullet_speed, timestamp, sp_command.control && sp_command.shoot);
+      if (use_buff_mpc_planner && small_buff_controller) {
+        // MPC 内部使用与 PnP 相同的世界坐标约定：yaw 乘 yaw 适配符号，
+        // pitch 乘 SP 到串口的符号（两个符号都是 ±1）。
+        const double current_world_yaw =
+          command_limiter_config.feedback_yaw_to_world_sign * latest_feedback.yaw_rad;
+        const double current_world_pitch =
+          command_limiter_config.sp_pitch_to_command_sign * latest_feedback.pitch_rad;
+        buff_mpc_output = small_buff_controller->update(
+          *buff_small_target, bullet_speed, timestamp,
+          current_world_yaw, current_world_pitch);
       }
       if (buff_mpc_output.valid) {
         command_distance = buff_mpc_output.distance;
@@ -1938,20 +2026,8 @@ int run(const Options& options) {
       command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * buff_mpc_output.plan.pitch_vel;
       raw_desired_yaw = command.yaw;
       raw_desired_pitch = command.pitch;
-      // 换亮扇叶时先限制角度渐变，再叠加电控需要的反馈误差速度。
+      // 换亮扇叶时由小符专用输出器统一限制角度、速度和加速度。
       buff_mpc_output_filter.apply(command, latest_feedback, std::chrono::steady_clock::now());
-      command.yaw_diff = tools::limit_rad(command.yaw - latest_feedback.yaw_rad);
-      command.pitch_diff = command.pitch - latest_feedback.pitch_rad;
-      if (velocityModeUsesFeedbackError(active_limiter_config->serial_command_velocity_mode)) {
-        command.yaw_vel += active_limiter_config->serial_command_yaw_error_gain * command.yaw_diff;
-        command.pitch_vel += active_limiter_config->serial_command_pitch_error_gain * command.pitch_diff;
-      }
-      command.yaw_vel = std::clamp(command.yaw_vel,
-                                   -active_limiter_config->serial_command_max_yaw_velocity_rad_s,
-                                   active_limiter_config->serial_command_max_yaw_velocity_rad_s);
-      command.pitch_vel = std::clamp(command.pitch_vel,
-                                      -active_limiter_config->serial_command_max_pitch_velocity_rad_s,
-                                      active_limiter_config->serial_command_max_pitch_velocity_rad_s);
     } else if (use_mpc_planner && have_mpc_plan) {
       command.yaw_vel = active_limiter_config->feedback_yaw_to_world_sign * mpc_plan.yaw_vel;
       command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * mpc_plan.pitch_vel;
@@ -1977,13 +2053,10 @@ int run(const Options& options) {
           use_buff_task && buff_motion.motion_valid);
     }
     if (use_buff_mpc_output) {
-      buff_mpc_motion_adapter.apply(command, command_time);
+      // 小符输出器已经计算最终速度和加速度，这里不再经过第二个 adapter。
     } else if (options.aim_task == "smallbuff") {
       // MPC 暂停或换扇叶时不沿用上一段 MPC 的速度历史，避免恢复后首帧产生加速度尖峰。
-      buff_mpc_motion_adapter.reset();
       buff_mpc_output_filter.reset();
-      // 普通自瞄 MPC 在反馈误差补偿后会重新生成最终加速度。小符的 Aimer
-      // 也走同一阶段，避免把补偿前的规划加速度和补偿后的速度一起发下去。
       buff_motion_adapter.apply(command, command_time);
     } else if (use_buff_task) {
       // 大符暂时保持原有输出语义，避免本次小符控制改动影响其他打符模式。
@@ -1993,6 +2066,7 @@ int run(const Options& options) {
     const double desired_pitch = command.pitch;
     const FireGateResult fire_gate = applyFireGate(
         command, raw_desired_yaw, raw_desired_pitch, *active_limiter_config);
+    const bool fire_advice = use_buff_mpc_output ? buff_mpc_output.plan.fire : sp_command.shoot;
     const auto aim_end = std::chrono::steady_clock::now();
 
     const auto serial_tx_start = aim_end;
@@ -2044,7 +2118,7 @@ int run(const Options& options) {
     web_status.distance_m = command.distance;
     web_status.feedback_age_ms = options.dry_run ? 0.0 : static_cast<double>(current_feedback_age.count());
     web_status.feedback_alignment_used = used_aligned_feedback;
-    web_status.fire_advice = sp_command.shoot;
+    web_status.fire_advice = fire_advice;
     web_status.fire = command.fire_advice;
     web_status.fire_blocked_by_limiter = fire_gate.blocked;
     web_status.dry_run = options.dry_run;
@@ -2076,9 +2150,22 @@ int run(const Options& options) {
     const auto visual_end = std::chrono::steady_clock::now();
 
     if (visual_end - last_log > std::chrono::seconds(1)) {
+      double buff_model_speed_deg_s = 0.0;
+      double buff_mpc_plan_vel_yaw_deg_s = 0.0;
+      double buff_mpc_plan_vel_pitch_deg_s = 0.0;
+      if (options.aim_task == "smallbuff" && buff_small_target) {
+        const Eigen::VectorXd model_state = buff_small_target->ekf_x();
+        if (model_state.size() > 6 && std::isfinite(model_state[6])) {
+          buff_model_speed_deg_s = model_state[6] * kRadToDeg;
+        }
+      }
+      if (use_buff_mpc_output) {
+        buff_mpc_plan_vel_yaw_deg_s = buff_mpc_output.plan.yaw_vel * kRadToDeg;
+        buff_mpc_plan_vel_pitch_deg_s = buff_mpc_output.plan.pitch_vel * kRadToDeg;
+      }
       std::printf(
           "[standard] task=%s frames=%llu fps=%.1f detections=%d tracked=%d state=%s "
-          "buff_ff=%d buff_mpc=%d "
+           "buff_ff=%d buff_mpc=%d model_w=%.1fdeg/s mpc_plan_vel=%.1f/%.1fdeg/s "
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg distance=%.3f "
@@ -2088,8 +2175,9 @@ int run(const Options& options) {
           "timing=rx %.1f cam %.1f det %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
           options.aim_task.c_str(), static_cast<unsigned long long>(frames), runtime_fps,
           detection_count, tracked_count,
-          track_state.c_str(), buff_motion_applied ? 1 : 0, use_buff_mpc_output ? 1 : 0,
-          latest_feedback.yaw_rad * kRadToDeg,
+           track_state.c_str(), buff_motion_applied ? 1 : 0, use_buff_mpc_output ? 1 : 0,
+           buff_model_speed_deg_s, buff_mpc_plan_vel_yaw_deg_s, buff_mpc_plan_vel_pitch_deg_s,
+           latest_feedback.yaw_rad * kRadToDeg,
           latest_feedback.pitch_rad * kRadToDeg, aligned_feedback.yaw_rad * kRadToDeg,
           aligned_feedback.pitch_rad * kRadToDeg, aligned_delta_yaw * kRadToDeg,
           aligned_delta_pitch * kRadToDeg, aligned_feedback_age_ms, raw_desired_yaw * kRadToDeg,
@@ -2101,7 +2189,7 @@ int run(const Options& options) {
           command.distance, pnp_reprojection_error_px, pnp_r_reprojection_error_px,
           pnp_center_distance_m, pnp_blade_horizontal_distance_m, pnp_blade_camera_distance_m,
           pnp_yaw_deg, pnp_pitch_deg, pnp_roll_deg,
-          sp_command.shoot ? 1 : 0, command.fire_advice ? 1 : 0,
+          fire_advice ? 1 : 0, command.fire_advice ? 1 : 0,
           fire_gate.blocked ? 1 : 0, elapsedMs(detect_start, aim_end),
           elapsedMs(serial_rx_start, serial_rx_end), elapsedMs(capture_start, capture_end),
           elapsedMs(detect_start, detect_end), elapsedMs(track_start, track_end),

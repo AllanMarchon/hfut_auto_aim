@@ -64,32 +64,72 @@ io::Command Aimer::aim(
     command.yaw = yaw;
     command.pitch = -pitch;  //世界坐标系下的pitch向上为负
     command.horizon_distance = last_distance_;
-    if (mistake_count_ > 3) {
-      switch_fanblade_ = true;
-      mistake_count_ = 0;
-      command.control = true;
-    } else if (std::abs(last_yaw_ - yaw) > 5 / 57.3 || std::abs(last_pitch_ - pitch) > 5 / 57.3) {
-      switch_fanblade_ = true;
-      mistake_count_++;
-      command.control = false;
-    } else {
-      switch_fanblade_ = false;
-      mistake_count_ = 0;
-      command.control = true;
-    }
-    last_yaw_ = yaw;
-    last_pitch_ = pitch;
+    // control 是角度/换叶片保护状态，不能被开火间隔状态覆盖。
+    command.control = updateControlState(yaw, pitch);
   }
 
-  if (switch_fanblade_) {
-    command.shoot = false;
-    last_fire_t_ = now;
-  } else if (!switch_fanblade_ && tools::delta_time(now, last_fire_t_) > fire_gap_time_) {
-    command.shoot = true;
-    last_fire_t_ = now;
-  }
+  command.shoot = consumeFireAdvice(now);
 
   return command;
+}
+
+FireDecision Aimer::fireAdvice(
+  double yaw, double pitch, std::chrono::steady_clock::time_point now)
+{
+  FireDecision result;
+  if (!std::isfinite(yaw) || !std::isfinite(pitch)) {
+    resetFireState();
+    return result;
+  }
+
+  result.control = updateControlState(yaw, pitch);
+  result.shoot = consumeFireAdvice(now);
+  return result;
+}
+
+bool Aimer::updateControlState(double yaw, double pitch)
+{
+  if (mistake_count_ > 3) {
+    switch_fanblade_ = true;
+    mistake_count_ = 0;
+    last_yaw_ = yaw;
+    last_pitch_ = pitch;
+    return true;
+  } else if (std::abs(last_yaw_ - yaw) > 5 / 57.3 ||
+             std::abs(last_pitch_ - pitch) > 5 / 57.3) {
+    switch_fanblade_ = true;
+    mistake_count_++;
+    last_yaw_ = yaw;
+    last_pitch_ = pitch;
+    return false;
+  } else {
+    switch_fanblade_ = false;
+    mistake_count_ = 0;
+    last_yaw_ = yaw;
+    last_pitch_ = pitch;
+    return true;
+  }
+}
+
+bool Aimer::consumeFireAdvice(std::chrono::steady_clock::time_point now)
+{
+  if (switch_fanblade_) {
+    last_fire_t_ = now;
+    return false;
+  }
+  if (tools::delta_time(now, last_fire_t_) > fire_gap_time_) {
+    last_fire_t_ = now;
+    return true;
+  }
+  return false;
+}
+
+void Aimer::resetFireState()
+{
+  mistake_count_ = 0;
+  switch_fanblade_ = true;
+  // 重获前禁止开火；下一帧先重新建立角度稳定状态。
+  last_fire_t_ = std::chrono::steady_clock::now();
 }
 
 AimMotionCommand Aimer::aimWithMotion(
