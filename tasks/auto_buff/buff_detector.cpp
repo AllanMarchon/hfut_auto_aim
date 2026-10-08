@@ -218,7 +218,7 @@ std::optional<PowerRune> Buff_Detector::detect_sp25(cv::Mat & bgr_img, bool mult
 std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_type rune_type)
 {
   if (!szu_detector_) return std::nullopt;
-  const auto results = szu_detector_->detect(bgr_img);
+  const auto results = szu_detector_->detect(bgr_img, rune_type == BIG);
   const auto & stats = szu_detector_->debug_stats();
   if (results.empty()) {
     log_szu_debug("no_result", stats, results.size(), 0, 0);
@@ -246,7 +246,7 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   std::vector<TargetRSample> target_r_samples;
 
   for (const auto & result : results) {
-    // 正常打符只接受模型给出的有效 R；不再用 GEO-R 或 VIS-R 外推补点。
+    // 只保留模型提供了有效符心观测的检测结果。
     if (result.corners.size() != 4 || !result.network_r_valid) continue;
     FanBlade blade(
       result.corners, result.center, classify_szu_blade(result.class_id, rune_type), result.class_id,
@@ -300,6 +300,26 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   fanblades.insert(fanblades.end(), other_fanblades.begin(), other_fanblades.end());
 
   cv::Point2f r_center = r_center_sum * static_cast<float>(1.0 / quality_sum);
+  std::vector<cv::Point2f> rp26_pose_image_points;
+  bool rp26_pose_valid = false;
+  if (!target_fanblades.empty()) {
+    // 目标排序完成后，重新从同一检测结果取 RP26 锚点，避免多叶片时把锚点和 R 错配。
+    const cv::Point2f selected_target_center = target_fanblades.front().center;
+    const auto selected_result = std::min_element(
+      results.begin(), results.end(), [&](const SzuRuneDetector::Detection & a,
+                                          const SzuRuneDetector::Detection & b) {
+        const bool a_target = classify_szu_blade(a.class_id, rune_type) == _target;
+        const bool b_target = classify_szu_blade(b.class_id, rune_type) == _target;
+        if (a_target != b_target) return a_target;
+        return cv::norm(a.center - selected_target_center) <
+               cv::norm(b.center - selected_target_center);
+      });
+    if (selected_result != results.end() && selected_result->rp26_semantic_valid &&
+        selected_result->rp26_anchor_points.size() == 4) {
+      rp26_pose_image_points = selected_result->rp26_anchor_points;
+      rp26_pose_valid = true;
+    }
+  }
   if (!target_r_samples.empty()) {
     // 目标重排后，选择与最终 target 中心最近的 R 观测，避免多叶片平均把 PnP 的 R 约束错配。
     const auto & selected_target_center = target_fanblades.front().center;
@@ -347,13 +367,9 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   // 先保留诊断信息；只有显式打开开关时才用这些经验阈值丢弃整帧。
   if (r_geometry_nonfinite || (szu_reject_r_geometry_ && r_geometry_outlier)) {
     log_szu_debug(
-      "r_center_invalid", stats, results.size(), target_fanblades.size(), other_fanblades.size());
+      "geometry_invalid", stats, results.size(), target_fanblades.size(), other_fanblades.size());
     handle_lose();
     return std::nullopt;
-  }
-  if (r_geometry_outlier) {
-    log_szu_debug(
-      "r_center_warning", stats, results.size(), target_fanblades.size(), other_fanblades.size());
   }
   PowerRune powerrune(fanblades, r_center, last_powerrune_);
   powerrune.observation_quality = quality_sum / static_cast<double>(r_center_count);
@@ -363,6 +379,9 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   powerrune.r_point_diagnostics.geometry = summarize_r_source(geometric_r_samples);
   powerrune.r_point_diagnostics.visual = summarize_r_source(visual_r_samples);
   powerrune.r_point_diagnostics.detection_count = r_center_count;
+  powerrune.rp26_pose_image_points = std::move(rp26_pose_image_points);
+  powerrune.rp26_pose_required = rune_type == SMALL;
+  powerrune.rp26_pose_valid = rp26_pose_valid;
   if (network_r_confidence_weight > 0.0) {
     powerrune.r_point_diagnostics.network_confidence =
       network_r_confidence_sum / network_r_confidence_weight;
@@ -401,15 +420,11 @@ void Buff_Detector::log_szu_debug(
   if (szu_debug_frame_ != 1 && szu_debug_frame_ % szu_debug_log_every_n_ != 0) return;
 
   tools::logger()->info(
-    "[Buff_Detector] szu frame={} stage={} anchors={} conf={} kpt={} required={} nms={} results={} "
-    "target={} other={} traditional={}/{}/{}/{}/{}/{}/{} geo_reject={} classes={}/{}/{} "
-    "max_conf={:.3f} max_kpt={:.3f}",
-    szu_debug_frame_, stage, stats.anchors, stats.confidence_pass, stats.keypoint_pass,
-    stats.required_keypoint_pass, stats.nms_output, raw_count, target_count, other_count,
-    stats.traditional_attempted, stats.traditional_edge_refined, stats.traditional_corner_refined,
-    stats.traditional_geometry_pass, stats.traditional_r_refined, stats.traditional_r_geometry,
-    stats.traditional_corner_fallback, stats.traditional_geometry_rejected, stats.class_counts[0],
-    stats.class_counts[1], stats.class_counts[2], stats.max_confidence, stats.max_keypoint_confidence);
+    "[Buff_Detector] SZU frame={} stage={} results={} target={} other={} "
+    "RP26={}/{} max_conf={:.3f} max_kpt={:.3f}",
+    szu_debug_frame_, stage, raw_count, target_count, other_count,
+    stats.rp26_valid, stats.rp26_attempted, stats.max_confidence,
+    stats.max_keypoint_confidence);
 }
 
 std::optional<PowerRune> Buff_Detector::detect_debug(cv::Mat & bgr_img, cv::Point2f v)

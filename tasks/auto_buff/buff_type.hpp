@@ -77,18 +77,21 @@ public:
 
   // PnP 诊断信息，由 Solver 填充；与跟踪状态分离，便于排查距离问题。
   double pnp_reprojection_error_px = 0.0;
-  double pnp_r_reprojection_error_px = 0.0;
   double pnp_center_distance_m = 0.0;  // PnP R 中心到相机的直线距离
   double pnp_blade_horizontal_distance_m = 0.0;  // 待击打叶片中心的水平距离
   double pnp_blade_camera_distance_m = 0.0;  // 相机到待击打叶片中心的直线距离
-  cv::Point2f pnp_r_projected_pixel{0.0F, 0.0F};  // PnP 反投影得到的 R 点
-  bool pnp_r_projection_valid = false;  // 当前帧有可显示的 PnP-R 投影，包括被拒绝的候选
 
   // 观测质量信息，由检测器在进入目标跟踪前填充。
   double observation_quality = 0.0;
   double r_center_consistency_px = 0.0;
   double r_center_spread_px = 0.0;
   RPointDiagnostics r_point_diagnostics;
+
+  // RP26 语义轮廓分支提供的姿态锚点。它们只用于小符解算，不改变普通自瞄链路。
+  std::vector<cv::Point2f> rp26_pose_image_points;
+  bool rp26_pose_required = false;
+  bool rp26_pose_valid = false;
+  bool pnp_used_rp26_pose = false;
 
   explicit PowerRune(
     std::vector<FanBlade> & ts, const cv::Point2f r_center,

@@ -37,6 +37,10 @@ public:
     int traditional_valid_corners = 0;
     bool traditional_geometry_valid = false;
     bool traditional_r_refined = false;
+    // RP26 语义轮廓分支生成的四个外接锚点，顺序为外侧左、内侧左、内侧右、外侧右。
+    std::vector<cv::Point2f> rp26_anchor_points;
+    bool rp26_semantic_valid = false;
+    int rp26_contour_count = 0;
   };
 
   struct DebugStats
@@ -54,6 +58,8 @@ public:
     int traditional_r_refined = 0;
     int traditional_r_geometry = 0;
     int traditional_corner_fallback = 0;
+    int rp26_attempted = 0;
+    int rp26_valid = 0;
     std::array<int, 3> class_counts{0, 0, 0};
     float max_confidence = 0.0f;
     float max_keypoint_confidence = 0.0f;
@@ -61,7 +67,7 @@ public:
 
   explicit SzuRuneDetector(const std::string & config_path);
 
-  std::vector<Detection> detect(const cv::Mat & image);
+  std::vector<Detection> detect(const cv::Mat & image, bool is_big_rune = false);
 
   const DebugStats & debug_stats() const { return debug_stats_; }
 
@@ -73,6 +79,20 @@ private:
     float scale, int pad_w, int pad_h, int crop_x, int crop_y, int orig_w, int orig_h);
   std::vector<Detection> nms(std::vector<Detection> & detections) const;
   void refine_detections(const cv::Mat & image, std::vector<Detection> & detections);
+  void refine_rp26_detections(
+    const cv::Mat & image, std::vector<Detection> & detections, bool is_big_rune);
+  bool refine_rp26_detection(const cv::Mat & image, Detection & detection) const;
+  static bool line_passes_contour(
+    const cv::Point2f & a, const cv::Point2f & b,
+    const std::vector<cv::Point> & contour, int samples);
+  static bool contour_contains(const std::vector<cv::Point> & contour, const cv::Point2f & point);
+  static double contour_solidity(const std::vector<cv::Point> & contour);
+  static cv::Point2f contour_center(const std::vector<cv::Point> & contour);
+  static bool build_rp26_anchor_points(
+    const std::vector<cv::Point> & armor_contour,
+    const std::vector<cv::Point> & light_arm_contour,
+    const cv::Point2f & r_center,
+    std::vector<cv::Point2f> & anchor_points);
   bool refine_radial_edge(
     const cv::Mat & gray, const cv::Mat & gradient_x, const cv::Mat & gradient_y,
     const cv::Point2f & r_center, const cv::Point2f & seed, cv::Point2f & refined) const;
@@ -113,6 +133,15 @@ private:
   int traditional_min_valid_keypoints_{3};
   bool traditional_refine_enabled_{true};
   bool traditional_r_refine_enabled_{true};
+  bool rp26_refine_enabled_{true};
+  bool rp26_strict_{false};
+  float rp26_roi_scale_{1.4f};
+  float rp26_armor_area_relative_error_{0.8f};
+  float rp26_armor_solidity_threshold_{0.70f};
+  float rp26_light_solidity_threshold_{0.60f};
+  float rp26_red_threshold_{60.0f};
+  float rp26_blue_threshold_{62.0f};
+  int rp26_line_samples_{24};
   bool enemy_red_{true};
   int traditional_corner_window_{5};
   float traditional_max_shift_px_{8.0f};

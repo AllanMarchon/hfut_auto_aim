@@ -75,6 +75,20 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
   traditional_r_refine_enabled_ = yaml["szu_traditional_r_refine"]
                                     ? yaml["szu_traditional_r_refine"].as<bool>()
                                     : traditional_r_refine_enabled_;
+  rp26_refine_enabled_ = yaml["szu_rp26_refine"]
+                           ? yaml["szu_rp26_refine"].as<bool>() : rp26_refine_enabled_;
+  rp26_strict_ = yaml["szu_rp26_strict"]
+                   ? yaml["szu_rp26_strict"].as<bool>() : rp26_strict_;
+  rp26_roi_scale_ = yaml_float(yaml, "szu_rp26_roi_scale", rp26_roi_scale_);
+  rp26_armor_area_relative_error_ = yaml_float(
+    yaml, "szu_rp26_armor_area_relative_error", rp26_armor_area_relative_error_);
+  rp26_armor_solidity_threshold_ = yaml_float(
+    yaml, "szu_rp26_armor_solidity_threshold", rp26_armor_solidity_threshold_);
+  rp26_light_solidity_threshold_ = yaml_float(
+    yaml, "szu_rp26_light_solidity_threshold", rp26_light_solidity_threshold_);
+  rp26_red_threshold_ = yaml_float(yaml, "szu_rp26_red_minus_blue_threshold", rp26_red_threshold_);
+  rp26_blue_threshold_ = yaml_float(yaml, "szu_rp26_blue_minus_red_threshold", rp26_blue_threshold_);
+  rp26_line_samples_ = yaml_int(yaml, "szu_rp26_line_samples", rp26_line_samples_);
   traditional_corner_window_ = yaml_int(
     yaml, "szu_traditional_corner_window", traditional_corner_window_);
   traditional_max_shift_px_ = yaml_float(
@@ -155,7 +169,17 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
       r_color_red_threshold_ > 255.0f ||
       !std::isfinite(r_color_blue_threshold_) || r_color_blue_threshold_ < 0.0f ||
       r_color_blue_threshold_ > 255.0f || r_color_kernel_size_ < 1 ||
-      r_color_kernel_size_ % 2 == 0) {
+      r_color_kernel_size_ % 2 == 0 || !std::isfinite(rp26_roi_scale_) ||
+      rp26_roi_scale_ < 1.0f || !std::isfinite(rp26_armor_area_relative_error_) ||
+      rp26_armor_area_relative_error_ <= 0.0f ||
+      !std::isfinite(rp26_armor_solidity_threshold_) ||
+      rp26_armor_solidity_threshold_ < 0.0f || rp26_armor_solidity_threshold_ > 1.0f ||
+      !std::isfinite(rp26_light_solidity_threshold_) ||
+      rp26_light_solidity_threshold_ < 0.0f || rp26_light_solidity_threshold_ > 1.0f ||
+      !std::isfinite(rp26_red_threshold_) || rp26_red_threshold_ < 0.0f ||
+      rp26_red_threshold_ > 255.0f || !std::isfinite(rp26_blue_threshold_) ||
+      rp26_blue_threshold_ < 0.0f || rp26_blue_threshold_ > 255.0f ||
+      rp26_line_samples_ < 4) {
     throw std::runtime_error("SZU 传统角点精修参数无效");
   }
   if (preprocess_mode_ != "letterbox" && preprocess_mode_ != "center_crop") {
@@ -179,7 +203,8 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
   }
 }
 
-std::vector<SzuRuneDetector::Detection> SzuRuneDetector::detect(const cv::Mat & image)
+std::vector<SzuRuneDetector::Detection> SzuRuneDetector::detect(
+  const cv::Mat & image, bool is_big_rune)
 {
   debug_stats_ = {};
   if (image.empty()) return {};
@@ -200,6 +225,15 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::detect(const cv::Mat & 
 
   auto detections = postprocess(scale, pad_w, pad_h, crop_x, crop_y, image.cols, image.rows);
   refine_detections(image, detections);
+  refine_rp26_detections(image, detections, is_big_rune);
+  if (!is_big_rune && rp26_refine_enabled_ && rp26_strict_) {
+    detections.erase(
+      std::remove_if(
+        detections.begin(), detections.end(), [](const Detection & detection) {
+          return !detection.rp26_semantic_valid;
+        }),
+      detections.end());
+  }
   // 传统算法是网络结果的精修和补充，失败时保留有限的网络点，不能把检测直接清空。
   detections.erase(
     std::remove_if(
@@ -540,6 +574,260 @@ void SzuRuneDetector::refine_detections(
       }
     }
   }
+}
+
+void SzuRuneDetector::refine_rp26_detections(
+  const cv::Mat & image, std::vector<Detection> & detections, bool is_big_rune)
+{
+  if (!rp26_refine_enabled_ || image.empty() || is_big_rune) return;
+  for (auto & detection : detections) {
+    if (detection.class_id != 0) continue;
+    ++debug_stats_.rp26_attempted;
+    if (refine_rp26_detection(image, detection)) ++debug_stats_.rp26_valid;
+  }
+}
+
+bool SzuRuneDetector::contour_contains(
+  const std::vector<cv::Point> & contour, const cv::Point2f & point)
+{
+  return contour.size() >= 5 && cv::pointPolygonTest(contour, point, false) >= 0.0;
+}
+
+double SzuRuneDetector::contour_solidity(const std::vector<cv::Point> & contour)
+{
+  if (contour.size() < 3) return 0.0;
+  const double area = std::abs(cv::contourArea(contour));
+  std::vector<cv::Point> hull;
+  cv::convexHull(contour, hull);
+  const double hull_area = std::abs(cv::contourArea(hull));
+  return hull_area > 1e-6 ? area / hull_area : 0.0;
+}
+
+cv::Point2f SzuRuneDetector::contour_center(const std::vector<cv::Point> & contour)
+{
+  const cv::Moments moments = cv::moments(contour);
+  if (std::abs(moments.m00) > 1e-6) {
+    return cv::Point2f(
+      static_cast<float>(moments.m10 / moments.m00),
+      static_cast<float>(moments.m01 / moments.m00));
+  }
+  cv::Point2f center;
+  for (const auto & point : contour) {
+    center += cv::Point2f(static_cast<float>(point.x), static_cast<float>(point.y));
+  }
+  if (!contour.empty()) center *= 1.0F / static_cast<float>(contour.size());
+  return center;
+}
+
+bool SzuRuneDetector::line_passes_contour(
+  const cv::Point2f & a, const cv::Point2f & b,
+  const std::vector<cv::Point> & contour, int samples)
+{
+  if (contour.size() < 5 || samples < 1) return false;
+  for (int i = 0; i <= samples; ++i) {
+    const float ratio = static_cast<float>(i) / static_cast<float>(samples);
+    const cv::Point2f point = a + ratio * (b - a);
+    if (cv::pointPolygonTest(contour, point, false) > 0.0) return true;
+  }
+  return false;
+}
+
+bool SzuRuneDetector::build_rp26_anchor_points(
+  const std::vector<cv::Point> & armor_contour,
+  const std::vector<cv::Point> & light_arm_contour,
+  const cv::Point2f & r_center,
+  std::vector<cv::Point2f> & anchor_points)
+{
+  if (armor_contour.size() < 5 || light_arm_contour.size() < 5) return false;
+
+  // 深大 RP26 用靶心和灯臂的联合轮廓做 PCA，再取四个极值点作为锚点。
+  // 这一步不依赖网络角点的像素抖动，正是它与直接四点 IPPE 的区别。
+  const int total_points = static_cast<int>(armor_contour.size() + light_arm_contour.size());
+  cv::Mat data(total_points, 2, CV_64F);
+  int row = 0;
+  for (const auto & point : armor_contour) {
+    data.at<double>(row, 0) = point.x;
+    data.at<double>(row++, 1) = point.y;
+  }
+  for (const auto & point : light_arm_contour) {
+    data.at<double>(row, 0) = point.x;
+    data.at<double>(row++, 1) = point.y;
+  }
+
+  const cv::PCA pca(data, cv::Mat(), cv::PCA::DATA_AS_ROW);
+  cv::Point2f center(
+    static_cast<float>(pca.mean.at<double>(0, 0)),
+    static_cast<float>(pca.mean.at<double>(0, 1)));
+  cv::Point2f axis_x(
+    static_cast<float>(pca.eigenvectors.at<double>(0, 0)),
+    static_cast<float>(pca.eigenvectors.at<double>(0, 1)));
+  const float axis_norm = cv::norm(axis_x);
+  if (!std::isfinite(axis_norm) || axis_norm < 1e-5F) return false;
+  axis_x *= 1.0F / axis_norm;
+  const cv::Point2f axis_y(-axis_x.y, axis_x.x);
+
+  float min_x = std::numeric_limits<float>::max();
+  float max_x = std::numeric_limits<float>::lowest();
+  float min_y = std::numeric_limits<float>::max();
+  float max_y = std::numeric_limits<float>::lowest();
+  std::vector<cv::Point2f> all_points;
+  all_points.reserve(static_cast<size_t>(total_points));
+  for (const auto & point : armor_contour) all_points.emplace_back(point);
+  for (const auto & point : light_arm_contour) all_points.emplace_back(point);
+  for (const auto & point : all_points) {
+    const cv::Point2f local = point - center;
+    const float x = local.dot(axis_x);
+    const float y = local.dot(axis_y);
+    min_x = std::min(min_x, x);
+    max_x = std::max(max_x, x);
+    min_y = std::min(min_y, y);
+    max_y = std::max(max_y, y);
+  }
+  if (max_x - min_x < 2.0F || max_y - min_y < 2.0F) return false;
+
+  std::array<cv::Point2f, 4> box{
+    center + min_x * axis_x + min_y * axis_y,
+    center + min_x * axis_x + max_y * axis_y,
+    center + max_x * axis_x + max_y * axis_y,
+    center + max_x * axis_x + min_y * axis_y};
+
+  // 离 R 更远的两个点是外侧，较近的两个点是内侧。
+  std::array<int, 4> order{0, 1, 2, 3};
+  std::sort(order.begin(), order.end(), [&](int lhs, int rhs) {
+    return cv::norm(box[lhs] - r_center) > cv::norm(box[rhs] - r_center);
+  });
+  const std::array<int, 2> outer{order[0], order[1]};
+  const std::array<int, 2> inner{order[2], order[3]};
+  const cv::Point2f center_to_r = r_center - center;
+  if (cv::norm(center_to_r) < 1e-3F) return false;
+
+  const auto sort_side = [&](const std::array<int, 2> & pair) {
+    // 与深大 RP26 的 sort_anchor_points 一致：叉乘正负决定左右，
+    // 不依赖 PCA 特征向量本身可能发生的 180 度翻转。
+    const float orientation = (box[pair[1]] - box[pair[0]]).cross(center_to_r);
+    return orientation > 0.0F
+      ? std::array<cv::Point2f, 2>{box[pair[0]], box[pair[1]]}
+      : std::array<cv::Point2f, 2>{box[pair[1]], box[pair[0]]};
+  };
+  const auto outer_side = sort_side(outer);
+  const auto inner_side = sort_side(inner);
+  anchor_points = {outer_side[0], inner_side[0], inner_side[1], outer_side[1]};
+  for (const auto & point : anchor_points) {
+    if (!std::isfinite(point.x) || !std::isfinite(point.y)) return false;
+  }
+  return true;
+}
+
+bool SzuRuneDetector::refine_rp26_detection(
+  const cv::Mat & image, Detection & detection) const
+{
+  detection.rp26_anchor_points.clear();
+  detection.rp26_semantic_valid = false;
+  detection.rp26_contour_count = 0;
+  if (image.type() != CV_8UC3 || detection.corners.size() != 4 ||
+      !detection.network_r_valid) {
+    // 当前只对小符未激活叶片生成 RP26 锚点；已激活轮廓继续使用原检测语义。
+    return false;
+  }
+
+  std::vector<cv::Point2f> roi_points = detection.corners;
+  roi_points.emplace_back(detection.network_r_center);
+  const cv::RotatedRect network_rect = cv::minAreaRect(roi_points);
+  if (network_rect.size.width < 2.0F || network_rect.size.height < 2.0F) return false;
+  cv::RotatedRect expanded = network_rect;
+  expanded.size *= rp26_roi_scale_;
+  const cv::Rect roi = expanded.boundingRect() & cv::Rect(0, 0, image.cols, image.rows);
+  if (roi.empty()) return false;
+
+  std::vector<cv::Mat> channels;
+  cv::split(image(roi), channels);
+  cv::Mat color_difference;
+  if (enemy_red_) cv::subtract(channels[2], channels[0], color_difference);
+  else cv::subtract(channels[0], channels[2], color_difference);
+  cv::GaussianBlur(color_difference, color_difference, cv::Size(5, 5), 0.0);
+  const double threshold = enemy_red_ ? rp26_red_threshold_ : rp26_blue_threshold_;
+  cv::threshold(color_difference, color_difference, threshold, 255, cv::THRESH_BINARY);
+
+  std::vector<std::vector<cv::Point>> contours;
+  cv::findContours(
+    color_difference, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE, roi.tl());
+  detection.rp26_contour_count = static_cast<int>(contours.size());
+  if (contours.empty()) return false;
+
+  const cv::Point2f armor_center = detection.center;
+  const cv::Point2f r_center = detection.network_r_center;
+  const std::vector<cv::Point2f> corner_points = detection.corners;
+  double nn_ellipse_area = 0.25 * cv::norm(corner_points[0] - corner_points[3]) *
+    cv::norm(corner_points[1] - corner_points[2]) * CV_PI;
+  nn_ellipse_area = std::max(1.0, nn_ellipse_area);
+
+  std::vector<cv::Point> armor;
+  std::vector<cv::Point> light_arm;
+  std::vector<cv::Point> center_r;
+  double best_armor_score = std::numeric_limits<double>::infinity();
+  double best_light_area = 0.0;
+  double best_r_area = std::numeric_limits<double>::infinity();
+  for (const auto & contour : contours) {
+    if (contour.size() < 5) continue;
+    const double area = std::abs(cv::contourArea(contour));
+    if (!std::isfinite(area) || area < 2.0) continue;
+    const double solidity = contour_solidity(contour);
+    const bool contains_armor_center = contour_contains(contour, armor_center);
+    const bool contains_r = contour_contains(contour, r_center);
+
+    if (contains_armor_center) {
+      const double area_error = std::abs(area - nn_ellipse_area) / nn_ellipse_area;
+      if (area_error <= rp26_armor_area_relative_error_ &&
+          solidity >= rp26_armor_solidity_threshold_ && area_error < best_armor_score) {
+        armor = contour;
+        best_armor_score = area_error;
+      }
+    }
+
+    bool contains_corner = false;
+    for (const auto & corner : corner_points) {
+      if (contour_contains(contour, corner)) {
+        contains_corner = true;
+        break;
+      }
+    }
+    const bool is_light_arm = !contains_armor_center && !contains_r && !contains_corner &&
+      line_passes_contour(armor_center, r_center, contour, rp26_line_samples_);
+    const bool side_line_crosses = line_passes_contour(
+      corner_points[1], corner_points[2], contour, rp26_line_samples_);
+    if (is_light_arm && !side_line_crosses && solidity >= rp26_light_solidity_threshold_ &&
+        area > best_light_area) {
+      light_arm = contour;
+      best_light_area = area;
+    }
+
+    if (contains_r && !contains_armor_center && !contains_corner && area < best_r_area) {
+      center_r = contour;
+      best_r_area = area;
+    }
+  }
+  if (armor.empty() || light_arm.empty() || center_r.empty()) return false;
+
+  const cv::Point2f visual_r = contour_center(center_r);
+  if (!std::isfinite(visual_r.x) || !std::isfinite(visual_r.y) ||
+      cv::norm(visual_r - detection.network_r_center) > traditional_r_max_shift_px_) {
+    return false;
+  }
+  std::vector<cv::Point2f> anchors;
+  if (!build_rp26_anchor_points(armor, light_arm, visual_r, anchors)) return false;
+
+  // 轮廓中心用于目标角度，R 轮廓中心用于符心；只有语义轮廓完整时才替换网络 R。
+  const cv::Point2f refined_armor_center = contour_center(armor);
+  if (std::isfinite(refined_armor_center.x) && std::isfinite(refined_armor_center.y)) {
+    detection.center = refined_armor_center;
+  }
+  detection.r_center = visual_r;
+  detection.visual_r_center = visual_r;
+  detection.visual_r_valid = true;
+  detection.traditional_r_refined = true;
+  detection.rp26_anchor_points = std::move(anchors);
+  detection.rp26_semantic_valid = true;
+  return true;
 }
 
 bool SzuRuneDetector::estimate_geometric_r_center(

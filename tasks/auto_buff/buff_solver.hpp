@@ -53,10 +53,11 @@ private:
   double szu_pose_max_translation_jump_m_{0.35};
   int szu_pose_reacquire_after_rejections_{20};
   bool szu_use_r_in_pnp_{false};
+  // 小符 RP26 模式要求每帧都有语义锚点，不与旧网络四点模型混用。
+  bool szu_use_rp26_pose_{true};
   // R 标比符盘旋转中心更靠近相机；这里的正负号沿用符盘模型的 x 轴约定。
   // 当前实测诊断支持负方向，保留为配置项便于以后用同一套程序对照验证。
   double szu_r_object_normal_offset_m_{-0.1};
-  mutable int r_offset_diagnostic_counter_{0};
 
   // 前四点按外端、顺时针侧、内端、逆时针侧排列；坐标原点是符盘旋转中心，700 mm 点是叶片中心。
   // 这里采用 SZU 26 模型的实际几何：叶片中心到四个边缘点的半径为 150 mm。
@@ -66,6 +67,14 @@ private:
     cv::Point3f(0, 0, 550e-3), cv::Point3f(0, -150e-3, 700e-3),
     cv::Point3f(0, 0, 700e-3), cv::Point3f(0, 0, 220e-3),
     cv::Point3f(0, 0, 0)};  // 单位：米
+
+  // 深大 RP26 未激活符叶的四个外接锚点，坐标映射到当前符盘系：
+  // x 为盘面法向，y 为横向，z 为从 R 指向靶心的径向。
+  const std::vector<cv::Point3f> RP26_INACTIVE_ANCHOR_POINTS = {
+    cv::Point3f(0, -150e-3F, 850e-3F),
+    cv::Point3f(0, -150e-3F, 174e-3F),
+    cv::Point3f(0, 150e-3F, 174e-3F),
+    cv::Point3f(0, 150e-3F, 850e-3F)};
 
 };
 }  // namespace auto_buff

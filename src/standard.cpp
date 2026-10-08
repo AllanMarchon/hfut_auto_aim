@@ -1372,36 +1372,32 @@ struct PowerRuneVisualBlade {
   auto_buff::FanBlade_type type{auto_buff::_unlight};
   cv::Point2f center{};
   std::vector<cv::Point2f> points;
-  std::vector<int> point_indices;
   int class_id{-1};
   float confidence{0.0F};
 };
 
 struct PowerRuneVisual {
   bool valid{false};
-  cv::Point2f r_center{};
-  auto_buff::RPointDiagnostics r_points;
-  cv::Point2f pnp_r{};
-  bool pnp_r_valid{false};
-  bool pnp_candidate_rejected{false};
+  bool rp26_required{false};
+  bool rp26_valid{false};
+  bool pnp_used_rp26_pose{false};
+  std::vector<cv::Point2f> rp26_pose_image_points;
   std::vector<PowerRuneVisualBlade> fanblades;
 };
 
 PowerRuneVisual makePowerRuneVisual(const auto_buff::PowerRune& rune) {
   PowerRuneVisual visual;
   visual.valid = true;
-  visual.r_center = rune.r_center;
-  visual.r_points = rune.r_point_diagnostics;
-  visual.pnp_r = rune.pnp_r_projected_pixel;
-  visual.pnp_r_valid = rune.pnp_r_projection_valid;
-  visual.pnp_candidate_rejected = rune.is_unsolve();
+  visual.rp26_required = rune.rp26_pose_required;
+  visual.rp26_valid = rune.rp26_pose_valid;
+  visual.pnp_used_rp26_pose = rune.pnp_used_rp26_pose;
+  visual.rp26_pose_image_points = rune.rp26_pose_image_points;
   visual.fanblades.reserve(rune.fanblades.size());
   for (const auto& blade : rune.fanblades) {
     PowerRuneVisualBlade blade_visual;
     blade_visual.type = blade.type;
     blade_visual.center = blade.center;
     blade_visual.points = blade.points;
-    blade_visual.point_indices = blade.point_indices;
     blade_visual.class_id = blade.class_id;
     blade_visual.confidence = blade.confidence;
     visual.fanblades.emplace_back(std::move(blade_visual));
@@ -1422,14 +1418,6 @@ void drawPowerRune(cv::Mat& image, const PowerRuneVisual& rune) {
       cv::line(image, blade.points[i], blade.points[(i + 1) % contour_points], color, 2,
                cv::LINE_AA);
     }
-    for (size_t i = 0; i < blade.points.size(); ++i) {
-      cv::circle(image, blade.points[i], 3, color, cv::FILLED, cv::LINE_AA);
-      const int point_index = i < blade.point_indices.size()
-                                ? blade.point_indices[i]
-                                : static_cast<int>(i);
-      cv::putText(image, std::to_string(point_index), blade.points[i] + cv::Point2f(4, -4),
-                  cv::FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv::LINE_AA);
-    }
     if (blade.class_id >= 0) {
       char label[48];
       std::snprintf(label, sizeof(label), "c%d %.2f", blade.class_id, blade.confidence);
@@ -1438,69 +1426,23 @@ void drawPowerRune(cv::Mat& image, const PowerRuneVisual& rune) {
     }
   }
 
-  struct PointEntry {
-    std::string name;
-    cv::Point2f point;
-    cv::Scalar color;
-    int marker;
-  };
-  std::vector<PointEntry> entries;
-  const auto finite_point = [](const cv::Point2f& point) {
-    return std::isfinite(point.x) && std::isfinite(point.y);
-  };
-  const auto add_source = [&](const char* name, const auto_buff::RPointSourceSummary& source,
-                              const cv::Scalar& color, int marker) {
-    if (source.count > 0 && finite_point(source.center)) {
-      entries.push_back({name, source.center, color, marker});
+  if (rune.rp26_valid && rune.rp26_pose_image_points.size() == 4) {
+    const cv::Scalar pose_color(0, 220, 180);
+    for (size_t i = 0; i < rune.rp26_pose_image_points.size(); ++i) {
+      const auto& point = rune.rp26_pose_image_points[i];
+      const auto& next = rune.rp26_pose_image_points[(i + 1) % rune.rp26_pose_image_points.size()];
+      cv::line(image, point, next, pose_color, 2, cv::LINE_AA);
+      cv::circle(image, point, 4, pose_color, cv::FILLED, cv::LINE_AA);
+      cv::putText(image, std::to_string(i), point + cv::Point2f(5, -5),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.45, pose_color, 1, cv::LINE_AA);
     }
-  };
-  add_source("NET-R", rune.r_points.network, cv::Scalar(0, 255, 0), cv::MARKER_SQUARE);
-  add_source("GEO-R", rune.r_points.geometry, cv::Scalar(255, 0, 0), cv::MARKER_DIAMOND);
-  add_source("VIS-R", rune.r_points.visual, cv::Scalar(255, 255, 0), cv::MARKER_TILTED_CROSS);
-  if (finite_point(rune.r_center)) {
-    entries.push_back({"2/R", rune.r_center, cv::Scalar(0, 255, 255), cv::MARKER_STAR});
-  }
-  if (rune.pnp_r_valid && finite_point(rune.pnp_r)) {
-    entries.push_back({rune.pnp_candidate_rejected ? "PnP-R*" : "PnP-R", rune.pnp_r,
-                       cv::Scalar(255, 0, 255), cv::MARKER_CROSS});
-  }
-
-  if (rune.pnp_r_valid && finite_point(rune.pnp_r) && finite_point(rune.r_center)) {
-    cv::line(image, rune.r_center, rune.pnp_r, cv::Scalar(255, 0, 255), 1, cv::LINE_AA);
-  }
-  for (const auto& entry : entries) {
-    cv::drawMarker(image, entry.point, entry.color, entry.marker, 16, 2, cv::LINE_AA);
-  }
-  if (finite_point(rune.r_center)) {
-    cv::circle(image, rune.r_center, 3, cv::Scalar(0, 255, 255), cv::FILLED, cv::LINE_AA);
-    cv::putText(image, "2/R", rune.r_center + cv::Point2f(6, -6),
-                cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
-  }
-
-  if (!entries.empty()) {
-    const int panel_width = std::min(190, std::max(1, image.cols));
-    const int row_height = 20;
-    const int panel_height = std::min(
-      image.rows, 24 + row_height * static_cast<int>(entries.size()));
-    const int panel_x = std::max(0, image.cols - panel_width - 6);
-    const int panel_y = std::max(0, std::min(12, image.rows - panel_height));
-    cv::rectangle(image, cv::Rect(panel_x, panel_y, panel_width, panel_height),
-                  cv::Scalar(0, 0, 0), cv::FILLED);
-    cv::rectangle(image, cv::Rect(panel_x, panel_y, panel_width, panel_height),
-                  cv::Scalar(100, 100, 100), 1);
-    cv::putText(image, "R source pixels", cv::Point(panel_x + 8, panel_y + 16),
-                cv::FONT_HERSHEY_SIMPLEX, 0.42, cv::Scalar(235, 235, 235), 1, cv::LINE_AA);
-    for (size_t i = 0; i < entries.size(); ++i) {
-      const auto& entry = entries[i];
-      const int y = panel_y + 35 + row_height * static_cast<int>(i);
-      cv::drawMarker(image, cv::Point(panel_x + 12, y - 4), entry.color, entry.marker, 9, 1,
-                     cv::LINE_AA);
-      char label[64];
-      std::snprintf(label, sizeof(label), "%s (%d,%d)", entry.name.c_str(),
-                    cvRound(entry.point.x), cvRound(entry.point.y));
-      cv::putText(image, label, cv::Point(panel_x + 23, y), cv::FONT_HERSHEY_SIMPLEX, 0.40,
-                  cv::Scalar(235, 235, 235), 1, cv::LINE_AA);
-    }
+    cv::putText(image, rune.pnp_used_rp26_pose ? "RP26 pose" : "RP26 anchors",
+                rune.rp26_pose_image_points.front() + cv::Point2f(7, 18),
+                cv::FONT_HERSHEY_SIMPLEX, 0.48, pose_color, 1, cv::LINE_AA);
+  } else if (rune.rp26_required && !rune.fanblades.empty()) {
+    cv::putText(image, "RP26 pose unavailable",
+                rune.fanblades.front().center + cv::Point2f(6, 18),
+                cv::FONT_HERSHEY_SIMPLEX, 0.48, cv::Scalar(0, 140, 255), 1, cv::LINE_AA);
   }
 }
 
@@ -1855,10 +1797,12 @@ int run(const Options& options) {
     int tracked_count = 0;
     double command_distance = 0.0;
     double pnp_reprojection_error_px = 0.0;
-    double pnp_r_reprojection_error_px = 0.0;
     double pnp_center_distance_m = 0.0;
     double pnp_blade_horizontal_distance_m = 0.0;
     double pnp_blade_camera_distance_m = 0.0;
+    bool pnp_pose_valid = false;
+    bool pnp_used_rp26_pose = false;
+    const char* pnp_model = "none";
     double pnp_yaw_deg = 0.0;
     double pnp_pitch_deg = 0.0;
     double pnp_roll_deg = 0.0;
@@ -1875,15 +1819,17 @@ int run(const Options& options) {
           frame.image, options.aim_task == "smallbuff" ? auto_buff::SMALL : auto_buff::BIG);
       detection_count = power_rune.has_value() ? 1 : 0;
       if (power_rune.has_value()) {
+        pnp_model = power_rune->rp26_pose_required ? "rp26" : "legacy";
         buff_solver->solve(power_rune);
         if (options.display || web_server) {
           power_rune_visual = makePowerRuneVisual(*power_rune);
         }
         pnp_reprojection_error_px = power_rune->pnp_reprojection_error_px;
-        pnp_r_reprojection_error_px = power_rune->pnp_r_reprojection_error_px;
         pnp_center_distance_m = power_rune->pnp_center_distance_m;
         pnp_blade_horizontal_distance_m = power_rune->pnp_blade_horizontal_distance_m;
         pnp_blade_camera_distance_m = power_rune->pnp_blade_camera_distance_m;
+        pnp_pose_valid = !power_rune->is_unsolve();
+        pnp_used_rp26_pose = power_rune->pnp_used_rp26_pose;
         if (!power_rune->is_unsolve()) {
           pnp_yaw_deg = power_rune->ypr_in_world[0] * kRadToDeg;
           pnp_pitch_deg = power_rune->ypr_in_world[1] * kRadToDeg;
@@ -2163,13 +2109,29 @@ int run(const Options& options) {
         buff_mpc_plan_vel_yaw_deg_s = buff_mpc_output.plan.yaw_vel * kRadToDeg;
         buff_mpc_plan_vel_pitch_deg_s = buff_mpc_output.plan.pitch_vel * kRadToDeg;
       }
+      char pnp_log_fields[192];
+      if (use_buff_task) {
+        std::snprintf(
+            pnp_log_fields, sizeof(pnp_log_fields),
+            "pnp_model=%s pnp_valid=%d pnp_rp26=%d pnp=%.2fpx "
+            "pnp_origin=%.3fm pnp_blade=%.3fm pnp_blade_camera=%.3fm",
+            pnp_model, pnp_pose_valid ? 1 : 0, pnp_used_rp26_pose ? 1 : 0,
+            pnp_reprojection_error_px, pnp_center_distance_m,
+            pnp_blade_horizontal_distance_m, pnp_blade_camera_distance_m);
+      } else {
+        std::snprintf(
+            pnp_log_fields, sizeof(pnp_log_fields),
+            "pnp=%.2fpx/%.2fpx pnp_origin=%.3fm pnp_blade=%.3fm pnp_blade_camera=%.3fm",
+            pnp_reprojection_error_px, 0.0, pnp_center_distance_m,
+            pnp_blade_horizontal_distance_m, pnp_blade_camera_distance_m);
+      }
       std::printf(
           "[standard] task=%s frames=%llu fps=%.1f detections=%d tracked=%d state=%s "
            "buff_ff=%d buff_mpc=%d model_w=%.1fdeg/s mpc_plan_vel=%.1f/%.1fdeg/s "
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg distance=%.3f "
-          "pnp=%.2fpx/%0.2fpx pnp_origin=%.3fm pnp_blade=%.3fm pnp_blade_camera=%.3fm "
+          "%s "
           "pnp_ypr=%.1f/%.1f/%.1fdeg "
           "sp_fire=%d fire=%d gate=%d latency=%.1fms "
           "timing=rx %.1f cam %.1f det %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
@@ -2186,8 +2148,7 @@ int run(const Options& options) {
           command.yaw_vel * kRadToDeg, command.pitch_vel * kRadToDeg,
           command.yaw_acc * kRadToDeg, command.pitch_acc * kRadToDeg,
           fire_gate.yaw_error_rad * kRadToDeg, fire_gate.pitch_error_rad * kRadToDeg,
-          command.distance, pnp_reprojection_error_px, pnp_r_reprojection_error_px,
-          pnp_center_distance_m, pnp_blade_horizontal_distance_m, pnp_blade_camera_distance_m,
+          command.distance, pnp_log_fields,
           pnp_yaw_deg, pnp_pitch_deg, pnp_roll_deg,
           fire_advice ? 1 : 0, command.fire_advice ? 1 : 0,
           fire_gate.blocked ? 1 : 0, elapsedMs(detect_start, aim_end),
