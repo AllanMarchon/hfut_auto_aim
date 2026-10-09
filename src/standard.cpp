@@ -632,6 +632,72 @@ class SmallBuffOutputFilter {
   std::chrono::steady_clock::time_point last_time_{};
 };
 
+struct SmallBuffFinalGuardResult {
+  bool yaw_limited{false};
+  bool pitch_limited{false};
+};
+
+// 小符各控制分支共用的最终角度保护，确保串口目标受反馈相对角限制。
+SmallBuffFinalGuardResult applySmallBuffFinalAngleGuard(
+    hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
+    const CommandLimiterConfig& config) {
+  SmallBuffFinalGuardResult result;
+  if (command.mode != hfut::GimbalMode::normal_measurement) return result;
+
+  if (!std::isfinite(feedback.yaw_rad) || !std::isfinite(feedback.pitch_rad)) {
+    command.mode = hfut::GimbalMode::no_valid_measurement;
+    command.fire_advice = false;
+    command.yaw_vel = 0.0;
+    command.pitch_vel = 0.0;
+    command.yaw_acc = 0.0;
+    command.pitch_acc = 0.0;
+    result.yaw_limited = true;
+    result.pitch_limited = true;
+    return result;
+  }
+
+  if (!std::isfinite(command.yaw) || !std::isfinite(command.pitch)) {
+    command.yaw = feedback.yaw_rad;
+    command.pitch = feedback.pitch_rad;
+    command.fire_advice = false;
+    command.yaw_vel = 0.0;
+    command.pitch_vel = 0.0;
+    command.yaw_acc = 0.0;
+    command.pitch_acc = 0.0;
+    result.yaw_limited = true;
+    result.pitch_limited = true;
+  } else {
+    const double max_yaw_diff = std::isfinite(config.max_yaw_diff_rad)
+                                    ? std::max(0.0, config.max_yaw_diff_rad)
+                                    : 15.0 * kPi / 180.0;
+    const double max_pitch_diff = std::isfinite(config.max_pitch_diff_rad)
+                                      ? std::max(0.0, config.max_pitch_diff_rad)
+                                      : 10.0 * kPi / 180.0;
+    const double yaw_diff = tools::limit_rad(command.yaw - feedback.yaw_rad);
+    const double pitch_diff = command.pitch - feedback.pitch_rad;
+    const double limited_yaw_diff = std::clamp(yaw_diff, -max_yaw_diff, max_yaw_diff);
+    const double limited_pitch_diff = std::clamp(pitch_diff, -max_pitch_diff, max_pitch_diff);
+    result.yaw_limited = std::abs(yaw_diff - limited_yaw_diff) > 1e-9;
+    result.pitch_limited = std::abs(pitch_diff - limited_pitch_diff) > 1e-9;
+
+    if (result.yaw_limited) {
+      command.yaw = tools::limit_rad(feedback.yaw_rad + limited_yaw_diff);
+      command.yaw_vel = 0.0;
+      command.yaw_acc = 0.0;
+    }
+    if (result.pitch_limited) {
+      command.pitch = feedback.pitch_rad + limited_pitch_diff;
+      command.pitch_vel = 0.0;
+      command.pitch_acc = 0.0;
+    }
+  }
+
+  if (result.yaw_limited || result.pitch_limited) command.fire_advice = false;
+  command.yaw_diff = tools::limit_rad(command.yaw - feedback.yaw_rad);
+  command.pitch_diff = command.pitch - feedback.pitch_rad;
+  return result;
+}
+
 FireGateResult applyFireGate(hfut::GimbalCommand& command,
                              double desired_yaw,
                              double desired_pitch,
@@ -2054,6 +2120,16 @@ int run(const Options& options) {
       // 大符暂时保持原有输出语义，避免本次小符控制改动影响其他打符模式。
       buff_motion_adapter.reset();
     }
+    SmallBuffFinalGuardResult smallbuff_final_guard;
+    if (options.aim_task == "smallbuff") {
+      // 串口出口再做一次硬限角，不能让前级滤波状态把小符命令带离反馈角保护范围。
+      smallbuff_final_guard = applySmallBuffFinalAngleGuard(
+          command, latest_feedback, *active_limiter_config);
+      if (smallbuff_final_guard.yaw_limited || smallbuff_final_guard.pitch_limited) {
+        smallbuff_output_filter.reset();
+        buff_motion_adapter.reset();
+      }
+    }
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
     const FireGateResult fire_gate = applyFireGate(
@@ -2176,7 +2252,8 @@ int run(const Options& options) {
            "buff_ff=%d buff_mpc=%d model_w=%.1fdeg/s mpc_plan_vel=%.1f/%.1fdeg/s "
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
-          "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg distance=%.3f "
+          "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg "
+          "smallbuff_guard=%d/%d distance=%.3f "
           "%s "
           "pnp_ypr=%.1f/%.1f/%.1fdeg "
           "sp_fire=%d fire=%d gate=%d latency=%.1fms "
@@ -2194,6 +2271,8 @@ int run(const Options& options) {
           command.yaw_vel * kRadToDeg, command.pitch_vel * kRadToDeg,
           command.yaw_acc * kRadToDeg, command.pitch_acc * kRadToDeg,
           fire_gate.yaw_error_rad * kRadToDeg, fire_gate.pitch_error_rad * kRadToDeg,
+          smallbuff_final_guard.yaw_limited ? 1 : 0,
+          smallbuff_final_guard.pitch_limited ? 1 : 0,
           command.distance, pnp_log_fields,
           pnp_yaw_deg, pnp_pitch_deg, pnp_roll_deg,
           fire_advice ? 1 : 0, command.fire_advice ? 1 : 0,
