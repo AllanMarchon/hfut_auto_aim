@@ -91,6 +91,11 @@ szu_small_target_class_id: 0
 szu_big_target_class_id: 0
 
 #####-----buff_aimer 参数-----#####
+# smallbuff 控制模式：
+# static：静止符直接瞄当前有效叶片的 PnP 中心，不套用小符旋转速度模型或 MPC。
+# rotating：沿用小符旋转 EKF，并按 controller.yaml 的 planner.mode 选择 MPC/Aimer。
+smallbuff_control_mode: static
+
 # 单位：度。正负方向沿用 SP25 打符 Aimer，实车调参时只微调小量。
 yaw_offset: 0.0
 pitch_offset: 0.0

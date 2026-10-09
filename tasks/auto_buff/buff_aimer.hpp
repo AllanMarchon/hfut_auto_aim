@@ -38,6 +38,9 @@ class Aimer
 public:
   Aimer(const std::string & config_path);
 
+  // 静止目标直接用当前 PnP 世界坐标解弹道，不预测符叶旋转，也不提供开火建议。
+  io::Command aimPoint(const Eigen::Vector3d & aim_point_world, double bullet_speed);
+
   io::Command aim(
     Target & target, std::chrono::steady_clock::time_point & timestamp, double bullet_speed,
     bool to_now = true);

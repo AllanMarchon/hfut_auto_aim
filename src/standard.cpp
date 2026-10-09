@@ -1378,6 +1378,8 @@ struct PowerRuneVisualBlade {
 
 struct PowerRuneVisual {
   bool valid{false};
+  bool r_center_valid{false};
+  cv::Point2f r_center{};
   bool rp26_valid{false};
   bool pnp_used_rp26_pose{false};
   std::vector<cv::Point2f> rp26_pose_image_points;
@@ -1387,6 +1389,8 @@ struct PowerRuneVisual {
 PowerRuneVisual makePowerRuneVisual(const auto_buff::PowerRune& rune) {
   PowerRuneVisual visual;
   visual.valid = true;
+  visual.r_center_valid = std::isfinite(rune.r_center.x) && std::isfinite(rune.r_center.y);
+  visual.r_center = rune.r_center;
   visual.rp26_valid = rune.rp26_pose_valid;
   visual.pnp_used_rp26_pose = rune.pnp_used_rp26_pose;
   visual.rp26_pose_image_points = rune.rp26_pose_image_points;
@@ -1422,6 +1426,13 @@ void drawPowerRune(cv::Mat& image, const PowerRuneVisual& rune) {
       cv::putText(image, label, blade.center + cv::Point2f(6, 14), cv::FONT_HERSHEY_SIMPLEX,
                   0.45, color, 1, cv::LINE_AA);
     }
+  }
+
+  if (rune.r_center_valid) {
+    cv::drawMarker(image, rune.r_center, cv::Scalar(255, 0, 255), cv::MARKER_CROSS, 12, 2,
+                   cv::LINE_AA);
+    cv::putText(image, "R", rune.r_center + cv::Point2f(7, -7), cv::FONT_HERSHEY_SIMPLEX,
+                0.5, cv::Scalar(255, 0, 255), 1, cv::LINE_AA);
   }
 
   if (rune.rp26_valid && rune.rp26_pose_image_points.size() == 4) {
@@ -1512,8 +1523,18 @@ int run(const Options& options) {
         *buff_mpc_overrides.max_pitch_velocity_rad_s;
     }
   }
-  const bool use_buff_mpc_planner =
-      options.aim_task == "smallbuff" && plannerModeUsesMpc(command_limiter_config.planner_mode);
+  std::string smallbuff_control_mode = "rotating";
+  if (options.aim_task == "smallbuff") {
+    const auto buff_yaml = YAML::LoadFile(adapted_config_path);
+    smallbuff_control_mode = buff_yaml["smallbuff_control_mode"].as<std::string>("rotating");
+    if (smallbuff_control_mode != "static" && smallbuff_control_mode != "rotating") {
+      throw std::invalid_argument("buff.smallbuff_control_mode 仅支持 static 或 rotating");
+    }
+  }
+  const bool smallbuff_static_control =
+      options.aim_task == "smallbuff" && smallbuff_control_mode == "static";
+  const bool use_buff_mpc_planner = options.aim_task == "smallbuff" &&
+      !smallbuff_static_control && plannerModeUsesMpc(command_limiter_config.planner_mode);
   hfut::io::HfutSerialGimbalConfig gimbal_config;
   gimbal_config.serial = serial_config;
   gimbal_config.history_size = static_cast<std::size_t>(command_limiter_config.feedback_alignment_history_size);
@@ -1658,8 +1679,11 @@ int run(const Options& options) {
       command_limiter_config.serial_command_max_yaw_velocity_rad_s * kRadToDeg,
       command_limiter_config.serial_command_max_pitch_velocity_rad_s * kRadToDeg);
   if (options.aim_task == "smallbuff") {
-    std::printf("[standard] smallbuff_controller=%s\n",
-                use_buff_mpc_planner ? "tinympc" : "aimer_feedback_error");
+    const char* control_path = smallbuff_static_control
+        ? "static_pnp_direct"
+        : (use_buff_mpc_planner ? "rotating_tinympc" : "rotating_aimer_feedback_error");
+    std::printf("[standard] smallbuff_control_mode=%s path=%s\n",
+                smallbuff_control_mode.c_str(), control_path);
   }
   if (use_outpost_profile) {
     std::printf(
@@ -1847,8 +1871,12 @@ int run(const Options& options) {
 
       track_start = detect_end;
       if (options.aim_task == "smallbuff") {
-        buff_small_target->get_target(power_rune, timestamp);
-        buff_tracking_ready = buff_small_target->is_tracking_ready();
+        if (smallbuff_static_control) {
+          buff_tracking_ready = power_rune.has_value();
+        } else {
+          buff_small_target->get_target(power_rune, timestamp);
+          buff_tracking_ready = buff_small_target->is_tracking_ready();
+        }
       } else {
         buff_big_target->get_target(power_rune, timestamp);
         buff_tracking_ready = buff_big_target->is_tracking_ready();
@@ -1856,7 +1884,11 @@ int run(const Options& options) {
       track_end = std::chrono::steady_clock::now();
 
       aim_start = track_end;
-      if (options.aim_task == "smallbuff" && use_buff_mpc_planner) {
+      if (smallbuff_static_control) {
+        if (power_rune.has_value()) {
+          sp_command = buff_aimer->aimPoint(power_rune->blade_xyz_in_world, bullet_speed);
+        }
+      } else if (options.aim_task == "smallbuff" && use_buff_mpc_planner) {
         // 小符 MPC 的规划、换叶片保护和开火节拍由同一个控制器完成。
         // 这里不再调用旧 Aimer 的弹道/运动前馈，避免同一帧生成两套命令。
       } else if (options.aim_task == "smallbuff") {

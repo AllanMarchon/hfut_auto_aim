@@ -44,6 +44,28 @@ Aimer::Aimer(const std::string & config_path)
   last_fire_t_ = std::chrono::steady_clock::now();
 }
 
+io::Command Aimer::aimPoint(const Eigen::Vector3d & aim_point_world, double bullet_speed)
+{
+  io::Command command{false, false, 0.0, 0.0};
+  if (!aim_point_world.allFinite()) return command;
+  if (!std::isfinite(bullet_speed) || bullet_speed < 10.0) bullet_speed = 24.0;
+
+  const double horizontal_distance = std::hypot(aim_point_world.x(), aim_point_world.y());
+  if (!std::isfinite(horizontal_distance) || horizontal_distance <= 1e-6) return command;
+
+  tools::Trajectory trajectory(bullet_speed, horizontal_distance, aim_point_world.z());
+  if (trajectory.unsolvable || !std::isfinite(trajectory.pitch)) return command;
+
+  command.yaw = std::atan2(aim_point_world.y(), aim_point_world.x()) + yaw_offset_;
+  command.pitch = -(trajectory.pitch + pitch_offset_);
+  command.horizon_distance = horizontal_distance;
+  command.control = std::isfinite(command.yaw) && std::isfinite(command.pitch);
+  if (!command.control) return io::Command{false, false, 0.0, 0.0};
+
+  last_distance_ = horizontal_distance;
+  return command;
+}
+
 io::Command Aimer::aim(
   auto_buff::Target & target, std::chrono::steady_clock::time_point & timestamp,
   double bullet_speed, bool to_now)
