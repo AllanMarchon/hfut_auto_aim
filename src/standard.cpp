@@ -499,13 +499,13 @@ class FinalVelocityAccelerationAdapter {
   std::chrono::steady_clock::time_point last_time_{};
 };
 
-// 小符 MPC 的角度输出保护。
-// MPC 的参考角在换亮扇叶时可能一次跳过几度；如果把这个角度直接交给下位机，
-// 即使目标仍处于 tracking，云台也会先猛甩再反向修正。这里按实际帧间隔限制
-// 目标角单帧变化，并在同一处生成最终速度和加速度。普通自瞄和大符不使用。
-class SmallBuffMpcOutputFilter {
+// 小符角度输出保护。
+// 直接 PnP 和 MPC 的目标角都会受检测噪声或换亮扇叶影响；这里按实际帧间隔
+// 限制角度轨迹及最终速度斜率，避免目标变化直接变成前馈力矩脉冲。
+// 普通自瞄和大符不使用。
+class SmallBuffOutputFilter {
  public:
-  explicit SmallBuffMpcOutputFilter(CommandLimiterConfig config) : config_(config) {}
+  explicit SmallBuffOutputFilter(CommandLimiterConfig config) : config_(config) {}
 
   void reset() {
     have_last_ = false;
@@ -594,6 +594,13 @@ class SmallBuffMpcOutputFilter {
     command.pitch_vel = std::clamp(command.pitch_vel,
                                    -config_.serial_command_max_pitch_velocity_rad_s,
                                    config_.serial_command_max_pitch_velocity_rad_s);
+    // 反馈补偿会改变实际下发速度，必须在补偿后再限速度斜率；否则 acc 虽有限，vel 仍可逐帧反向跳变。
+    command.yaw_vel = std::clamp(
+      command.yaw_vel, last_yaw_vel_ - max_yaw_velocity_step,
+      last_yaw_vel_ + max_yaw_velocity_step);
+    command.pitch_vel = std::clamp(
+      command.pitch_vel, last_pitch_vel_ - max_pitch_velocity_step,
+      last_pitch_vel_ + max_pitch_velocity_step);
     if (had_last) {
       command.yaw_acc = std::clamp((command.yaw_vel - last_yaw_vel_) / dt,
                                    -config_.max_yaw_acc_rad_s2,
@@ -1523,16 +1530,16 @@ int run(const Options& options) {
         *buff_mpc_overrides.max_pitch_velocity_rad_s;
     }
   }
-  std::string smallbuff_control_mode = "rotating";
+  bool smallbuff_static_model = false;
   if (options.aim_task == "smallbuff") {
     const auto buff_yaml = YAML::LoadFile(adapted_config_path);
-    smallbuff_control_mode = buff_yaml["smallbuff_control_mode"].as<std::string>("rotating");
-    if (smallbuff_control_mode != "static" && smallbuff_control_mode != "rotating") {
-      throw std::invalid_argument("buff.smallbuff_control_mode 仅支持 static 或 rotating");
+    if (buff_yaml["smallbuff_control_mode"]) {
+      throw std::invalid_argument(
+          "buff.smallbuff_control_mode 已更名为 smallbuff_static_model，请设置 true 或 false");
     }
+    smallbuff_static_model = parseBool(buff_yaml["smallbuff_static_model"], false);
   }
-  const bool smallbuff_static_control =
-      options.aim_task == "smallbuff" && smallbuff_control_mode == "static";
+  const bool smallbuff_static_control = options.aim_task == "smallbuff" && smallbuff_static_model;
   const bool use_buff_mpc_planner = options.aim_task == "smallbuff" &&
       !smallbuff_static_control && plannerModeUsesMpc(command_limiter_config.planner_mode);
   hfut::io::HfutSerialGimbalConfig gimbal_config;
@@ -1557,10 +1564,11 @@ int run(const Options& options) {
           ? loadOutpostCommandLimiterConfig(options.controller_config, command_limiter_config)
           : command_limiter_config;
   SimpleCommandGuard command_guard(command_limiter_config);
-  // 旧 Aimer 链路的运动前馈适配器；小符 MPC 使用自己的单一输出器，
-  // 普通自瞄 MPC 使用下方独立的适配器。
-  FinalVelocityAccelerationAdapter buff_motion_adapter(command_limiter_config);
-  SmallBuffMpcOutputFilter buff_mpc_output_filter(command_limiter_config);
+  // 小符非 MPC 路径在串口前额外限制速度斜率，避免目标抖动直接变成前馈力矩脉冲。
+  // 大符保留原输出语义；普通自瞄 MPC 使用下方独立的适配器。
+  FinalVelocityAccelerationAdapter buff_motion_adapter(
+      command_limiter_config, options.aim_task == "smallbuff");
+  SmallBuffOutputFilter smallbuff_output_filter(command_limiter_config);
   FinalVelocityAccelerationAdapter mpc_motion_adapter(command_limiter_config);
   FinalVelocityAccelerationAdapter outpost_mpc_motion_adapter(outpost_limiter_config);
 
@@ -1682,8 +1690,8 @@ int run(const Options& options) {
     const char* control_path = smallbuff_static_control
         ? "static_pnp_direct"
         : (use_buff_mpc_planner ? "rotating_tinympc" : "rotating_aimer_feedback_error");
-    std::printf("[standard] smallbuff_control_mode=%s path=%s\n",
-                smallbuff_control_mode.c_str(), control_path);
+    std::printf("[standard] smallbuff_static_model=%s path=%s\n",
+                smallbuff_static_model ? "true" : "false", control_path);
   }
   if (use_outpost_profile) {
     std::printf(
@@ -1981,6 +1989,9 @@ int run(const Options& options) {
     hfut::GimbalCommand command = convertCommand(
         sp_command, command_distance, latest_feedback, options.enable_fire, *active_limiter_config);
     const bool use_buff_mpc_output = use_buff_mpc_planner && buff_mpc_output.valid;
+    const auto command_time = std::chrono::steady_clock::now();
+    bool command_guard_applied = false;
+    bool smallbuff_static_filter_applied = false;
     double raw_desired_yaw = command.yaw;
     double raw_desired_pitch = command.pitch;
     if (use_buff_task && !use_buff_mpc_output && buff_motion.motion_valid) {
@@ -2000,8 +2011,15 @@ int run(const Options& options) {
       command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * buff_mpc_output.plan.pitch_vel;
       raw_desired_yaw = command.yaw;
       raw_desired_pitch = command.pitch;
-      // 换亮扇叶时由小符专用输出器统一限制角度、速度和加速度。
-      buff_mpc_output_filter.apply(command, latest_feedback, std::chrono::steady_clock::now());
+      // MPC 轨迹在小符专用输出器中统一限制角度、速度和加速度。
+      smallbuff_output_filter.apply(command, latest_feedback, command_time);
+    } else if (smallbuff_static_control) {
+      // 先保留跳变和相对角保护，再平滑下发角，避免逐帧 PnP 噪声直接驱动云台。
+      buff_motion_applied = command_guard.apply(
+          command, latest_feedback, track_state, command_time, false);
+      command_guard_applied = true;
+      smallbuff_static_filter_applied =
+          smallbuff_output_filter.apply(command, latest_feedback, command_time);
     } else if (use_mpc_planner && have_mpc_plan) {
       command.yaw_vel = active_limiter_config->feedback_yaw_to_world_sign * mpc_plan.yaw_vel;
       command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * mpc_plan.pitch_vel;
@@ -2020,17 +2038,17 @@ int run(const Options& options) {
       mpc_motion_adapter.reset();
       outpost_mpc_motion_adapter.reset();
     }
-    const auto command_time = std::chrono::steady_clock::now();
-    if (!use_mpc_planner && !use_buff_mpc_output) {
+    if (!use_mpc_planner && !use_buff_mpc_output && !command_guard_applied) {
       buff_motion_applied = command_guard.apply(
           command, latest_feedback, track_state, command_time,
           use_buff_task && buff_motion.motion_valid);
     }
-    if (use_buff_mpc_output) {
-      // 小符输出器已经计算最终速度和加速度，这里不再经过第二个 adapter。
+    if (use_buff_mpc_output || smallbuff_static_filter_applied) {
+      // 小符输出器已经计算最终角度、速度和加速度，这里不再经过第二个 adapter。
+      buff_motion_adapter.reset();
     } else if (options.aim_task == "smallbuff") {
-      // MPC 暂停或换扇叶时不沿用上一段 MPC 的速度历史，避免恢复后首帧产生加速度尖峰。
-      buff_mpc_output_filter.reset();
+      // 输出失效时清空历史，恢复后从当前反馈重新渐入。
+      smallbuff_output_filter.reset();
       buff_motion_adapter.apply(command, command_time);
     } else if (use_buff_task) {
       // 大符暂时保持原有输出语义，避免本次小符控制改动影响其他打符模式。
