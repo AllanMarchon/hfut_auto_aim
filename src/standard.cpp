@@ -1378,7 +1378,7 @@ struct PowerRuneVisualBlade {
 
 struct PowerRuneVisual {
   bool valid{false};
-  bool rp26_required{false};
+  bool rp26_preferred{false};
   bool rp26_valid{false};
   bool pnp_used_rp26_pose{false};
   std::vector<cv::Point2f> rp26_pose_image_points;
@@ -1388,7 +1388,7 @@ struct PowerRuneVisual {
 PowerRuneVisual makePowerRuneVisual(const auto_buff::PowerRune& rune) {
   PowerRuneVisual visual;
   visual.valid = true;
-  visual.rp26_required = rune.rp26_pose_required;
+  visual.rp26_preferred = rune.rp26_pose_preferred;
   visual.rp26_valid = rune.rp26_pose_valid;
   visual.pnp_used_rp26_pose = rune.pnp_used_rp26_pose;
   visual.rp26_pose_image_points = rune.rp26_pose_image_points;
@@ -1439,8 +1439,8 @@ void drawPowerRune(cv::Mat& image, const PowerRuneVisual& rune) {
     cv::putText(image, rune.pnp_used_rp26_pose ? "RP26 pose" : "RP26 anchors",
                 rune.rp26_pose_image_points.front() + cv::Point2f(7, 18),
                 cv::FONT_HERSHEY_SIMPLEX, 0.48, pose_color, 1, cv::LINE_AA);
-  } else if (rune.rp26_required && !rune.fanblades.empty()) {
-    cv::putText(image, "RP26 pose unavailable",
+  } else if (rune.rp26_preferred && !rune.fanblades.empty()) {
+    cv::putText(image, "RP26 refine unavailable; network pose",
                 rune.fanblades.front().center + cv::Point2f(6, 18),
                 cv::FONT_HERSHEY_SIMPLEX, 0.48, cv::Scalar(0, 140, 255), 1, cv::LINE_AA);
   }
@@ -1819,7 +1819,6 @@ int run(const Options& options) {
           frame.image, options.aim_task == "smallbuff" ? auto_buff::SMALL : auto_buff::BIG);
       detection_count = power_rune.has_value() ? 1 : 0;
       if (power_rune.has_value()) {
-        pnp_model = power_rune->rp26_pose_required ? "rp26" : "legacy";
         buff_solver->solve(power_rune);
         if (options.display || web_server) {
           power_rune_visual = makePowerRuneVisual(*power_rune);
@@ -1830,6 +1829,9 @@ int run(const Options& options) {
         pnp_blade_camera_distance_m = power_rune->pnp_blade_camera_distance_m;
         pnp_pose_valid = !power_rune->is_unsolve();
         pnp_used_rp26_pose = power_rune->pnp_used_rp26_pose;
+        pnp_model = pnp_used_rp26_pose
+          ? "rp26"
+          : (power_rune->rp26_pose_preferred ? "network" : "legacy");
         if (!power_rune->is_unsolve()) {
           pnp_yaw_deg = power_rune->ypr_in_world[0] * kRadToDeg;
           pnp_pitch_deg = power_rune->ypr_in_world[1] * kRadToDeg;

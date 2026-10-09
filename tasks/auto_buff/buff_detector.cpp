@@ -380,7 +380,7 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   powerrune.r_point_diagnostics.visual = summarize_r_source(visual_r_samples);
   powerrune.r_point_diagnostics.detection_count = r_center_count;
   powerrune.rp26_pose_image_points = std::move(rp26_pose_image_points);
-  powerrune.rp26_pose_required = rune_type == SMALL;
+  powerrune.rp26_pose_preferred = rune_type == SMALL;
   powerrune.rp26_pose_valid = rp26_pose_valid;
   if (network_r_confidence_weight > 0.0) {
     powerrune.r_point_diagnostics.network_confidence =

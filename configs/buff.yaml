@@ -66,7 +66,7 @@ szu_pose_max_translation_jump_m: 0.35
 szu_pose_reacquire_after_rejections: 20
 # R 不参与小符 RP26 姿态拟合；关闭 RP26 时保留旧 SZU 四点兼容路径。
 szu_use_r_in_pnp: false
-# 启用后小符每帧都必须有 RP26 语义锚点；大符仍使用原 SZU 四点路径。
+# 启用后小符优先使用 RP26 语义锚点；轮廓精修失败时回退网络四角，大符仍使用原 SZU 四点路径。
 szu_use_rp26_pose: true
 # R 标相对符盘旋转中心的法向偏移，单位米。R 标应比旋转中心更靠近相机；当前模型约定为负方向。
 # 只改这个值用于对照实验，不要把扫描日志中的瞬时最佳值直接当作最终标定值。

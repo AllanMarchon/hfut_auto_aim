@@ -53,7 +53,7 @@ private:
   double szu_pose_max_translation_jump_m_{0.35};
   int szu_pose_reacquire_after_rejections_{20};
   bool szu_use_r_in_pnp_{false};
-  // 小符 RP26 模式要求每帧都有语义锚点，不与旧网络四点模型混用。
+  // 小符优先使用 RP26 语义锚点；轮廓精修失败时回退网络四角模型。
   bool szu_use_rp26_pose_{true};
   // R 标比符盘旋转中心更靠近相机；这里的正负号沿用符盘模型的 x 轴约定。
   // 当前实测诊断支持负方向，保留为配置项便于以后用同一套程序对照验证。
