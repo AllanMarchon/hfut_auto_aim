@@ -28,8 +28,9 @@ szu_min_valid_keypoints: 4
 szu_traditional_refine: true
 # 用网络 R 作为种子，在受限敌方颜色轮廓中拟合真实 R 中心；失败时保留网络点。
 szu_traditional_r_refine: true
-# 小符未激活叶片使用 RP26 语义轮廓锚点；该轮廓参数是本工程配置，不代表公开仓库中的官方调参值。
-szu_rp26_refine: true
+# RP26 语义轮廓是备用实验分支；当前实车主链路关闭，避免与网络四角路径逐帧切换。
+# 当前实测优先保留网络四角路径；不再逐帧生成 RP26 轮廓锚点参与姿态切换。
+szu_rp26_refine: false
 szu_rp26_strict: false
 szu_rp26_roi_scale: 1.4
 # 当前轮廓分类阈值。
@@ -64,10 +65,10 @@ szu_pose_max_jump_deg: 15.0
 szu_pose_max_translation_jump_m: 0.35
 # 连续重获失败时只限制拒绝计数，不清除旧法向先验，避免长时间丢帧后冷启动到镜像距离分支。
 szu_pose_reacquire_after_rejections: 20
-# R 不参与小符 RP26 姿态拟合；关闭 RP26 时保留旧 SZU 四点兼容路径。
+# 小符网络四角 PnP 不使用 R 点误差做姿态拟合或镜像分支判别。
 szu_use_r_in_pnp: false
-# 启用后小符优先使用 RP26 语义锚点；轮廓精修失败时回退网络四角，大符仍使用原 SZU 四点路径。
-szu_use_rp26_pose: true
+# 小符固定使用 SZU 网络四角和本工程 26 赛季四角几何，不切换到 RP26 锚点模型。
+szu_use_rp26_pose: false
 # R 标相对符盘旋转中心的法向偏移，单位米。R 标应比旋转中心更靠近相机；当前模型约定为负方向。
 # 只改这个值用于对照实验，不要把扫描日志中的瞬时最佳值直接当作最终标定值。
 szu_r_object_normal_offset_m: -0.1

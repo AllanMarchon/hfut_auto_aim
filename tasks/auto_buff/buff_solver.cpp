@@ -128,10 +128,12 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     image_points_corners.assign(p.target().points.begin(), p.target().points.begin() + 4);
   }
   const bool rp26_requested = p.rp26_pose_preferred && szu_use_rp26_pose_;
-  const bool legacy_r_branch_enabled = !rp26_requested;
+  // 小符 SZU 网络路径固定走四角几何；R 点模型有偏差，不参与 IPPE 镜像分支选择。
+  // 非 SZU 点序仍保留原兼容行为，避免影响 SP25 检测器。
+  const bool legacy_r_branch_enabled = !(use_szu_point_indices && p.rp26_pose_preferred);
   const bool rp26_input_valid = use_szu_point_indices && rp26_requested &&
     p.rp26_pose_valid && p.rp26_pose_image_points.size() == 4;
-  // RP26 是传统轮廓精修，不是网络检测的硬前置；精修失败时沿用网络四角。
+  // RP26 只有显式启用时才替换网络四角；当前小符配置默认关闭该分支。
   const bool use_rp26_pose = rp26_input_valid;
   if (use_rp26_pose) {
     // RP26 锚点已经按深大语义排序，不再将它们误当作网络五点编号。
@@ -622,7 +624,7 @@ void Solver::solve(std::optional<PowerRune> & ps) const
     return;
   }
 
-  // 小符 RP26 只用语义轮廓锚点求姿态；R 不参与 RP26 分支选择或距离拟合。
+  // RP26 分支只用语义轮廓锚点求姿态；当前小符默认使用网络四角，不进入该分支。
   std::vector<cv::Point2f> projected_points;
   cv::projectPoints(
     object_points_corners, best.rvec, best.tvec, camera_matrix_, distort_coeffs_, projected_points);
