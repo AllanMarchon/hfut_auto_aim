@@ -13,6 +13,8 @@ confidence: 0.7                      # 仅 SP25 backend 使用
 iou_threshold: 0.4                   # 仅 SP25 backend 使用
 szu_traditional_refine: true          # 网络四角的传统局部精修
 szu_traditional_r_refine: true        # 精修可视 R 中心，仅影响 R 点观测/诊断
+szu_r_red_minus_blue_threshold: 50.0  # 红方 R 颜色差分阈值；增大可排除较弱红色反光
+szu_r_blue_minus_red_threshold: 62.0  # 蓝方 R 颜色差分阈值；增大可排除较弱蓝色反光
 szu_rp26_refine: false                # 关闭 RP26 轮廓锚点分支
 szu_use_rp26_pose: false              # 固定用网络四角几何解算姿态
 szu_use_r_in_pnp: false                # R 点不参与 PnP 拟合或镜像分支选择
