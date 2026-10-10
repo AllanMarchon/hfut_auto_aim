@@ -1,6 +1,7 @@
 #ifndef AUTO_BUFF__MPC_PLANNER_HPP
 #define AUTO_BUFF__MPC_PLANNER_HPP
 
+#include <array>
 #include <chrono>
 #include <optional>
 #include <string>
@@ -47,6 +48,10 @@ public:
     std::chrono::steady_clock::time_point timestamp,
     double current_yaw, double current_pitch);
 
+  BuffMpcPlan planStaticPoint(
+    const Eigen::Vector3d & point_world, double bullet_speed,
+    double current_yaw, double current_pitch);
+
 private:
   struct AimSample
   {
@@ -65,6 +70,10 @@ private:
   bool warned_solver_status_ = false;
 
   AimSample aimAt(SmallTarget target, double prediction_time, double bullet_speed) const;
+  AimSample aimAtStaticPoint(const Eigen::Vector3d & point_world, double bullet_speed) const;
+  BuffMpcPlan solveSamples(
+    const std::array<AimSample, auto_aim::HORIZON + 2> & samples,
+    double current_yaw, double current_pitch);
   void setupYawSolver(
     const std::string & controller_config,
     const std::optional<double> & max_acceleration_override);
@@ -84,6 +93,10 @@ public:
   BuffMpcPlan update(
     const SmallTarget & target, double bullet_speed,
     std::chrono::steady_clock::time_point timestamp,
+    double current_yaw, double current_pitch);
+
+  BuffMpcPlan updateStaticPoint(
+    const Eigen::Vector3d & point_world, double bullet_speed,
     double current_yaw, double current_pitch);
 
   void reset();

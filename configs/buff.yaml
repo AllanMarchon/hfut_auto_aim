@@ -33,7 +33,7 @@ pitch_offset: 0.0                      # 度
 fire_gap_time: 0.700                   # 同一扇叶连续开火间隔，秒
 predict_time: 0.120                    # 打符预测提前量，秒
 
-# 仅 smallbuff_static_model=false 且 controller.yaml 使用 MPC 时生效。
+# controller.yaml 使用 MPC 时生效；静止模型跟踪固定点，旋转模型跟踪小符预测轨迹。
 # 加速度单位 rad/s^2；速度单位 deg/s；误差增益单位 1/s。
 smallbuff_mpc:
   max_yaw_acceleration: 10.0

@@ -208,6 +208,27 @@ MpcPlanner::AimSample MpcPlanner::aimAt(
   return result;
 }
 
+MpcPlanner::AimSample MpcPlanner::aimAtStaticPoint(
+  const Eigen::Vector3d & point_world, double bullet_speed) const
+{
+  AimSample result;
+  if (!point_world.allFinite()) return result;
+  if (!std::isfinite(bullet_speed) || bullet_speed < 14.0) bullet_speed = 23.0;
+
+  const double distance = std::hypot(point_world.x(), point_world.y());
+  if (!std::isfinite(distance) || distance <= 1e-6) return result;
+
+  tools::Trajectory trajectory(bullet_speed, distance, point_world.z());
+  if (trajectory.unsolvable || !std::isfinite(trajectory.pitch)) return result;
+
+  result.yaw = std::atan2(point_world.y(), point_world.x()) + yaw_offset_;
+  result.pitch = -(trajectory.pitch + pitch_offset_);
+  result.distance = distance;
+  result.valid = std::isfinite(result.yaw) && std::isfinite(result.pitch) &&
+                 std::isfinite(result.distance);
+  return result;
+}
+
 BuffMpcPlan MpcPlanner::plan(
   const SmallTarget & target, double bullet_speed,
   std::chrono::steady_clock::time_point timestamp,
@@ -233,6 +254,27 @@ BuffMpcPlan MpcPlanner::plan(
     if (!samples[static_cast<std::size_t>(i)].valid) return result;
   }
 
+  return solveSamples(samples, current_yaw, current_pitch);
+}
+
+BuffMpcPlan MpcPlanner::planStaticPoint(
+  const Eigen::Vector3d & point_world, double bullet_speed,
+  double current_yaw, double current_pitch)
+{
+  BuffMpcPlan result;
+  const AimSample sample = aimAtStaticPoint(point_world, bullet_speed);
+  if (!sample.valid) return result;
+
+  std::array<AimSample, auto_aim::HORIZON + 2> samples;
+  samples.fill(sample);
+  return solveSamples(samples, current_yaw, current_pitch);
+}
+
+BuffMpcPlan MpcPlanner::solveSamples(
+  const std::array<AimSample, auto_aim::HORIZON + 2> & samples,
+  double current_yaw, double current_pitch)
+{
+  BuffMpcPlan result;
   const double yaw0 = samples[0].yaw;
   auto_aim::Trajectory trajectory;
   for (int i = 0; i < auto_aim::HORIZON; ++i) {
@@ -321,6 +363,23 @@ BuffMpcPlan SmallBuffController::update(
 
   // MpcPlanner 的 pitch 是世界坐标约定（向上为负），Aimer 状态机沿用
   // 原来的正俯仰角约定，因此只在状态机边界做一次取反。
+  const auto fire = aimer_.fireAdvice(
+    result.plan.target_yaw, -result.plan.target_pitch, std::chrono::steady_clock::now());
+  result.plan.fire = fire.shoot;
+  return result;
+}
+
+BuffMpcPlan SmallBuffController::updateStaticPoint(
+  const Eigen::Vector3d & point_world, double bullet_speed,
+  double current_yaw, double current_pitch)
+{
+  auto result = planner_.planStaticPoint(
+    point_world, bullet_speed, current_yaw, current_pitch);
+  if (!result.valid) {
+    reset();
+    return result;
+  }
+
   const auto fire = aimer_.fireAdvice(
     result.plan.target_yaw, -result.plan.target_pitch, std::chrono::steady_clock::now());
   result.plan.fire = fire.shoot;

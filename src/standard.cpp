@@ -1615,7 +1615,7 @@ int run(const Options& options) {
   }
   const bool smallbuff_static_control = options.aim_task == "smallbuff" && smallbuff_static_model;
   const bool use_buff_mpc_planner = options.aim_task == "smallbuff" &&
-      !smallbuff_static_control && plannerModeUsesMpc(command_limiter_config.planner_mode);
+      plannerModeUsesMpc(command_limiter_config.planner_mode);
   hfut::io::HfutSerialGimbalConfig gimbal_config;
   gimbal_config.serial = serial_config;
   gimbal_config.history_size = static_cast<std::size_t>(command_limiter_config.feedback_alignment_history_size);
@@ -1762,7 +1762,7 @@ int run(const Options& options) {
       command_limiter_config.serial_command_max_pitch_velocity_rad_s * kRadToDeg);
   if (options.aim_task == "smallbuff") {
     const char* control_path = smallbuff_static_control
-        ? "static_pnp_direct"
+        ? (use_buff_mpc_planner ? "static_point_tinympc" : "static_point_direct")
         : (use_buff_mpc_planner ? "rotating_tinympc" : "rotating_aimer_feedback_error");
     std::printf("[standard] smallbuff_static_model=%s path=%s\n",
                 smallbuff_static_model ? "true" : "false", control_path);
@@ -1967,7 +1967,7 @@ int run(const Options& options) {
 
       aim_start = track_end;
       if (smallbuff_static_control) {
-        if (power_rune.has_value()) {
+        if (!use_buff_mpc_planner && power_rune.has_value()) {
           sp_command = buff_aimer->aimPoint(power_rune->blade_xyz_in_world, bullet_speed);
         }
       } else if (options.aim_task == "smallbuff" && use_buff_mpc_planner) {
@@ -2001,9 +2001,20 @@ int run(const Options& options) {
           command_limiter_config.feedback_yaw_to_world_sign * latest_feedback.yaw_rad;
         const double current_world_pitch =
           command_limiter_config.sp_pitch_to_command_sign * latest_feedback.pitch_rad;
-        buff_mpc_output = small_buff_controller->update(
-          *buff_small_target, bullet_speed, timestamp,
-          current_world_yaw, current_world_pitch);
+        if (smallbuff_static_control) {
+          if (power_rune.has_value()) {
+            command_distance = power_rune->pnp_blade_horizontal_distance_m;
+            buff_mpc_output = small_buff_controller->updateStaticPoint(
+              power_rune->blade_xyz_in_world, bullet_speed,
+              current_world_yaw, current_world_pitch);
+          } else {
+            small_buff_controller->reset();
+          }
+        } else {
+          buff_mpc_output = small_buff_controller->update(
+            *buff_small_target, bullet_speed, timestamp,
+            current_world_yaw, current_world_pitch);
+        }
       }
       if (buff_mpc_output.valid) {
         command_distance = buff_mpc_output.distance;
@@ -2084,8 +2095,26 @@ int run(const Options& options) {
       command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * buff_mpc_output.plan.pitch_vel;
       raw_desired_yaw = command.yaw;
       raw_desired_pitch = command.pitch;
-      // MPC 轨迹在小符专用输出器中统一限制角度、速度和加速度。
-      smallbuff_output_filter.apply(command, latest_feedback, command_time);
+      if (smallbuff_static_control) {
+        // 静止点使用普通自瞄 MPC 相同的反馈速度补偿和二阶输出适配。
+        command.yaw_diff = tools::limit_rad(command.yaw - latest_feedback.yaw_rad);
+        command.pitch_diff = command.pitch - latest_feedback.pitch_rad;
+        if (velocityModeUsesFeedbackError(active_limiter_config->serial_command_velocity_mode)) {
+          command.yaw_vel += active_limiter_config->serial_command_yaw_error_gain * command.yaw_diff;
+          command.pitch_vel += active_limiter_config->serial_command_pitch_error_gain * command.pitch_diff;
+        }
+        command.yaw_vel = std::clamp(command.yaw_vel,
+                                     -active_limiter_config->serial_command_max_yaw_velocity_rad_s,
+                                     active_limiter_config->serial_command_max_yaw_velocity_rad_s);
+        command.pitch_vel = std::clamp(command.pitch_vel,
+                                       -active_limiter_config->serial_command_max_pitch_velocity_rad_s,
+                                       active_limiter_config->serial_command_max_pitch_velocity_rad_s);
+        active_mpc_motion_adapter->apply(command, command_time);
+        smallbuff_output_filter.reset();
+      } else {
+        // 旋转小符保留专用输出器，避免改变既有模型控制路径。
+        smallbuff_output_filter.apply(command, latest_feedback, command_time);
+      }
     } else if (smallbuff_static_control) {
       // 静止小符沿用普通自瞄的单一保护器输出，避免再叠加一套角度滤波状态。
       buff_motion_applied = command_guard.apply(
@@ -2121,6 +2150,7 @@ int run(const Options& options) {
       // 静止分支只保留角度保护器；速度/加速度仍经小符专用斜坡限制。
       smallbuff_output_filter.reset();
       buff_motion_adapter.apply(command, command_time);
+      if (smallbuff_static_control) active_mpc_motion_adapter->reset();
     } else if (use_buff_task) {
       // 大符暂时保持原有输出语义，避免本次小符控制改动影响其他打符模式。
       buff_motion_adapter.reset();
