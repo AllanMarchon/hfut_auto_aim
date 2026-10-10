@@ -901,8 +901,10 @@ bool SzuRuneDetector::refine_visual_r_center(
   cv::Point2f blade_center(0.0F, 0.0F);
   for (const auto & corner : corners) blade_center += corner;
   blade_center *= 0.25F;
-  // 参考 fuchen 的实现，R 轮廓必须靠近网络种子，并且不能吞掉靶心或四个角点。
-  // 颜色分割优先；部分相机曝光下颜色差分会断裂，再用同一 ROI 内的亮度轮廓兜底。
+  const float max_color_shift = enemy_red_
+    ? traditional_r_max_shift_px_ : std::min(traditional_r_max_shift_px_, 12.0F);
+  // 蓝方的 R 字形边缘容易被灯珠和反光切碎，只允许网络种子附近的蓝色区域参与修正。
+  // 红方保持原有的候选范围和亮度兜底，避免影响已经稳定的红方效果。
   const auto find_center = [&](const cv::Mat & binary, cv::Point2f & center) {
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE, roi_rect.tl());
@@ -915,7 +917,7 @@ bool SzuRuneDetector::refine_visual_r_center(
 
       // 网络 R 可能落在轮廓边缘；允许有限的边界距离，但不接受远处同色背景。
       const double seed_distance = cv::pointPolygonTest(contour, seed, true);
-      if (!std::isfinite(seed_distance) || seed_distance < -traditional_r_max_shift_px_) {
+      if (!std::isfinite(seed_distance) || seed_distance < -max_color_shift) {
         continue;
       }
       // 排除靶心和四个叶片角点所在的轮廓，防止主体亮斑替换 R。
@@ -929,25 +931,32 @@ bool SzuRuneDetector::refine_visual_r_center(
       }
       if (contains_corner) continue;
 
-      cv::RotatedRect ellipse;
-      try {
-        ellipse = cv::fitEllipse(contour);
-      } catch (const cv::Exception &) {
-        // 退化轮廓可能只有近似共线的像素，不能让它中断整帧检测。
-        continue;
+      cv::Point2f candidate_center;
+      if (enemy_red_) {
+        cv::RotatedRect ellipse;
+        try {
+          ellipse = cv::fitEllipse(contour);
+        } catch (const cv::Exception &) {
+          // 退化轮廓可能只有近似共线的像素，不能让它中断整帧检测。
+          continue;
+        }
+        if (!std::isfinite(ellipse.center.x) || !std::isfinite(ellipse.center.y) ||
+            ellipse.size.width <= 0.0F || ellipse.size.height <= 0.0F) {
+          continue;
+        }
+        candidate_center = ellipse.center;
+      } else {
+        // 不规则的 R 字形不适合拟合椭圆，用轮廓矩中心避免少量灯珠改变拟合方向。
+        candidate_center = contour_center(contour);
       }
-      if (!std::isfinite(ellipse.center.x) || !std::isfinite(ellipse.center.y) ||
-          ellipse.size.width <= 0.0F || ellipse.size.height <= 0.0F) {
-        continue;
-      }
-      const double shift = cv::norm(ellipse.center - seed);
-      if (!std::isfinite(shift) || shift > traditional_r_max_shift_px_) continue;
+      const double shift = cv::norm(candidate_center - seed);
+      if (!std::isfinite(shift) || shift > max_color_shift) continue;
       // 轮廓越大越可能是相连的叶片区域；只作为很小的次级惩罚，不覆盖距离种子远近。
       const double outside_penalty = seed_distance < 0.0 ? -seed_distance : 0.0;
       const double score = shift + outside_penalty + 0.01 * std::sqrt(area);
       if (score < best_score) {
         best_score = score;
-        best_center = ellipse.center;
+        best_center = candidate_center;
       }
     }
     if (!std::isfinite(best_score)) return false;
@@ -969,8 +978,15 @@ bool SzuRuneDetector::refine_visual_r_center(
       color_difference, color_difference, cv::Size(r_color_kernel_size_, r_color_kernel_size_), 0.0);
     cv::threshold(color_difference, color_difference, r_color_blue_threshold_, 255, cv::THRESH_BINARY);
   }
-  if (find_center(color_difference, refined)) return true;
+  if (find_center(color_difference, refined)) {
+    if (!enemy_red_) {
+      // 网络关键点仍是主观测，颜色轮廓只给小幅校正，避免相邻碎片切换造成 R 点跳变。
+      refined = seed + (refined - seed) * 0.25F;
+    }
+    return true;
+  }
 
+  if (!enemy_red_) return false;
   // 颜色差分断裂时只在网络 R 附近使用亮度轮廓，避免恢复成全图传统检测。
   cv::Mat gray;
   cv::cvtColor(bgr_image(roi_rect), gray, cv::COLOR_BGR2GRAY);
