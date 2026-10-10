@@ -169,6 +169,12 @@ class SimpleCommandGuard {
  public:
   explicit SimpleCommandGuard(CommandLimiterConfig config) : config_(config) {}
 
+  void synchronize(const hfut::GimbalCommand& command,
+                   std::chrono::steady_clock::time_point now) {
+    if (command.mode == hfut::GimbalMode::normal_measurement) saveLastAim(command, now);
+    else reset();
+  }
+
   bool apply(hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
              const std::string& track_state, std::chrono::steady_clock::time_point now,
              bool preserve_planned_motion = false) {
@@ -635,6 +641,7 @@ class SmallBuffOutputFilter {
 struct SmallBuffFinalGuardResult {
   bool yaw_limited{false};
   bool pitch_limited{false};
+  bool feedback_valid{true};
 };
 
 // 小符各控制分支共用的最终角度保护，确保串口目标受反馈相对角限制。
@@ -645,6 +652,7 @@ SmallBuffFinalGuardResult applySmallBuffFinalAngleGuard(
   if (command.mode != hfut::GimbalMode::normal_measurement) return result;
 
   if (!std::isfinite(feedback.yaw_rad) || !std::isfinite(feedback.pitch_rad)) {
+    result.feedback_valid = false;
     command.mode = hfut::GimbalMode::no_valid_measurement;
     command.fire_advice = false;
     command.yaw_vel = 0.0;
@@ -2057,7 +2065,6 @@ int run(const Options& options) {
     const bool use_buff_mpc_output = use_buff_mpc_planner && buff_mpc_output.valid;
     const auto command_time = std::chrono::steady_clock::now();
     bool command_guard_applied = false;
-    bool smallbuff_static_filter_applied = false;
     double raw_desired_yaw = command.yaw;
     double raw_desired_pitch = command.pitch;
     if (use_buff_task && !use_buff_mpc_output && buff_motion.motion_valid) {
@@ -2080,12 +2087,10 @@ int run(const Options& options) {
       // MPC 轨迹在小符专用输出器中统一限制角度、速度和加速度。
       smallbuff_output_filter.apply(command, latest_feedback, command_time);
     } else if (smallbuff_static_control) {
-      // 先保留跳变和相对角保护，再平滑下发角，避免逐帧 PnP 噪声直接驱动云台。
+      // 静止小符沿用普通自瞄的单一保护器输出，避免再叠加一套角度滤波状态。
       buff_motion_applied = command_guard.apply(
           command, latest_feedback, track_state, command_time, false);
       command_guard_applied = true;
-      smallbuff_static_filter_applied =
-          smallbuff_output_filter.apply(command, latest_feedback, command_time);
     } else if (use_mpc_planner && have_mpc_plan) {
       command.yaw_vel = active_limiter_config->feedback_yaw_to_world_sign * mpc_plan.yaw_vel;
       command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * mpc_plan.pitch_vel;
@@ -2109,11 +2114,11 @@ int run(const Options& options) {
           command, latest_feedback, track_state, command_time,
           use_buff_task && buff_motion.motion_valid);
     }
-    if (use_buff_mpc_output || smallbuff_static_filter_applied) {
-      // 小符输出器已经计算最终角度、速度和加速度，这里不再经过第二个 adapter。
+    if (use_buff_mpc_output) {
+      // MPC 输出自带速度轨迹，不叠加小符反馈误差速度斜坡。
       buff_motion_adapter.reset();
     } else if (options.aim_task == "smallbuff") {
-      // 输出失效时清空历史，恢复后从当前反馈重新渐入。
+      // 静止分支只保留角度保护器；速度/加速度仍经小符专用斜坡限制。
       smallbuff_output_filter.reset();
       buff_motion_adapter.apply(command, command_time);
     } else if (use_buff_task) {
@@ -2122,12 +2127,29 @@ int run(const Options& options) {
     }
     SmallBuffFinalGuardResult smallbuff_final_guard;
     if (options.aim_task == "smallbuff") {
-      // 串口出口再做一次硬限角，不能让前级滤波状态把小符命令带离反馈角保护范围。
-      smallbuff_final_guard = applySmallBuffFinalAngleGuard(
-          command, latest_feedback, *active_limiter_config);
+      const auto command_feedback_age = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - last_feedback_time);
+      const bool fresh_smallbuff_feedback = options.dry_run ||
+          (latest_feedback.received && command_feedback_age.count() <= options.feedback_timeout_ms);
+      if (!fresh_smallbuff_feedback) {
+        smallbuff_final_guard.feedback_valid = false;
+        smallbuff_final_guard.yaw_limited = true;
+        smallbuff_final_guard.pitch_limited = true;
+        command.mode = hfut::GimbalMode::no_valid_measurement;
+        command.fire_advice = false;
+        command.yaw_vel = 0.0;
+        command.pitch_vel = 0.0;
+        command.yaw_acc = 0.0;
+        command.pitch_acc = 0.0;
+      } else {
+        // 串口出口再做一次硬限角，不能让前级滤波状态把小符命令带离反馈角保护范围。
+        smallbuff_final_guard = applySmallBuffFinalAngleGuard(
+            command, latest_feedback, *active_limiter_config);
+      }
       if (smallbuff_final_guard.yaw_limited || smallbuff_final_guard.pitch_limited) {
         smallbuff_output_filter.reset();
         buff_motion_adapter.reset();
+        command_guard.synchronize(command, command_time);
       }
     }
     const double desired_yaw = command.yaw;
@@ -2139,8 +2161,11 @@ int run(const Options& options) {
 
     const auto serial_tx_start = aim_end;
     bool serial_send_ok = true;
-    if (!options.dry_run && options.serial_send) {
+    if (!options.dry_run && options.serial_send &&
+        (options.aim_task != "smallbuff" || smallbuff_final_guard.feedback_valid)) {
       serial_send_ok = gimbal.send(command);
+    } else if (!options.dry_run && options.serial_send) {
+      serial_send_ok = false;
     }
     const auto serial_tx_end = std::chrono::steady_clock::now();
 
