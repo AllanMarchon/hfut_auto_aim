@@ -17,7 +17,7 @@ hardware:
     gain: 16.0                    # 海康增益；OpenCV 后端仅在值大于 0 时尝试设置
     analog_gain: 8                # 保留旧字段，standard 当前不读取
     frame_speed: 1                # 保留旧字段，standard 当前不读取
-    flip_image: true              # 旧实车海康配置为 true；画面倒置时调这个
+    flip_image: false             # 物理镜头已正向安装时关闭软件 180° 翻转
     camera_info: "configs/camera_info.yaml"
     calibration_mode: "strict"   # strict=严格匹配 | scale=缩放内参 | center_crop=中心裁剪
 

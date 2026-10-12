@@ -29,17 +29,17 @@ szu_pose_max_translation_jump_m: 0.35
 szu_pose_reacquire_after_rejections: 20
 
 # 瞄准与控制
-smallbuff_static_model: true           # true=静止模型；false=默认旋转模型
+smallbuff_static_model: false           # true=静止模型；false=默认旋转模型
 yaw_offset: 0.0                        # 度
 pitch_offset: 0.0                      # 度
 fire_gap_time: 0.700                   # 同一扇叶连续开火间隔，秒
-predict_time: 0.120                    # 打符预测提前量，秒
+predict_time: 0.20                    # 打符预测提前量，秒
 
 # controller.yaml 使用 MPC 时生效；静止小符跟踪固定点，旋转小符和大符跟踪各自模型的动态预测轨迹。
 # 加速度单位 rad/s^2；速度单位 deg/s；误差增益单位 1/s。
 smallbuff_mpc:
-  max_yaw_acceleration: 10.0
-  max_pitch_acceleration: 15.0
+  max_yaw_acceleration: 140.0
+  max_pitch_acceleration: 145.0
   yaw_error_gain: 2.0
   pitch_error_gain: 2.0
   max_yaw_velocity: 80.0

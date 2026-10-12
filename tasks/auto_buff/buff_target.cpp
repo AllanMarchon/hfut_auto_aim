@@ -115,9 +115,13 @@ void SmallTarget::get_target(
   update(time_gap, p.value());
 
   // 处理发散
-  if (
-    !state_is_finite() || !std::isfinite(ekf_.x[6]) || std::abs(ekf_.x[6]) > SMALL_W + CV_PI / 18 ||
-    std::abs(ekf_.x[6]) < SMALL_W - CV_PI / 18) {
+  // 方向尚未锁定时，角速度有意保持为 0，等待 Voter 累积足够观测；
+  // 此时不能按已锁定状态检查 ±SMALL_W，否则每一帧都会被判定发散并
+  // 重置 first_in_，导致旋转模型永远无法进入 tracking_ready。
+  const bool speed_out_of_range = rotation_direction_ != 0 &&
+    (std::abs(ekf_.x[6]) > SMALL_W + CV_PI / 18 ||
+     std::abs(ekf_.x[6]) < SMALL_W - CV_PI / 18);
+  if (!state_is_finite() || !std::isfinite(ekf_.x[6]) || speed_out_of_range) {
     unsolvable_ = true;
     tools::logger()->debug("[Target] 小符角度发散spd: {:.2f}", ekf_.x[6] * 180 / CV_PI);
     first_in_ = true;
