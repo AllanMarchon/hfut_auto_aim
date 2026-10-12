@@ -24,6 +24,7 @@ public:
   void reset();
   void vote(const double angle_last, const double angle_now);
   int clockwise();
+  int votes() const { return clockwise_; }
 
 private:
   int clockwise_;
@@ -101,6 +102,7 @@ private:
   Eigen::MatrixXd h_jacobian() const;
 
   const double SMALL_W = CV_PI / 3;
+  int rotation_direction_ = 0;
   // const double SMALL_W = 0;
 };
 
@@ -126,6 +128,7 @@ private:
   tools::RansacSineFitter spd_fitter_;
 
   double fit_spd_;
+  int rotation_direction_ = 0;
 };
 
 }  // namespace auto_buff

@@ -83,7 +83,7 @@ void setupSolver(
   if (tiny_setup(
         solver, A, B, f, Q.asDiagonal(), R.asDiagonal(), 1.0, 2, 1,
         auto_aim::HORIZON, 0) != 0) {
-    throw std::runtime_error("小符 TinyMPC 初始化失败");
+    throw std::runtime_error("打符 TinyMPC 初始化失败");
   }
 
   const Eigen::MatrixXd x_min =
@@ -95,7 +95,7 @@ void setupSolver(
   const Eigen::MatrixXd u_max =
     Eigen::MatrixXd::Constant(1, auto_aim::HORIZON - 1, max_acc);
   if (tiny_set_bound_constraints(*solver, x_min, x_max, u_min, u_max) != 0) {
-    throw std::runtime_error("小符 TinyMPC 约束初始化失败");
+    throw std::runtime_error("打符 TinyMPC 约束初始化失败");
   }
   (*solver)->settings->max_iter = 10;
 }
@@ -143,9 +143,12 @@ SmallBuffMpcOverrides loadSmallBuffMpcOverrides(const std::string & buff_config)
 }
 
 MpcPlanner::MpcPlanner(
-  const std::string & controller_config, const std::string & buff_config)
+  const std::string & controller_config, const std::string & buff_config,
+  bool use_smallbuff_overrides)
 {
-  const auto overrides = loadSmallBuffMpcOverrides(buff_config);
+  const auto overrides = use_smallbuff_overrides
+                           ? loadSmallBuffMpcOverrides(buff_config)
+                           : SmallBuffMpcOverrides{};
   setupYawSolver(controller_config, overrides.max_yaw_acceleration_rad_s2);
   setupPitchSolver(controller_config, overrides.max_pitch_acceleration_rad_s2);
 
@@ -155,7 +158,7 @@ MpcPlanner::MpcPlanner(
   predict_time_ = buff["predict_time"].as<double>(predict_time_);
   if (!std::isfinite(yaw_offset_) || !std::isfinite(pitch_offset_) ||
       !std::isfinite(predict_time_) || predict_time_ < 0.0) {
-    throw std::invalid_argument("小符 MPC 的偏移和预测时间必须是有限数，预测时间不能为负");
+    throw std::invalid_argument("打符 MPC 的偏移和预测时间必须是有限数，预测时间不能为负");
   }
 }
 
@@ -179,6 +182,37 @@ void MpcPlanner::setupPitchSolver(
 
 MpcPlanner::AimSample MpcPlanner::aimAt(
   SmallTarget target, double prediction_time, double bullet_speed) const
+{
+  AimSample result;
+  if (target.is_unsolve() || !std::isfinite(prediction_time)) return result;
+  if (!std::isfinite(bullet_speed) || bullet_speed < 14.0) bullet_speed = 23.0;
+
+  target.predict(prediction_time);
+  auto aim_point = target.point_buff2world(Eigen::Vector3d(0.0, 0.0, 0.7));
+  double distance = std::hypot(aim_point.x(), aim_point.y());
+  double height = aim_point.z();
+  tools::Trajectory trajectory0(bullet_speed, distance, height);
+  if (trajectory0.unsolvable) return result;
+
+  target.predict(trajectory0.fly_time);
+  aim_point = target.point_buff2world(Eigen::Vector3d(0.0, 0.0, 0.7));
+  distance = std::hypot(aim_point.x(), aim_point.y());
+  height = aim_point.z();
+  tools::Trajectory trajectory1(bullet_speed, distance, height);
+  if (trajectory1.unsolvable || std::abs(trajectory1.fly_time - trajectory0.fly_time) > 0.01) {
+    return result;
+  }
+
+  result.yaw = std::atan2(aim_point.y(), aim_point.x()) + yaw_offset_;
+  result.pitch = -(trajectory1.pitch + pitch_offset_);
+  result.distance = distance;
+  result.valid = std::isfinite(result.yaw) && std::isfinite(result.pitch) &&
+                 std::isfinite(result.distance) && result.distance > 0.0;
+  return result;
+}
+
+MpcPlanner::AimSample MpcPlanner::aimAt(
+  BigTarget target, double prediction_time, double bullet_speed) const
 {
   AimSample result;
   if (target.is_unsolve() || !std::isfinite(prediction_time)) return result;
@@ -241,20 +275,52 @@ BuffMpcPlan MpcPlanner::plan(
     std::chrono::steady_clock::now() - timestamp).count();
   if (!std::isfinite(frame_age)) frame_age = 0.0;
   frame_age = std::clamp(frame_age, 0.0, 0.5);
-  // 反馈初态对应当前时刻，因此参考轨迹也必须从当前时刻向未来采样。
-  // 旧实现使用前后对称半窗，却把当前反馈塞到半窗起点，初态和参考时间
-  // 错开约 0.5 秒，容易造成速度指令反复追赶。
-  const double first_prediction = frame_age + predict_time_;
+  // 与普通自瞄 Planner 保持同一时间组织：center_prediction 对应输出中点，
+  // 轨迹在它前后各取半个 horizon。小符的状态模型是匀速模型，允许对复制的
+  // 状态做小范围负时间预测；这样速度用中心差分，不会因为窗口起点的人为
+  // 单边差分而给 MPC 注入一个额外的速度跳变。
+  const double center_prediction = frame_age + predict_time_;
 
   std::array<AimSample, auto_aim::HORIZON + 2> samples;
   for (int i = 0; i <= auto_aim::HORIZON + 1; ++i) {
-    const double sample_prediction = first_prediction + static_cast<double>(i) * auto_aim::DT;
+    const double offset =
+      static_cast<double>(i - 1 - auto_aim::HALF_HORIZON) * auto_aim::DT;
+    const double sample_prediction = center_prediction + offset;
     samples[static_cast<std::size_t>(i)] =
       aimAt(target, sample_prediction, bullet_speed);
     if (!samples[static_cast<std::size_t>(i)].valid) return result;
   }
 
-  return solveSamples(samples, current_yaw, current_pitch);
+  return solveSamples(samples, current_yaw, current_pitch, false);
+}
+
+BuffMpcPlan MpcPlanner::plan(
+  const BigTarget & target, double bullet_speed,
+  std::chrono::steady_clock::time_point timestamp,
+  double current_yaw, double current_pitch)
+{
+  BuffMpcPlan result;
+  if (target.is_unsolve()) return result;
+
+  double frame_age = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - timestamp).count();
+  if (!std::isfinite(frame_age)) frame_age = 0.0;
+  frame_age = std::clamp(frame_age, 0.0, 0.5);
+  // 大符使用自身的变速模型逐点生成动态参考；时间窗口和小符旋转路径
+  // 一致，中心差分避免单边采样把模型速度变成额外的控制跳变。
+  const double center_prediction = frame_age + predict_time_;
+
+  std::array<AimSample, auto_aim::HORIZON + 2> samples;
+  for (int i = 0; i <= auto_aim::HORIZON + 1; ++i) {
+    const double offset =
+      static_cast<double>(i - 1 - auto_aim::HALF_HORIZON) * auto_aim::DT;
+    const double sample_prediction = center_prediction + offset;
+    samples[static_cast<std::size_t>(i)] =
+      aimAt(target, sample_prediction, bullet_speed);
+    if (!samples[static_cast<std::size_t>(i)].valid) return result;
+  }
+
+  return solveSamples(samples, current_yaw, current_pitch, false);
 }
 
 BuffMpcPlan MpcPlanner::planStaticPoint(
@@ -267,39 +333,41 @@ BuffMpcPlan MpcPlanner::planStaticPoint(
 
   std::array<AimSample, auto_aim::HORIZON + 2> samples;
   samples.fill(sample);
-  return solveSamples(samples, current_yaw, current_pitch);
+  return solveSamples(samples, current_yaw, current_pitch, true);
 }
 
 BuffMpcPlan MpcPlanner::solveSamples(
   const std::array<AimSample, auto_aim::HORIZON + 2> & samples,
-  double current_yaw, double current_pitch)
+  double current_yaw, double current_pitch, bool use_feedback_initial_state)
 {
   BuffMpcPlan result;
-  const double yaw0 = samples[0].yaw;
+  const double yaw0 = samples[auto_aim::HALF_HORIZON + 1].yaw;
   auto_aim::Trajectory trajectory;
   for (int i = 0; i < auto_aim::HORIZON; ++i) {
-    const auto & center = samples[static_cast<std::size_t>(i)];
-    const auto & after = samples[static_cast<std::size_t>(i + 1)];
-    const auto & before = i == 0
-                            ? samples[static_cast<std::size_t>(i)]
-                            : samples[static_cast<std::size_t>(i - 1)];
-    const double velocity_dt = i == 0 ? auto_aim::DT : 2.0 * auto_aim::DT;
+    const auto & before = samples[static_cast<std::size_t>(i)];
+    const auto & center = samples[static_cast<std::size_t>(i + 1)];
+    const auto & after = samples[static_cast<std::size_t>(i + 2)];
     trajectory(0, i) = tools::limit_rad(center.yaw - yaw0);
-    trajectory(1, i) = tools::limit_rad(after.yaw - before.yaw) / velocity_dt;
+    trajectory(1, i) = tools::limit_rad(after.yaw - before.yaw) / (2.0 * auto_aim::DT);
     trajectory(2, i) = center.pitch;
-    trajectory(3, i) = (after.pitch - before.pitch) / velocity_dt;
+    trajectory(3, i) = (after.pitch - before.pitch) / (2.0 * auto_aim::DT);
   }
 
   Eigen::VectorXd x0(2);
-  // MPC 的状态初值必须来自真实云台反馈；若继续使用参考轨迹初值，
-  // 规划器会误以为云台已经在目标角上，反馈误差只能在串口边界事后补偿。
   if (!std::isfinite(current_yaw) || !std::isfinite(current_pitch)) return result;
-  x0 << tools::limit_rad(current_yaw - yaw0), trajectory(1, 0);
+  if (use_feedback_initial_state) {
+    // 静止固定点已经在实机验证过，保留它原来的反馈初态。
+    x0 << tools::limit_rad(current_yaw - yaw0), trajectory(1, 0);
+  } else {
+    // 旋转小符与普通自瞄 MPC 一致，求解器初态使用参考窗口起点；真实
+    // 云台反馈只在 standard.cpp 的 feedback_error 速度环中闭合，避免双重放大。
+    x0 << trajectory(0, 0), trajectory(1, 0);
+  }
   if (tiny_set_x0(yaw_solver_, x0) != 0) return result;
   yaw_solver_->work->Xref = trajectory.block(0, 0, 2, auto_aim::HORIZON);
   const int yaw_status = tiny_solve(yaw_solver_);
 
-  x0 << current_pitch, trajectory(3, 0);
+  x0 << (use_feedback_initial_state ? current_pitch : trajectory(2, 0)), trajectory(3, 0);
   if (tiny_set_x0(pitch_solver_, x0) != 0) return result;
   pitch_solver_->work->Xref = trajectory.block(2, 0, 2, auto_aim::HORIZON);
   const int pitch_status = tiny_solve(pitch_solver_);
@@ -315,8 +383,7 @@ BuffMpcPlan MpcPlanner::solveSamples(
   result.plan.control = true;
   // 开火节拍由 Aimer 的独立状态机决定，规划器只输出轨迹。
   result.plan.fire = false;
-  // 输出下一控制步，避免直接使用当前状态导致角度命令永远停在反馈角。
-  constexpr int kOutputIndex = 1;
+  const int kOutputIndex = use_feedback_initial_state ? 1 : auto_aim::HALF_HORIZON;
   result.plan.target_yaw = static_cast<float>(tools::limit_rad(
     trajectory(0, kOutputIndex) + yaw0));
   result.plan.target_pitch = static_cast<float>(trajectory(2, kOutputIndex));
@@ -327,7 +394,7 @@ BuffMpcPlan MpcPlanner::solveSamples(
   result.plan.pitch = static_cast<float>(pitch_solver_->work->x(0, kOutputIndex));
   result.plan.pitch_vel = static_cast<float>(pitch_solver_->work->x(1, kOutputIndex));
   result.plan.pitch_acc = static_cast<float>(pitch_solver_->work->u(0, kOutputIndex));
-  result.distance = samples[kOutputIndex].distance;
+  result.distance = samples[kOutputIndex + 1].distance;
 
   if (!std::isfinite(result.plan.yaw) || !std::isfinite(result.plan.yaw_vel) ||
       !std::isfinite(result.plan.yaw_acc) || !std::isfinite(result.plan.pitch) ||
@@ -387,6 +454,39 @@ BuffMpcPlan SmallBuffController::updateStaticPoint(
 }
 
 void SmallBuffController::reset()
+{
+  aimer_.resetFireState();
+}
+
+BigBuffController::BigBuffController(
+  const std::string & controller_config, const std::string & buff_config, Aimer & aimer)
+: planner_(controller_config, buff_config, false), aimer_(aimer)
+{
+}
+
+BuffMpcPlan BigBuffController::update(
+  const BigTarget & target, double bullet_speed,
+  std::chrono::steady_clock::time_point timestamp,
+  double current_yaw, double current_pitch)
+{
+  if (!target.is_tracking_ready()) {
+    reset();
+    return BuffMpcPlan{};
+  }
+
+  auto result = planner_.plan(target, bullet_speed, timestamp, current_yaw, current_pitch);
+  if (!result.valid) {
+    reset();
+    return result;
+  }
+
+  const auto fire = aimer_.fireAdvice(
+    result.plan.target_yaw, -result.plan.target_pitch, std::chrono::steady_clock::now());
+  result.plan.fire = fire.shoot;
+  return result;
+}
+
+void BigBuffController::reset()
 {
   aimer_.resetFireState();
 }

@@ -37,14 +37,21 @@ struct BuffMpcPlan
   bool valid = false;
 };
 
-// 用小符 EKF 的预测状态生成角度参考轨迹，再复用普通自瞄的 TinyMPC 二阶控制器。
+// 用打符目标模型的预测状态生成角度参考轨迹，再复用普通自瞄的 TinyMPC 二阶控制器。
 class MpcPlanner
 {
 public:
-  MpcPlanner(const std::string & controller_config, const std::string & buff_config);
+  MpcPlanner(
+    const std::string & controller_config, const std::string & buff_config,
+    bool use_smallbuff_overrides = true);
 
   BuffMpcPlan plan(
     const SmallTarget & target, double bullet_speed,
+    std::chrono::steady_clock::time_point timestamp,
+    double current_yaw, double current_pitch);
+
+  BuffMpcPlan plan(
+    const BigTarget & target, double bullet_speed,
     std::chrono::steady_clock::time_point timestamp,
     double current_yaw, double current_pitch);
 
@@ -70,10 +77,11 @@ private:
   bool warned_solver_status_ = false;
 
   AimSample aimAt(SmallTarget target, double prediction_time, double bullet_speed) const;
+  AimSample aimAt(BigTarget target, double prediction_time, double bullet_speed) const;
   AimSample aimAtStaticPoint(const Eigen::Vector3d & point_world, double bullet_speed) const;
   BuffMpcPlan solveSamples(
     const std::array<AimSample, auto_aim::HORIZON + 2> & samples,
-    double current_yaw, double current_pitch);
+    double current_yaw, double current_pitch, bool use_feedback_initial_state);
   void setupYawSolver(
     const std::string & controller_config,
     const std::optional<double> & max_acceleration_override);
@@ -97,6 +105,26 @@ public:
 
   BuffMpcPlan updateStaticPoint(
     const Eigen::Vector3d & point_world, double bullet_speed,
+    double current_yaw, double current_pitch);
+
+  void reset();
+
+private:
+  MpcPlanner planner_;
+  Aimer & aimer_;
+};
+
+// 大符保留 BigTarget 的变速正弦模型，只复用小符已验证的动态 TinyMPC
+// 输出和 Aimer 开火状态机。它不调用 planStaticPoint()。
+class BigBuffController
+{
+public:
+  BigBuffController(
+    const std::string & controller_config, const std::string & buff_config, Aimer & aimer);
+
+  BuffMpcPlan update(
+    const BigTarget & target, double bullet_speed,
+    std::chrono::steady_clock::time_point timestamp,
     double current_yaw, double current_pitch);
 
   void reset();

@@ -117,7 +117,7 @@ bool Aimer::updateControlState(double yaw, double pitch)
     last_yaw_ = yaw;
     last_pitch_ = pitch;
     return true;
-  } else if (std::abs(last_yaw_ - yaw) > 5 / 57.3 ||
+  } else if (std::abs(tools::limit_rad(last_yaw_ - yaw)) > 5 / 57.3 ||
              std::abs(last_pitch_ - pitch) > 5 / 57.3) {
     switch_fanblade_ = true;
     mistake_count_++;

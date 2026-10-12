@@ -511,7 +511,7 @@ struct SmallBuffFinalGuardResult {
   bool feedback_valid{true};
 };
 
-// 小符各控制分支共用的最终角度保护，确保串口目标受反馈相对角限制。
+// 打符各 MPC/静止控制分支共用的最终角度保护，确保串口目标受反馈相对角限制。
 SmallBuffFinalGuardResult applySmallBuffFinalAngleGuard(
     hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
     const CommandLimiterConfig& config) {
@@ -1481,7 +1481,8 @@ int run(const Options& options) {
     smallbuff_static_model = parseBool(buff_yaml["smallbuff_static_model"], false);
   }
   const bool smallbuff_static_control = options.aim_task == "smallbuff" && smallbuff_static_model;
-  const bool use_buff_mpc_planner = options.aim_task == "smallbuff" &&
+  const bool use_buff_mpc_planner =
+      (options.aim_task == "smallbuff" || options.aim_task == "bigbuff") &&
       plannerModeUsesMpc(command_limiter_config.planner_mode);
   hfut::io::HfutSerialGimbalConfig gimbal_config;
   gimbal_config.serial = serial_config;
@@ -1505,8 +1506,8 @@ int run(const Options& options) {
           ? loadOutpostCommandLimiterConfig(options.controller_config, command_limiter_config)
           : command_limiter_config;
   SimpleCommandGuard command_guard(command_limiter_config);
-  // 小符非 MPC 路径在串口前额外限制速度斜率，避免目标抖动直接变成前馈力矩脉冲。
-  // 大符保留原输出语义；普通自瞄 MPC 使用下方独立的适配器。
+  // 非 MPC 小符路径在串口前额外限制速度斜率，避免目标抖动直接变成前馈力矩脉冲。
+  // 大符的 MPC 路径使用下方同一套二阶输出适配器。
   FinalVelocityAccelerationAdapter buff_motion_adapter(
       command_limiter_config, options.aim_task == "smallbuff");
   FinalVelocityAccelerationAdapter mpc_motion_adapter(command_limiter_config);
@@ -1519,6 +1520,7 @@ int run(const Options& options) {
   std::unique_ptr<auto_aim::Shooter> shooter;
   std::unique_ptr<auto_buff::Buff_Detector> buff_detector;
   std::unique_ptr<auto_buff::SmallBuffController> small_buff_controller;
+  std::unique_ptr<auto_buff::BigBuffController> big_buff_controller;
   std::unique_ptr<auto_buff::Solver> buff_solver;
   std::unique_ptr<auto_buff::SmallTarget> buff_small_target;
   std::unique_ptr<auto_buff::BigTarget> buff_big_target;
@@ -1530,8 +1532,13 @@ int run(const Options& options) {
     buff_big_target = std::make_unique<auto_buff::BigTarget>();
     buff_aimer = std::make_unique<auto_buff::Aimer>(adapted_config_path);
     if (use_buff_mpc_planner) {
-      small_buff_controller = std::make_unique<auto_buff::SmallBuffController>(
-          options.controller_config, adapted_config_path, *buff_aimer);
+      if (options.aim_task == "smallbuff") {
+        small_buff_controller = std::make_unique<auto_buff::SmallBuffController>(
+            options.controller_config, adapted_config_path, *buff_aimer);
+      } else {
+        big_buff_controller = std::make_unique<auto_buff::BigBuffController>(
+            options.controller_config, adapted_config_path, *buff_aimer);
+      }
     }
   } else {
     detector = std::make_unique<auto_aim::YOLO>(adapted_config_path, false);
@@ -1632,6 +1639,9 @@ int run(const Options& options) {
         : (use_buff_mpc_planner ? "rotating_tinympc" : "rotating_aimer_feedback_error");
     std::printf("[standard] smallbuff_static_model=%s path=%s\n",
                 smallbuff_static_model ? "true" : "false", control_path);
+  } else if (options.aim_task == "bigbuff") {
+    std::printf("[standard] bigbuff path=%s model=variable_speed_sine\n",
+                use_buff_mpc_planner ? "dynamic_tinympc" : "aimer_feedback_error");
   }
   if (use_outpost_profile) {
     std::printf(
@@ -1849,6 +1859,9 @@ int run(const Options& options) {
               true, buff_small_target->is_tracking_ready());
           sp_command = buff_motion.command;
         }
+      } else if (options.aim_task == "bigbuff" && use_buff_mpc_planner) {
+        // 大符保留 BigTarget 的变速模型；动态参考由 BigBuffController
+        // 生成后统一进入 TinyMPC 输出链路。
       } else {
         if (!buff_big_target->is_unsolve()) {
           auto target_copy = *buff_big_target;
@@ -1860,14 +1873,18 @@ int run(const Options& options) {
           sp_command = buff_motion.command;
         }
       }
-      if (use_buff_mpc_planner && small_buff_controller) {
+      if (use_buff_mpc_planner && (small_buff_controller || big_buff_controller)) {
         // MPC 内部使用与 PnP 相同的世界坐标约定：yaw 乘 yaw 适配符号，
         // pitch 乘 SP 到串口的符号（两个符号都是 ±1）。
         const double current_world_yaw =
           command_limiter_config.feedback_yaw_to_world_sign * latest_feedback.yaw_rad;
         const double current_world_pitch =
           command_limiter_config.sp_pitch_to_command_sign * latest_feedback.pitch_rad;
-        if (smallbuff_static_control) {
+        if (options.aim_task == "bigbuff") {
+          buff_mpc_output = big_buff_controller->update(
+              *buff_big_target, bullet_speed, timestamp,
+              current_world_yaw, current_world_pitch);
+        } else if (smallbuff_static_control) {
           if (power_rune.has_value()) {
             command_distance = power_rune->pnp_blade_horizontal_distance_m;
             buff_mpc_output = small_buff_controller->updateStaticPoint(
@@ -1951,7 +1968,7 @@ int run(const Options& options) {
       command.pitch_acc = active_limiter_config->sp_pitch_to_command_sign * buff_motion.pitch_acceleration;
     }
     if (use_buff_mpc_output) {
-      // 小符 MPC 输出已经包含二阶轨迹；这里保留有效姿态，即使 Aimer 正在
+      // 打符 MPC 输出已经包含二阶轨迹；这里保留有效姿态，即使 Aimer 正在
       // 换叶片保护期内，也不能把 tracking 目标错误地标成 no_valid_measurement。
       command.mode = hfut::GimbalMode::normal_measurement;
       command.fire_advice = options.enable_fire && buff_mpc_output.plan.fire;
@@ -1961,7 +1978,7 @@ int run(const Options& options) {
       command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * buff_mpc_output.plan.pitch_vel;
       raw_desired_yaw = command.yaw;
       raw_desired_pitch = command.pitch;
-      // 静止与旋转小符都保留 MPC 速度轨迹，统一使用普通自瞄的反馈补偿和输出适配。
+      // 静止小符、旋转小符和大符都保留 MPC 速度轨迹，统一使用普通自瞄的反馈补偿和输出适配。
       command.yaw_diff = tools::limit_rad(command.yaw - latest_feedback.yaw_rad);
       command.pitch_diff = command.pitch - latest_feedback.pitch_rad;
       if (velocityModeUsesFeedbackError(active_limiter_config->serial_command_velocity_mode)) {
@@ -2011,16 +2028,19 @@ int run(const Options& options) {
       buff_motion_adapter.apply(command, command_time);
       active_mpc_motion_adapter->reset();
     } else if (use_buff_task) {
-      // 大符暂时保持原有输出语义，避免本次小符控制改动影响其他打符模式。
+      // 没有有效的打符 MPC 计划时清空适配器状态，避免大符重获目标后
+      // 继承上一段 MPC 的速度/加速度历史。
       buff_motion_adapter.reset();
+      active_mpc_motion_adapter->reset();
     }
     SmallBuffFinalGuardResult smallbuff_final_guard;
-    if (options.aim_task == "smallbuff") {
+    const bool use_buff_final_guard = options.aim_task == "smallbuff" || use_buff_mpc_output;
+    if (use_buff_final_guard) {
       const auto command_feedback_age = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - last_feedback_time);
-      const bool fresh_smallbuff_feedback = options.dry_run ||
+      const bool fresh_buff_feedback = options.dry_run ||
           (latest_feedback.received && command_feedback_age.count() <= options.feedback_timeout_ms);
-      if (!fresh_smallbuff_feedback) {
+      if (!fresh_buff_feedback) {
         smallbuff_final_guard.feedback_valid = false;
         smallbuff_final_guard.yaw_limited = true;
         smallbuff_final_guard.pitch_limited = true;
@@ -2031,7 +2051,7 @@ int run(const Options& options) {
         command.yaw_acc = 0.0;
         command.pitch_acc = 0.0;
       } else {
-        // 串口出口再做一次硬限角，不能让前级滤波状态把小符命令带离反馈角保护范围。
+        // 串口出口再做一次硬限角，不能让前级滤波状态把打符命令带离反馈角保护范围。
         smallbuff_final_guard = applySmallBuffFinalAngleGuard(
             command, latest_feedback, *active_limiter_config);
       }
@@ -2051,7 +2071,7 @@ int run(const Options& options) {
     const auto serial_tx_start = aim_end;
     bool serial_send_ok = true;
     if (!options.dry_run && options.serial_send &&
-        (options.aim_task != "smallbuff" || smallbuff_final_guard.feedback_valid)) {
+        (!use_buff_final_guard || smallbuff_final_guard.feedback_valid)) {
       serial_send_ok = gimbal.send(command);
     } else if (!options.dry_run && options.serial_send) {
       serial_send_ok = false;

@@ -90,6 +90,7 @@ void SmallTarget::get_target(
       have_start_timestamp_ = false;
       tracking_ready_ = false;
       valid_count_ = 0;
+      rotation_direction_ = 0;
     }
     return;
   }
@@ -125,7 +126,9 @@ void SmallTarget::get_target(
     return;
   }
   valid_count_++;
-  tracking_ready_ = valid_count_ >= 3;
+  // 方向尚未锁定时不把带默认速度符号的预测交给云台；先积累几帧
+  // 观测，避免重获首段出现一小段反向预测。
+  tracking_ready_ = valid_count_ >= 3 && rotation_direction_ != 0;
   unsolvable_ = !tracking_ready_;
 }
 
@@ -169,6 +172,7 @@ void SmallTarget::init(double nowtime, const PowerRune & p)
 {
   // 初始化内部变量
   voter.reset();
+  rotation_direction_ = 0;
   lasttime_ = nowtime;
 
   // 初始状态协方差矩阵
@@ -184,13 +188,14 @@ void SmallTarget::init(double nowtime, const PowerRune & p)
   // [R_dis]
   // [yaw]
   // [angle/row]
-  // [spd]   w=CV_PI/6
+  // [spd]   w=CV_PI/3（小符固定角速度幅值）
 
   // clang-format off
-  // 初始状态
+  // 初始方向尚未由观测锁定，不能用 Voter::clockwise() 的默认 -1 推进 EKF；
+  // 锁定后 update() 会重新施加固定的 ±SMALL_W。
   x0_ << p.ypd_in_world[0], 0.0, p.ypd_in_world[1], p.ypd_in_world[2],
          p.ypr_in_world[0], p.ypr_in_world[2], 
-         SMALL_W * voter.clockwise();
+         0.0;
   // 初始状态协方差矩阵
   P0_ << 10.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
           0.0, 10.0,  0.0,  0.0,  0.0,  0.0,  0.0,
@@ -257,9 +262,16 @@ void SmallTarget::update(double nowtime, const PowerRune & p)
     roll_measurement = ekf_.x[5];
   }
 
-  // vote判断是顺时针还是逆时针旋转
+  // vote 判断是顺时针还是逆时针旋转。方向未积累到足够证据前，
+  // 保持初始化方向，不允许单个抖动观测把固定速度符号翻回去。
   voter.vote(ekf_.x[5], roll_measurement);
-  if (voter.clockwise() * ekf_.x[6] < 0) ekf_.x[6] *= -1;  // spd
+  constexpr int kDirectionLockVotes = 5;
+  if (rotation_direction_ == 0 && std::abs(voter.votes()) >= kDirectionLockVotes) {
+    rotation_direction_ = voter.clockwise();
+  }
+  if (rotation_direction_ != 0) {
+    ekf_.x[6] = SMALL_W * rotation_direction_;
+  }
 
   // 预测下一个状态
   predict(nowtime - lasttime_);
@@ -344,6 +356,11 @@ void SmallTarget::update(double nowtime, const PowerRune & p)
 
   ekf_.update(z2, H2, R2, h2, z_subtract2);
 
+  // 小符转速是赛事约束，不是需要由 EKF 估计的自由状态。原模型的观测
+  // 主要约束叶片相位和盘面位置；方向锁定后每次观测都重新施加已知的
+  // 固定符号和幅值，防止后续模型改动或数值误差破坏这个约束。
+  if (rotation_direction_ != 0) ekf_.x[6] = SMALL_W * rotation_direction_;
+
   // 更新lasttime
   lasttime_ = nowtime;
   return;
@@ -420,6 +437,7 @@ void BigTarget::get_target(
       have_start_timestamp_ = false;
       tracking_ready_ = false;
       valid_count_ = 0;
+      rotation_direction_ = 0;
     }
     return;
   }
@@ -453,16 +471,20 @@ void BigTarget::get_target(
     first_in_ = true;
     tracking_ready_ = false;
     valid_count_ = 0;
+    rotation_direction_ = 0;
     return;
   }
   valid_count_++;
-  tracking_ready_ = valid_count_ >= 3;
+  tracking_ready_ = valid_count_ >= 3 && rotation_direction_ != 0;
   unsolvable_ = !tracking_ready_;
 }
 
 void BigTarget::predict(double dt)
 {
   // 预测下一个状态
+  const int rotation_direction = rotation_direction_ != 0
+                                   ? rotation_direction_
+                                   : (voter.votes() == 0 ? 1 : voter.clockwise());
   double spd = fit_spd_;
   // double spd = ekf_.x[6];
   double a = ekf_.x[7];
@@ -475,7 +497,7 @@ void BigTarget::predict(double dt)
         0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,//R_pitch
         0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,//R_dis
         0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,//yaw
-        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, voter.clockwise() * dt , 0.0, 0.0, 0.0,//row
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, rotation_direction * dt , 0.0, 0.0, 0.0,//row
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, sin(w * t + fi) - 1, t * a * cos(w * t + fi), a * cos(w * t + fi),//spd
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,//a
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,//w
@@ -509,7 +531,7 @@ void BigTarget::predict(double dt)
     x_prior[0] = tools::limit_rad(x_prior[0] + dt * x_prior[1]);
     x_prior[2] = tools::limit_rad(x_prior[2]);
     x_prior[4] = tools::limit_rad(x_prior[4]); // yaw
-    x_prior[5] = tools::limit_rad(x_prior[5] + voter.clockwise() * 
+    x_prior[5] = tools::limit_rad(x_prior[5] + rotation_direction *
     (-a / w * std::cos(w * t + fi) + a / w * std::cos(w * lasttime_ + fi) + (2.09 - a) * dt)); // roll
     x_prior[6] = a * sin(w * t + fi) + 2.09 - a; // spd
     return x_prior;
@@ -522,6 +544,7 @@ void BigTarget::init(double nowtime, const PowerRune & p)
 {
   // 初始化内部变量
   voter.reset();
+  rotation_direction_ = 0;
   lasttime_ = nowtime;
   unsolvable_ = true;
 
@@ -614,6 +637,11 @@ void BigTarget::update(double nowtime, const PowerRune & p)
 
   // vote判断是顺时针还是逆时针旋转
   voter.vote(ekf_.x[5], ypr[2]);
+  // 与小符一样，先累计方向票再锁定符盘方向，避免单帧 PnP 跳变
+  // 把变速模型的相位推进方向反过来。
+  if (rotation_direction_ == 0 && std::abs(voter.votes()) >= 5) {
+    rotation_direction_ = voter.clockwise();
+  }
 
   auto anglelast = ekf_.x[5];  ///
 
@@ -708,7 +736,10 @@ void BigTarget::update(double nowtime, const PowerRune & p)
     nowtime, spd_fitter_.best_result_.A, spd_fitter_.best_result_.omega,
     spd_fitter_.best_result_.phi, spd_fitter_.best_result_.C);
 
-  spd = voter.clockwise() * (ekf_.x[5] - anglelast) / (nowtime - lasttime_);  // 仅供调试
+  const int rotation_direction = rotation_direction_ != 0
+                                   ? rotation_direction_
+                                   : (voter.votes() == 0 ? 1 : voter.clockwise());
+  spd = rotation_direction * (ekf_.x[5] - anglelast) / (nowtime - lasttime_);  // 仅供调试
   spd = fit_spd_;
   if (std::abs(spd) > 4) spd = 0;
 
