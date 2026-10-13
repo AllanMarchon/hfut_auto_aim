@@ -127,7 +127,7 @@ private:
 
   tools::RansacSineFitter spd_fitter_;
 
-  double fit_spd_;
+  double fit_spd_ = 0.0;
   int rotation_direction_ = 0;
 };
 

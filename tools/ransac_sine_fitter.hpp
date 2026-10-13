@@ -25,6 +25,8 @@ public:
 
   RansacSineFitter(int max_iterations, double threshold, double min_omega, double max_omega);
 
+  void reset();
+
   void add_data(double t, double v);
 
   void fit();

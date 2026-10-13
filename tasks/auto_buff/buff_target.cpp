@@ -485,24 +485,42 @@ void BigTarget::get_target(
 
 void BigTarget::predict(double dt)
 {
-  // 预测下一个状态
+  if (!std::isfinite(dt) || ekf_.x.size() != 10 || !ekf_.x.allFinite()) return;
+
   const int rotation_direction = rotation_direction_ != 0
                                    ? rotation_direction_
                                    : (voter.votes() == 0 ? 1 : voter.clockwise());
-  double spd = fit_spd_;
-  // double spd = ekf_.x[6];
-  double a = ekf_.x[7];
-  double w = ekf_.x[8];
-  double fi = ekf_.x[9];
-  double t = lasttime_ + dt;
+  const double a = ekf_.x[7];
+  const double w = ekf_.x[8];
+  const double fi = ekf_.x[9];
+  const double t0 = lasttime_;
+  const double t1 = t0 + dt;
+  if (!std::isfinite(t1) || !std::isfinite(a) || !std::isfinite(w) ||
+      !std::isfinite(fi) || std::abs(w) < 1e-6) {
+    return;
+  }
+
+  const double phase0 = w * t0 + fi;
+  const double phase1 = w * t1 + fi;
+  if (!std::isfinite(phase0) || !std::isfinite(phase1)) return;
+  const double cos_phase0 = std::cos(phase0);
+  const double cos_phase1 = std::cos(phase1);
+  const double sin_phase0 = std::sin(phase0);
+  const double sin_phase1 = std::sin(phase1);
+  const double roll_da = -cos_phase1 / w + cos_phase0 / w - dt;
+  const double roll_dw =
+    a / (w * w) * (cos_phase1 - cos_phase0) +
+    a / w * (t1 * sin_phase1 - t0 * sin_phase0);
+  const double roll_dfi = a / w * (sin_phase1 - sin_phase0);
+
   // clang-format off
   A_ << 1.0,  dt, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,//R_yaw
         0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,//v_R_yaw
         0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,//R_pitch
         0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,//R_dis
         0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,//yaw
-        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, rotation_direction * dt , 0.0, 0.0, 0.0,//row
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, sin(w * t + fi) - 1, t * a * cos(w * t + fi), a * cos(w * t + fi),//spd
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, rotation_direction * roll_da, rotation_direction * roll_dw, rotation_direction * roll_dfi,//roll
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, sin_phase1 - 1, t1 * a * cos_phase1, a * cos_phase1,//spd
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,//a
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,//w
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0;//theta
@@ -532,22 +550,34 @@ void BigTarget::predict(double dt)
             // 0.0,     0.0, 0.0, 0.0, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0;
   auto f = [&](const Eigen::VectorXd & x) -> Eigen::VectorXd {
     Eigen::VectorXd x_prior = x;
+    const double state_a = x[7];
+    const double state_w = x[8];
+    const double state_fi = x[9];
+    const double state_phase0 = state_w * t0 + state_fi;
+    const double state_phase1 = state_w * t1 + state_fi;
     x_prior[0] = tools::limit_rad(x_prior[0] + dt * x_prior[1]);
     x_prior[2] = tools::limit_rad(x_prior[2]);
     x_prior[4] = tools::limit_rad(x_prior[4]); // yaw
-    x_prior[5] = tools::limit_rad(x_prior[5] + rotation_direction *
-    (-a / w * std::cos(w * t + fi) + a / w * std::cos(w * lasttime_ + fi) + (2.09 - a) * dt)); // roll
-    x_prior[6] = a * sin(w * t + fi) + 2.09 - a; // spd
+    x_prior[5] = tools::limit_rad(
+      x_prior[5] + rotation_direction *
+        (-state_a / state_w * std::cos(state_phase1) +
+         state_a / state_w * std::cos(state_phase0) + (2.09 - state_a) * dt));
+    x_prior[6] = state_a * std::sin(state_phase1) + 2.09 - state_a;
     return x_prior;
   };
   // clang-format on
+  if (!A_.allFinite() || !Q_.allFinite()) return;
   ekf_.predict(A_, Q_, f);
+  // Keep the model time aligned with the state so successive flight-time predictions compose.
+  lasttime_ = t1;
 }
 
 void BigTarget::init(double nowtime, const PowerRune & p)
 {
   // 初始化内部变量
   voter.reset();
+  spd_fitter_.reset();
+  fit_spd_ = 0.0;
   rotation_direction_ = 0;
   lasttime_ = nowtime;
   unsolvable_ = true;
@@ -647,8 +677,6 @@ void BigTarget::update(double nowtime, const PowerRune & p)
     rotation_direction_ = voter.clockwise();
   }
 
-  auto anglelast = ekf_.x[5];  ///
-
   // 预测下一个状态
   predict(nowtime - lasttime_);
 
@@ -740,12 +768,7 @@ void BigTarget::update(double nowtime, const PowerRune & p)
     nowtime, spd_fitter_.best_result_.A, spd_fitter_.best_result_.omega,
     spd_fitter_.best_result_.phi, spd_fitter_.best_result_.C);
 
-  const int rotation_direction = rotation_direction_ != 0
-                                   ? rotation_direction_
-                                   : (voter.votes() == 0 ? 1 : voter.clockwise());
-  spd = rotation_direction * (ekf_.x[5] - anglelast) / (nowtime - lasttime_);  // 仅供调试
-  spd = fit_spd_;
-  if (std::abs(spd) > 4) spd = 0;
+  spd = std::isfinite(fit_spd_) && std::abs(fit_spd_) <= 4.0 ? fit_spd_ : 0.0;
 
   // 更新lasttime
   lasttime_ = nowtime;

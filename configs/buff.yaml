@@ -32,8 +32,18 @@ szu_pose_reacquire_after_rejections: 20
 smallbuff_static_model: false           # true=静止模型；false=默认旋转模型
 yaw_offset: 0.0                        # 度
 pitch_offset: 0.0                      # 度
-fire_gap_time: 0.700                   # 同一扇叶连续开火间隔，秒
 predict_time: 0.20                    # 打符预测提前量，秒
+
+# 打符开火建议（只影响小符/大符；最终是否允许发射仍由 controller.yaml 的 fire_gate 把关）
+fire_advice:
+  smallbuff:
+    max_angle_step_deg: 5.0            # 连续帧预测瞄准角最大变化量，超过后重新累计稳定帧
+    stable_frames: 2                   # 满足角度连续性的最少帧数，2 表示至少观察到一帧稳定变化
+    min_interval_s: 0.700              # 已通过最终对齐门控后的最小建议间隔；首发不等待
+  bigbuff:
+    max_angle_step_deg: 5.0
+    stable_frames: 2
+    min_interval_s: 0.700
 
 # controller.yaml 使用 MPC 时生效；静止小符跟踪固定点，旋转小符和大符跟踪各自模型的动态预测轨迹。
 # 加速度单位 rad/s^2；速度单位 deg/s；误差增益单位 1/s。

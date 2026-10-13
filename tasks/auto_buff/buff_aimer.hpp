@@ -26,11 +26,18 @@ struct AimMotionCommand
 };
 
 // Aimer 的两个状态语义必须分开：control 表示瞄准角是否通过换叶片保护，
-// shoot 表示本帧是否刚好满足开火间隔。MPC 只需要其中的 shoot。
+// shoot 表示本帧是否满足开火条件，最终对齐门控接受后再提交间隔。
 struct FireDecision
 {
   bool control = false;
   bool shoot = false;
+};
+
+struct FireAdviceProfile
+{
+  double max_angle_step_rad = 5.0 * 3.14159265358979323846 / 180.0;
+  int stable_frames = 2;
+  double min_interval_s = 0.7;
 };
 
 class Aimer
@@ -51,7 +58,10 @@ public:
     bool to_now = true, bool enable_motion_feedforward = true);
 
   // MPC 模式只复用 Aimer 的换叶片/开火状态机，不再重复计算瞄准角和运动前馈。
-  FireDecision fireAdvice(double yaw, double pitch, std::chrono::steady_clock::time_point now);
+  FireDecision fireAdvice(
+    PowerRune_type type, double yaw, double pitch,
+    std::chrono::steady_clock::time_point now);
+  void commitFireAdvice(bool accepted, std::chrono::steady_clock::time_point now);
   void resetFireState();
 
   double last_distance() const { return last_distance_; }
@@ -64,7 +74,8 @@ private:
   double yaw_offset_;
   double pitch_offset_;
 
-  double fire_gap_time_;
+  FireAdviceProfile small_fire_profile_;
+  FireAdviceProfile big_fire_profile_;
   double predict_time_;
   double motion_difference_time_ = 0.12;
   double motion_max_yaw_velocity_rad_s_ = 120.0 * 3.14159265358979323846 / 180.0;
@@ -81,9 +92,18 @@ private:
   double last_distance_ = 0;
 
   std::chrono::steady_clock::time_point last_fire_t_;
+  bool has_fired_ = false;
+  PowerRune_type fire_mode_ = SMALL;
+  bool has_fire_sample_ = false;
+  int fire_stable_frames_ = 0;
+  double fire_last_yaw_ = 0.0;
+  double fire_last_pitch_ = 0.0;
+  bool pending_fire_advice_ = false;
 
   bool updateControlState(double yaw, double pitch);
-  bool consumeFireAdvice(std::chrono::steady_clock::time_point now);
+  bool evaluateFireAdvice(
+    PowerRune_type type, double yaw, double pitch,
+    std::chrono::steady_clock::time_point now);
 
   bool get_send_angle(
     auto_buff::Target & target, const double predict_time, const double bullet_speed,

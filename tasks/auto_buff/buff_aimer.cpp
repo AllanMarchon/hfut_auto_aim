@@ -5,6 +5,7 @@
 #include "tools/trajectory.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace auto_buff
@@ -14,8 +15,30 @@ Aimer::Aimer(const std::string & config_path)
   auto yaml = YAML::LoadFile(config_path);
   yaw_offset_ = yaml["yaw_offset"].as<double>() / 57.3;      // degree to rad
   pitch_offset_ = yaml["pitch_offset"].as<double>() / 57.3;  // degree to rad
-  fire_gap_time_ = yaml["fire_gap_time"].as<double>();
   predict_time_ = yaml["predict_time"].as<double>();
+  const double legacy_fire_gap = yaml["fire_gap_time"].as<double>(0.7);
+  const auto fire_advice = yaml["fire_advice"];
+  const auto load_fire_profile = [&](const char * key) {
+    FireAdviceProfile profile;
+    profile.min_interval_s = legacy_fire_gap;
+    const auto node = fire_advice[key];
+    if (node) {
+      profile.max_angle_step_rad =
+        node["max_angle_step_deg"].as<double>(5.0) * 3.14159265358979323846 / 180.0;
+      profile.stable_frames = node["stable_frames"].as<int>(2);
+      profile.min_interval_s = node["min_interval_s"].as<double>(legacy_fire_gap);
+    }
+    if (!std::isfinite(profile.max_angle_step_rad) || profile.max_angle_step_rad <= 0.0 ||
+        profile.max_angle_step_rad > 3.14159265358979323846 || profile.stable_frames < 1 ||
+        !std::isfinite(profile.min_interval_s) || profile.min_interval_s < 0.0) {
+      throw std::invalid_argument(
+        std::string("buff.fire_advice.") + key +
+        " 参数无效：max_angle_step_deg 必须在 (0, 180]，stable_frames >= 1，min_interval_s >= 0");
+    }
+    return profile;
+  };
+  small_fire_profile_ = load_fire_profile("smallbuff");
+  big_fire_profile_ = load_fire_profile("bigbuff");
   const auto motion_feedforward = yaml["motion_feedforward"];
   if (motion_feedforward) {
     motion_feedforward_enabled_ =
@@ -40,8 +63,6 @@ Aimer::Aimer(const std::string & config_path)
       motion_max_pitch_acceleration_rad_s2_ <= 0.0) {
     throw std::invalid_argument("打符运动前馈的差分间隔、速度和加速度上限必须是有限正数");
   }
-
-  last_fire_t_ = std::chrono::steady_clock::now();
 }
 
 io::Command Aimer::aimPoint(const Eigen::Vector3d & aim_point_world, double bullet_speed)
@@ -71,7 +92,10 @@ io::Command Aimer::aim(
   double bullet_speed, bool to_now)
 {
   io::Command command = {false, false, 0, 0};
-  if (target.is_unsolve()) return command;
+  if (target.is_unsolve()) {
+    resetFireState();
+    return command;
+  }
 
   // 如果子弹速度小于10，将其设为24
   if (bullet_speed < 10) bullet_speed = 24;
@@ -88,15 +112,19 @@ io::Command Aimer::aim(
     command.horizon_distance = last_distance_;
     // control 是角度/换叶片保护状态，不能被开火间隔状态覆盖。
     command.control = updateControlState(yaw, pitch);
+    const auto type = dynamic_cast<BigTarget *>(&target) != nullptr ? BIG : SMALL;
+    const bool fire_ready = evaluateFireAdvice(type, yaw, pitch, now);
+    command.shoot = command.control && fire_ready;
+  } else {
+    resetFireState();
   }
-
-  command.shoot = consumeFireAdvice(now);
 
   return command;
 }
 
 FireDecision Aimer::fireAdvice(
-  double yaw, double pitch, std::chrono::steady_clock::time_point now)
+  PowerRune_type type, double yaw, double pitch,
+  std::chrono::steady_clock::time_point now)
 {
   FireDecision result;
   if (!std::isfinite(yaw) || !std::isfinite(pitch)) {
@@ -105,7 +133,8 @@ FireDecision Aimer::fireAdvice(
   }
 
   result.control = updateControlState(yaw, pitch);
-  result.shoot = consumeFireAdvice(now);
+  const bool fire_ready = evaluateFireAdvice(type, yaw, pitch, now);
+  result.shoot = result.control && fire_ready;
   return result;
 }
 
@@ -133,25 +162,54 @@ bool Aimer::updateControlState(double yaw, double pitch)
   }
 }
 
-bool Aimer::consumeFireAdvice(std::chrono::steady_clock::time_point now)
+bool Aimer::evaluateFireAdvice(
+  PowerRune_type type, double yaw, double pitch,
+  std::chrono::steady_clock::time_point now)
 {
-  if (switch_fanblade_) {
-    last_fire_t_ = now;
-    return false;
+  const auto & profile = type == BIG ? big_fire_profile_ : small_fire_profile_;
+  if (!has_fire_sample_ || type != fire_mode_) {
+    fire_mode_ = type;
+    has_fire_sample_ = true;
+    fire_stable_frames_ = 1;
+    fire_last_yaw_ = yaw;
+    fire_last_pitch_ = pitch;
+    pending_fire_advice_ = false;
+  } else {
+    const double yaw_step = std::abs(tools::limit_rad(yaw - fire_last_yaw_));
+    const double pitch_step = std::abs(pitch - fire_last_pitch_);
+    if (yaw_step <= profile.max_angle_step_rad && pitch_step <= profile.max_angle_step_rad) {
+      ++fire_stable_frames_;
+    } else {
+      fire_stable_frames_ = 1;
+    }
+    fire_last_yaw_ = yaw;
+    fire_last_pitch_ = pitch;
   }
-  if (tools::delta_time(now, last_fire_t_) > fire_gap_time_) {
+
+  const bool stable = fire_stable_frames_ >= profile.stable_frames;
+  const bool interval_elapsed =
+    !has_fired_ || tools::delta_time(now, last_fire_t_) >= profile.min_interval_s;
+  pending_fire_advice_ = stable && interval_elapsed;
+  return pending_fire_advice_;
+}
+
+void Aimer::commitFireAdvice(
+  bool accepted, std::chrono::steady_clock::time_point now)
+{
+  if (pending_fire_advice_ && accepted) {
     last_fire_t_ = now;
-    return true;
+    has_fired_ = true;
   }
-  return false;
+  pending_fire_advice_ = false;
 }
 
 void Aimer::resetFireState()
 {
   mistake_count_ = 0;
   switch_fanblade_ = true;
-  // 重获前禁止开火；下一帧先重新建立角度稳定状态。
-  last_fire_t_ = std::chrono::steady_clock::now();
+  has_fire_sample_ = false;
+  fire_stable_frames_ = 0;
+  pending_fire_advice_ = false;
 }
 
 AimMotionCommand Aimer::aimWithMotion(
@@ -229,54 +287,53 @@ bool Aimer::get_send_angle(
   auto_buff::Target & target, const double predict_time, const double bullet_speed,
   const bool to_now, double & yaw, double & pitch)
 {
-  // 考虑detecor所消耗的时间，此外假设aimer的用时可忽略不计
-  // 如果 to_now 为 true，则根据当前时间和时间戳预测目标位置,deltatime = 现在时间减去当时照片时间，加上0.1
-  target.predict(predict_time);
-  // std::cout << "gap: " << detect_now_gap << std::endl;
-  angle = target.ekf_x()[5];
+  const auto solve = [&](auto & prediction_target) {
+    prediction_target.predict(predict_time);
+    angle = prediction_target.ekf_x()[5];
 
-  // 计算目标点的空间坐标
-  auto aim_in_world = target.point_buff2world(Eigen::Vector3d(0.0, 0.0, 0.7));
-  double d = std::sqrt(aim_in_world[0] * aim_in_world[0] + aim_in_world[1] * aim_in_world[1]);
-  double h = aim_in_world[2];
+    auto aim_in_world =
+      prediction_target.point_buff2world(Eigen::Vector3d(0.0, 0.0, 0.7));
+    double d = std::hypot(aim_in_world[0], aim_in_world[1]);
+    double h = aim_in_world[2];
+    tools::Trajectory trajectory0(bullet_speed, d, h);
+    if (trajectory0.unsolvable) {
+      tools::logger()->debug(
+        "[Aimer] Unsolvable trajectory0: {:.2f} {:.2f} {:.2f}", bullet_speed, d, h);
+      last_distance_ = 0;
+      return false;
+    }
 
-  // 创建弹道对象
-  tools::Trajectory trajectory0(bullet_speed, d, h);
-  if (trajectory0.unsolvable) {  // 如果弹道无法解算，返回未命中结果
-    tools::logger()->debug(
-      "[Aimer] Unsolvable trajectory0: {:.2f} {:.2f} {:.2f}", bullet_speed, d, h);
-    last_distance_ = 0;
-    return false;
+    prediction_target.predict(trajectory0.fly_time);
+    angle = prediction_target.ekf_x()[5];
+    aim_in_world = prediction_target.point_buff2world(Eigen::Vector3d(0.0, 0.0, 0.7));
+    d = std::hypot(aim_in_world[0], aim_in_world[1]);
+    h = aim_in_world[2];
+    tools::Trajectory trajectory1(bullet_speed, d, h);
+    if (trajectory1.unsolvable) {
+      tools::logger()->debug(
+        "[Aimer] Unsolvable trajectory1: {:.2f} {:.2f} {:.2f}", bullet_speed, d, h);
+      last_distance_ = 0;
+      return false;
+    }
+
+    const double time_error = trajectory1.fly_time - trajectory0.fly_time;
+    if (std::abs(time_error) > 0.01) {
+      tools::logger()->debug("[Aimer] Large time error: {:.3f}", time_error);
+      return false;
+    }
+
+    yaw = std::atan2(aim_in_world[1], aim_in_world[0]) + yaw_offset_;
+    pitch = trajectory1.pitch + pitch_offset_;
+    last_distance_ = d;
+    return true;
+  };
+
+  // Legacy Aimer takes a target by reference; keep its BigTarget forecast off the live tracker.
+  if (auto * big_target = dynamic_cast<auto_buff::BigTarget *>(&target)) {
+    auto prediction_target = *big_target;
+    return solve(prediction_target);
   }
-
-  // 根据第一个弹道飞行时间预测目标位置
-  target.predict(trajectory0.fly_time);
-  angle = target.ekf_x()[5];
-
-  // 计算新的目标点的空间坐标
-  aim_in_world = target.point_buff2world(Eigen::Vector3d(0.0, 0.0, 0.7));
-  d = std::sqrt(aim_in_world[0] * aim_in_world[0] + aim_in_world[1] * aim_in_world[1]);
-  h = aim_in_world[2];
-  tools::Trajectory trajectory1(bullet_speed, d, h);
-  if (trajectory1.unsolvable) {  // 如果弹道无法解算，返回未命中结果
-    tools::logger()->debug(
-      "[Aimer] Unsolvable trajectory1: {:.2f} {:.2f} {:.2f}", bullet_speed, d, h);
-    last_distance_ = 0;
-    return false;
-  }
-
-  // 计算时间误差
-  auto time_error = trajectory1.fly_time - trajectory0.fly_time;
-  if (std::abs(time_error) > 0.01) {  // 如果时间误差过大，返回未命中结果
-    tools::logger()->debug("[Aimer] Large time error: {:.3f}", time_error);
-    return false;
-  }
-
-  // 计算偏航角和俯仰角，并返回命中结果
-  yaw = std::atan2(aim_in_world[1], aim_in_world[0]) + yaw_offset_;
-  pitch = trajectory1.pitch + pitch_offset_;
-  last_distance_ = d;
-  return true;
+  return solve(target);
 };
 
 }  // namespace auto_buff

@@ -18,6 +18,12 @@ RansacSineFitter::RansacSineFitter(
 {
 }
 
+void RansacSineFitter::reset()
+{
+  fit_data_.clear();
+  best_result_ = {};
+}
+
 void RansacSineFitter::add_data(double t, double v)
 {
   if (fit_data_.size() > 0 && (t - fit_data_.back().first > 5)) fit_data_.clear();
@@ -26,6 +32,7 @@ void RansacSineFitter::add_data(double t, double v)
 
 void RansacSineFitter::fit()
 {
+  best_result_ = {};
   if (fit_data_.size() < 3) return;
 
   std::uniform_real_distribution<double> omega_dist(min_omega_, max_omega_);

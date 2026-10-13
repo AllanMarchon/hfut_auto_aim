@@ -431,7 +431,8 @@ BuffMpcPlan SmallBuffController::update(
   // MpcPlanner 的 pitch 是世界坐标约定（向上为负），Aimer 状态机沿用
   // 原来的正俯仰角约定，因此只在状态机边界做一次取反。
   const auto fire = aimer_.fireAdvice(
-    result.plan.target_yaw, -result.plan.target_pitch, std::chrono::steady_clock::now());
+    SMALL, result.plan.target_yaw, -result.plan.target_pitch,
+    std::chrono::steady_clock::now());
   result.plan.fire = fire.shoot;
   return result;
 }
@@ -448,7 +449,8 @@ BuffMpcPlan SmallBuffController::updateStaticPoint(
   }
 
   const auto fire = aimer_.fireAdvice(
-    result.plan.target_yaw, -result.plan.target_pitch, std::chrono::steady_clock::now());
+    SMALL, result.plan.target_yaw, -result.plan.target_pitch,
+    std::chrono::steady_clock::now());
   result.plan.fire = fire.shoot;
   return result;
 }
@@ -481,7 +483,8 @@ BuffMpcPlan BigBuffController::update(
   }
 
   const auto fire = aimer_.fireAdvice(
-    result.plan.target_yaw, -result.plan.target_pitch, std::chrono::steady_clock::now());
+    BIG, result.plan.target_yaw, -result.plan.target_pitch,
+    std::chrono::steady_clock::now());
   result.plan.fire = fire.shoot;
   return result;
 }

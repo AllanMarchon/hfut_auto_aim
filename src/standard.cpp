@@ -1839,6 +1839,7 @@ int run(const Options& options) {
         buff_big_target->get_target(power_rune, timestamp);
         buff_tracking_ready = buff_big_target->is_tracking_ready();
       }
+      if (!buff_tracking_ready && buff_aimer) buff_aimer->resetFireState();
       track_end = std::chrono::steady_clock::now();
 
       aim_start = track_end;
@@ -2077,6 +2078,11 @@ int run(const Options& options) {
       serial_send_ok = false;
     }
     const auto serial_tx_end = std::chrono::steady_clock::now();
+    if (use_buff_task && buff_aimer) {
+      // 打符只在最终云台对齐门控放行后消耗开火间隔；普通自瞄不走此状态。
+      buff_aimer->commitFireAdvice(
+          command.fire_advice && serial_send_ok, serial_tx_end);
+    }
 
     ++frames;
     ++processed;
