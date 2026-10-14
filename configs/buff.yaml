@@ -30,9 +30,21 @@ szu_pose_reacquire_after_rejections: 20
 
 # 瞄准与控制
 smallbuff_static_model: false           # true=静止模型；false=默认旋转模型
-yaw_offset: 0.0                        # 度
-pitch_offset: 0.0                      # 度
+#yaw pitch的正方向是左上
+yaw_offset: 3.0                        # 度
+pitch_offset: 3.2                     # 度
 predict_time: 0.20                    # 打符预测提前量，秒
+
+# 目标叶片保护：实际开火后短时间内拒绝重新锁回同一条符盘相位。
+# 只作用于打符检测器，普通自瞄不读取这里。
+target_guard:
+  enable: true
+  smallbuff:
+    cooldown_s: 1.00                   # 开火后的短暂防重锁窗口；未确认命中时保留补打机会
+    phase_tolerance_deg: 28.0          # 保护相位容差
+  bigbuff:
+    cooldown_s: 1.00
+    phase_tolerance_deg: 28.0
 
 # 打符开火建议（只影响小符/大符；最终是否允许发射仍由 controller.yaml 的 fire_gate 把关）
 fire_advice:

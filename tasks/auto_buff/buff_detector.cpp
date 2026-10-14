@@ -64,6 +64,34 @@ Buff_Detector::Buff_Detector(const std::string & config)
     yaml, "szu_r_center_max_spread_px", szu_r_center_max_spread_px_);
   szu_min_target_radius_px_ = yaml_double(
     yaml, "szu_min_target_radius_px", szu_min_target_radius_px_);
+
+  const auto target_guard = yaml["target_guard"];
+  if (target_guard) {
+    const bool global_enabled = yaml_bool(target_guard, "enable", true);
+    const std::array<const char *, 2> names{"smallbuff", "bigbuff"};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      const auto profile_node = target_guard[names[i]];
+      target_guard_profiles_[i].enabled =
+        yaml_bool(profile_node, "enable", global_enabled);
+      target_guard_profiles_[i].cooldown_s = yaml_double(
+        profile_node, "cooldown_s", target_guard_profiles_[i].cooldown_s);
+      const double tolerance_deg = yaml_double(
+        profile_node, "phase_tolerance_deg",
+        target_guard_profiles_[i].phase_tolerance_rad * 180.0 / CV_PI);
+      target_guard_profiles_[i].phase_tolerance_rad = tolerance_deg * CV_PI / 180.0;
+    }
+  }
+  for (std::size_t i = 0; i < target_guard_profiles_.size(); ++i) {
+    const auto & profile = target_guard_profiles_[i];
+    if (!std::isfinite(profile.cooldown_s) || profile.cooldown_s < 0.0 ||
+        !std::isfinite(profile.phase_tolerance_rad) ||
+        profile.phase_tolerance_rad <= 0.0 ||
+        profile.phase_tolerance_rad >= 36.0 * CV_PI / 180.0) {
+      throw std::invalid_argument(
+        std::string("buff.target_guard.") + (i == 0 ? "smallbuff" : "bigbuff") +
+        " 参数无效：cooldown_s >= 0，phase_tolerance_deg 必须在 (0, 36)，避免误拦相邻扇叶");
+    }
+  }
   if (!std::isfinite(szu_r_center_max_spread_px_) || szu_r_center_max_spread_px_ <= 0.0 ||
       !std::isfinite(szu_min_target_radius_px_) || szu_min_target_radius_px_ <= 0.0) {
     throw std::invalid_argument("SZU R 点几何阈值必须是有限正数");
@@ -73,6 +101,91 @@ Buff_Detector::Buff_Detector(const std::string & config)
   } else {
     sp25_detector_ = std::make_unique<YOLO11_BUFF>(config);
   }
+}
+
+std::size_t Buff_Detector::guard_index(PowerRune_type rune_type)
+{
+  return rune_type == BIG ? 1U : 0U;
+}
+
+double Buff_Detector::wrap_phase(double phase_rad)
+{
+  return std::atan2(std::sin(phase_rad), std::cos(phase_rad));
+}
+
+bool Buff_Detector::blocked_after_fire(
+  PowerRune_type rune_type, double phase_rad,
+  std::chrono::steady_clock::time_point now) const
+{
+  const auto index = guard_index(rune_type);
+  const auto & profile = target_guard_profiles_[index];
+  const auto & state = target_guard_states_[index];
+  if (!profile.enabled || state.fired_leaves.empty() || !std::isfinite(phase_rad)) return false;
+
+  for (const auto & fired : state.fired_leaves) {
+    const double age = std::chrono::duration<double>(now - fired.fired_time).count();
+    if (!std::isfinite(age) || age < 0.0 || age > profile.cooldown_s) continue;
+    const double predicted_phase = fired.phase_rad + fired.phase_velocity_rad_s * age;
+    if (std::abs(wrap_phase(phase_rad - predicted_phase)) <= profile.phase_tolerance_rad) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void Buff_Detector::update_target_phase(
+  PowerRune_type rune_type, double phase_rad,
+  std::chrono::steady_clock::time_point now)
+{
+  if (!std::isfinite(phase_rad)) return;
+  const auto index = guard_index(rune_type);
+  auto & state = target_guard_states_[index];
+  const auto & profile = target_guard_profiles_[index];
+  while (!state.fired_leaves.empty()) {
+    const double age = std::chrono::duration<double>(now - state.fired_leaves.front().fired_time).count();
+    if (std::isfinite(age) && age <= profile.cooldown_s) break;
+    state.fired_leaves.pop_front();
+  }
+  phase_rad = wrap_phase(phase_rad);
+  if (state.phase_valid) {
+    const double dt = std::chrono::duration<double>(now - state.phase_time).count();
+    const double delta = wrap_phase(phase_rad - state.phase_rad);
+    // 目标切叶时相位会跳约 72 度；这类跳变不能污染同一叶片的转速估计。
+    if (std::isfinite(dt) && dt >= 1e-3 && dt <= 0.5 && std::abs(delta) <= CV_PI / 2.0) {
+      const double instant_velocity = delta / dt;
+      if (std::isfinite(instant_velocity) && std::abs(instant_velocity) <= 8.0) {
+        state.phase_velocity_rad_s =
+          0.75 * state.phase_velocity_rad_s + 0.25 * instant_velocity;
+      }
+    }
+  }
+  state.phase_rad = phase_rad;
+  state.phase_time = now;
+  state.phase_valid = true;
+}
+
+void Buff_Detector::notify_fire(PowerRune_type rune_type)
+{
+  const auto index = guard_index(rune_type);
+  auto & state = target_guard_states_[index];
+  if (!state.phase_valid) return;
+  const auto now = std::chrono::steady_clock::now();
+  const double phase_age = std::chrono::duration<double>(now - state.phase_time).count();
+  const double fired_phase = wrap_phase(
+    state.phase_rad + state.phase_velocity_rad_s *
+      (std::isfinite(phase_age) && phase_age > 0.0 ? phase_age : 0.0));
+  state.fired_leaves.push_back(
+    {fired_phase, state.phase_velocity_rad_s, now});
+  const auto & profile = target_guard_profiles_[index];
+  while (!state.fired_leaves.empty()) {
+    const double age = std::chrono::duration<double>(now - state.fired_leaves.front().fired_time).count();
+    if (std::isfinite(age) && age <= profile.cooldown_s) break;
+    state.fired_leaves.pop_front();
+  }
+  tools::logger()->debug(
+    "[Buff_Detector] {} target fire guard phase={:.1f}deg speed={:.1f}deg/s",
+    rune_type == BIG ? "big" : "small", fired_phase * 180.0 / CV_PI,
+    state.phase_velocity_rad_s * 180.0 / CV_PI);
 }
 
 void Buff_Detector::handle_img(const cv::Mat & bgr_img, cv::Mat & dilated_img)
@@ -174,6 +287,7 @@ std::optional<PowerRune> Buff_Detector::detect(cv::Mat & bgr_img, PowerRune_type
 
 std::optional<PowerRune> Buff_Detector::detect_sp25(cv::Mat & bgr_img, bool multi_candidate)
 {
+  const auto now = std::chrono::steady_clock::now();
   /// onnx 模型检测
 
   if (!sp25_detector_) sp25_detector_ = std::make_unique<YOLO11_BUFF>(config_path_);
@@ -199,12 +313,41 @@ std::optional<PowerRune> Buff_Detector::detect_sp25(cv::Mat & bgr_img, bool mult
 
   /// 生成PowerRune
   auto r_center = get_r_center(fanblades, bgr_img);
+  const auto rune_type = multi_candidate ? BIG : SMALL;
+  const auto guard_profile = target_guard_profiles_[guard_index(rune_type)];
+  if (guard_profile.enabled && std::isfinite(r_center.x) && std::isfinite(r_center.y)) {
+    auto selected_target = fanblades.end();
+    for (auto it = fanblades.begin(); it != fanblades.end(); ++it) {
+      const double phase = std::atan2(
+        static_cast<double>(it->center.y - r_center.y),
+        static_cast<double>(it->center.x - r_center.x));
+      if (!blocked_after_fire(rune_type, phase, now)) {
+        selected_target = it;
+        break;
+      }
+    }
+    if (selected_target == fanblades.end()) {
+      tools::logger()->debug("[Buff_Detector] SP25 all candidates blocked after fire");
+      handle_lose();
+      return std::nullopt;
+    }
+    for (auto & blade : fanblades) blade.type = _light;
+    selected_target->type = _target;
+  }
   PowerRune powerrune(fanblades, r_center, last_powerrune_);
 
   /// handle error
   if (powerrune.is_unsolve()) {
     handle_lose();
     return std::nullopt;
+  }
+
+  if (!powerrune.fanblades.empty()) {
+    const auto & target_center = powerrune.fanblades.front().center;
+    const double target_phase = std::atan2(
+      static_cast<double>(target_center.y - r_center.y),
+      static_cast<double>(target_center.x - r_center.x));
+    update_target_phase(rune_type, target_phase, now);
   }
 
   status_ = TRACK;
@@ -218,6 +361,7 @@ std::optional<PowerRune> Buff_Detector::detect_sp25(cv::Mat & bgr_img, bool mult
 std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_type rune_type)
 {
   if (!szu_detector_) return std::nullopt;
+  const auto now = std::chrono::steady_clock::now();
   const auto results = szu_detector_->detect(bgr_img, rune_type == BIG);
   const auto & stats = szu_detector_->debug_stats();
   if (results.empty()) {
@@ -283,8 +427,6 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
     return std::nullopt;
   }
 
-  std::vector<FanBlade> fanblades;
-  fanblades.reserve(target_fanblades.size() + other_fanblades.size());
   std::sort(target_fanblades.begin(), target_fanblades.end(), [](const FanBlade & a, const FanBlade & b) {
     return a.confidence > b.confidence;
   });
@@ -296,10 +438,41 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
       });
     if (closest_target != target_fanblades.end()) std::iter_swap(target_fanblades.begin(), closest_target);
   }
+  cv::Point2f r_center = r_center_sum * static_cast<float>(1.0 / quality_sum);
+  const auto guard_profile = target_guard_profiles_[guard_index(rune_type)];
+  std::size_t blocked_target_count = 0;
+  if (guard_profile.enabled && std::isfinite(r_center.x) && std::isfinite(r_center.y)) {
+    target_fanblades.erase(
+      std::remove_if(
+        target_fanblades.begin(), target_fanblades.end(), [&](FanBlade & blade) {
+          const double phase = std::atan2(
+            static_cast<double>(blade.center.y - r_center.y),
+            static_cast<double>(blade.center.x - r_center.x));
+          if (!blocked_after_fire(rune_type, phase, now)) return false;
+          ++blocked_target_count;
+          target_r_samples.erase(
+            std::remove_if(
+              target_r_samples.begin(), target_r_samples.end(), [&](const TargetRSample & sample) {
+                return cv::norm(sample.blade_center - blade.center) <= 1.0;
+              }),
+            target_r_samples.end());
+          blade.type = _light;
+          other_fanblades.emplace_back(std::move(blade));
+          return true;
+        }),
+      target_fanblades.end());
+  }
+  if (target_fanblades.empty()) {
+    log_szu_debug(
+      blocked_target_count > 0 ? "target_blocked_after_fire" : "target_missing",
+      stats, results.size(), 0, other_fanblades.size());
+    handle_lose();
+    return std::nullopt;
+  }
+  std::vector<FanBlade> fanblades;
+  fanblades.reserve(target_fanblades.size() + other_fanblades.size());
   fanblades.insert(fanblades.end(), target_fanblades.begin(), target_fanblades.end());
   fanblades.insert(fanblades.end(), other_fanblades.begin(), other_fanblades.end());
-
-  cv::Point2f r_center = r_center_sum * static_cast<float>(1.0 / quality_sum);
   std::vector<cv::Point2f> rp26_pose_image_points;
   bool rp26_pose_valid = false;
   if (!target_fanblades.empty()) {
@@ -308,8 +481,14 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
     const auto selected_result = std::min_element(
       results.begin(), results.end(), [&](const SzuRuneDetector::Detection & a,
                                           const SzuRuneDetector::Detection & b) {
-        const bool a_target = classify_szu_blade(a.class_id, rune_type) == _target;
-        const bool b_target = classify_szu_blade(b.class_id, rune_type) == _target;
+        const auto is_active_candidate = [&](const SzuRuneDetector::Detection & detection) {
+          return std::any_of(
+            target_fanblades.begin(), target_fanblades.end(), [&](const FanBlade & blade) {
+              return cv::norm(blade.center - detection.center) <= 1.0;
+            });
+        };
+        const bool a_target = is_active_candidate(a);
+        const bool b_target = is_active_candidate(b);
         if (a_target != b_target) return a_target;
         return cv::norm(a.center - selected_target_center) <
                cv::norm(b.center - selected_target_center);
@@ -398,10 +577,21 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
 
   status_ = TRACK;
   lose_ = 0;
+  if (!powerrune.fanblades.empty() && std::isfinite(r_center.x) && std::isfinite(r_center.y)) {
+    const auto & selected_target_center = powerrune.fanblades.front().center;
+    update_target_phase(
+      rune_type,
+      std::atan2(
+        static_cast<double>(selected_target_center.y - r_center.y),
+        static_cast<double>(selected_target_center.x - r_center.x)),
+      now);
+  }
   std::optional<PowerRune> P;
   P.emplace(powerrune);
   last_powerrune_ = P;
-  log_szu_debug("ok", stats, results.size(), target_fanblades.size(), other_fanblades.size());
+  log_szu_debug(
+    blocked_target_count > 0 ? "target_filtered_after_fire" : "ok", stats,
+    results.size(), target_fanblades.size(), other_fanblades.size());
   return P;
 }
 

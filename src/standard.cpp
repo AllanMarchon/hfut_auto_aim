@@ -2080,8 +2080,14 @@ int run(const Options& options) {
     const auto serial_tx_end = std::chrono::steady_clock::now();
     if (use_buff_task && buff_aimer) {
       // 打符只在最终云台对齐门控放行后消耗开火间隔；普通自瞄不走此状态。
-      buff_aimer->commitFireAdvice(
-          command.fire_advice && serial_send_ok, serial_tx_end);
+      const bool fire_accepted = command.fire_advice && serial_send_ok &&
+          (options.dry_run || options.serial_send);
+      buff_aimer->commitFireAdvice(fire_accepted, serial_tx_end);
+      const bool actual_fire_accepted = fire_accepted && !options.dry_run && options.serial_send;
+      if (actual_fire_accepted && buff_detector) {
+        buff_detector->notify_fire(
+          options.aim_task == "bigbuff" ? auto_buff::BIG : auto_buff::SMALL);
+      }
     }
 
     ++frames;
