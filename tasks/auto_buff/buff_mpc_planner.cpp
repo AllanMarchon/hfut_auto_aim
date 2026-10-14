@@ -155,10 +155,18 @@ MpcPlanner::MpcPlanner(
   const auto buff = YAML::LoadFile(buff_config);
   yaw_offset_ = buff["yaw_offset"].as<double>(0.0) * kDegToRad;
   pitch_offset_ = buff["pitch_offset"].as<double>(0.0) * kDegToRad;
-  predict_time_ = buff["predict_time"].as<double>(predict_time_);
+  const char * prediction_key = use_smallbuff_overrides
+                                  ? "smallbuff_predict_time"
+                                  : "bigbuff_predict_time";
+  predict_time_ = buff[prediction_key]
+                    ? buff[prediction_key].as<double>()
+                    : buff["predict_time"].as<double>(predict_time_);
+  constexpr double kMaxAbsPredictionTime = 0.5;
   if (!std::isfinite(yaw_offset_) || !std::isfinite(pitch_offset_) ||
-      !std::isfinite(predict_time_) || predict_time_ < 0.0) {
-    throw std::invalid_argument("打符 MPC 的偏移和预测时间必须是有限数，预测时间不能为负");
+      !std::isfinite(predict_time_) || std::abs(predict_time_) > kMaxAbsPredictionTime) {
+    throw std::invalid_argument(
+      std::string("打符 MPC 的偏移必须是有限数，") + prediction_key +
+      " 必须是 [-0.5, 0.5] 秒范围内的有限数");
   }
 }
 

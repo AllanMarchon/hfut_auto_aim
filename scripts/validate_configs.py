@@ -433,6 +433,20 @@ def validate_controller(report: Report, config: Any) -> None:
         )
 
 
+def validate_buff(report: Report, config: Any) -> None:
+    if not isinstance(config, dict):
+        report.error("buff.yaml 必须是 YAML 对象")
+        return
+
+    for key in ("predict_time", "smallbuff_predict_time", "bigbuff_predict_time"):
+        if key not in config:
+            continue
+        value = config[key]
+        require_number(report, value, f"buff.{key}")
+        if is_finite_number(value) and abs(float(value)) > 0.5:
+            report.error(f"buff.{key} 必须在 [-0.5, 0.5] 秒范围内")
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="校验 HFUT 适配版 SP25 配置。")
     parser.add_argument("--config-dir", type=Path, default=Path("configs"))
@@ -456,6 +470,9 @@ def main(argv: list[str]) -> int:
         validate_standard3(report, repo_root, configs["standard3.yaml"])
     if configs.get("controller.yaml") is not None:
         validate_controller(report, configs["controller.yaml"])
+    buff_path = config_dir / "buff.yaml"
+    if buff_path.exists():
+        validate_buff(report, load_yaml(buff_path, report))
 
     report.info("配置校验目标：SP25 核心 + HFUT 海康相机/串口/Web 可视化适配")
     report.print()
