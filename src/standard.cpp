@@ -439,7 +439,8 @@ class FinalVelocityAccelerationAdapter {
 
   void reset() { have_last_ = false; }
 
-  void apply(hfut::GimbalCommand& command, std::chrono::steady_clock::time_point now) {
+  void apply(hfut::GimbalCommand& command, std::chrono::steady_clock::time_point now,
+             bool enforce_velocity_ramp = false) {
     if (command.mode != hfut::GimbalMode::normal_measurement) {
       command.yaw_acc = 0.0;
       command.pitch_acc = 0.0;
@@ -447,7 +448,7 @@ class FinalVelocityAccelerationAdapter {
       return;
     }
     if (!have_last_) {
-      if (enforce_velocity_ramp_) {
+      if (enforce_velocity_ramp_ || enforce_velocity_ramp) {
         // 重获后的首帧没有上一帧速度，按 60 Hz 的保守步长从零开始，
         // 避免反馈误差补偿在重获瞬间直接打满。
         const double max_yaw_velocity_step = config_.max_yaw_acc_rad_s2 / 60.0;
@@ -471,7 +472,7 @@ class FinalVelocityAccelerationAdapter {
       return;
     }
 
-    if (enforce_velocity_ramp_) {
+    if (enforce_velocity_ramp_ || enforce_velocity_ramp) {
       // 小符 MPC 的反馈误差补偿在本适配器之前叠加；速度字段本身也必须
       // 遵守同一条加速度斜坡，否则只限制 acc 字段仍可能让下位机瞬时冲变。
       const double max_yaw_velocity_step = config_.max_yaw_acc_rad_s2 * dt;
@@ -517,7 +518,7 @@ struct SmallBuffFinalGuardResult {
 // 打符各 MPC/静止控制分支共用的最终角度保护，确保串口目标受反馈相对角限制。
 SmallBuffFinalGuardResult applySmallBuffFinalAngleGuard(
     hfut::GimbalCommand& command, const hfut::io::SerialFeedback& feedback,
-    const CommandLimiterConfig& config) {
+    const CommandLimiterConfig& config, bool preserve_velocity_when_limited) {
   SmallBuffFinalGuardResult result;
   if (command.mode != hfut::GimbalMode::normal_measurement) return result;
 
@@ -558,14 +559,33 @@ SmallBuffFinalGuardResult applySmallBuffFinalAngleGuard(
     result.yaw_limited = std::abs(yaw_diff - limited_yaw_diff) > 1e-9;
     result.pitch_limited = std::abs(pitch_diff - limited_pitch_diff) > 1e-9;
 
+    const auto limited_velocity = [](double planned_velocity, double limited_diff,
+                                     double error_gain, double max_velocity) {
+      const double feedback_velocity = error_gain * limited_diff;
+      double velocity = planned_velocity;
+      if (!std::isfinite(velocity) || velocity * limited_diff <= 0.0 ||
+          std::abs(velocity) < std::abs(feedback_velocity)) {
+        velocity = feedback_velocity;
+      }
+      return std::clamp(velocity, -max_velocity, max_velocity);
+    };
+
     if (result.yaw_limited) {
       command.yaw = tools::limit_rad(feedback.yaw_rad + limited_yaw_diff);
-      command.yaw_vel = 0.0;
+      command.yaw_vel = preserve_velocity_when_limited
+          ? limited_velocity(command.yaw_vel, limited_yaw_diff,
+                             config.serial_command_yaw_error_gain,
+                             config.serial_command_max_yaw_velocity_rad_s)
+          : 0.0;
       command.yaw_acc = 0.0;
     }
     if (result.pitch_limited) {
       command.pitch = feedback.pitch_rad + limited_pitch_diff;
-      command.pitch_vel = 0.0;
+      command.pitch_vel = preserve_velocity_when_limited
+          ? limited_velocity(command.pitch_vel, limited_pitch_diff,
+                             config.serial_command_pitch_error_gain,
+                             config.serial_command_max_pitch_velocity_rad_s)
+          : 0.0;
       command.pitch_acc = 0.0;
     }
   }
@@ -2008,7 +2028,9 @@ int run(const Options& options) {
       command.pitch_vel = std::clamp(command.pitch_vel,
                                      -active_limiter_config->serial_command_max_pitch_velocity_rad_s,
                                      active_limiter_config->serial_command_max_pitch_velocity_rad_s);
-      active_mpc_motion_adapter->apply(command, command_time);
+      if (options.aim_task != "smallbuff") {
+        active_mpc_motion_adapter->apply(command, command_time);
+      }
     } else if (smallbuff_static_control) {
       // 静止小符沿用普通自瞄的单一保护器输出，避免再叠加一套角度滤波状态。
       buff_motion_applied = command_guard.apply(
@@ -2038,11 +2060,10 @@ int run(const Options& options) {
           use_buff_task && buff_motion.motion_valid);
     }
     if (use_buff_mpc_output) {
-      // MPC 输出自带速度轨迹，不叠加小符反馈误差速度斜坡。
+      // 打符 MPC 适配器延后到最终角度保护后，确保速度/加速度对应实际下发角度。
       buff_motion_adapter.reset();
     } else if (options.aim_task == "smallbuff") {
-      // 非 MPC 小符路径使用专用速度斜坡；MPC 路径保留规划器生成的速度轨迹。
-      buff_motion_adapter.apply(command, command_time);
+      // 小符速度适配器同样延后到最终角度保护后执行。
       active_mpc_motion_adapter->reset();
     } else if (use_buff_task) {
       // 没有有效的打符 MPC 计划时清空适配器状态，避免大符重获目标后
@@ -2070,13 +2091,24 @@ int run(const Options& options) {
       } else {
         // 串口出口再做一次硬限角，不能让前级滤波状态把打符命令带离反馈角保护范围。
         smallbuff_final_guard = applySmallBuffFinalAngleGuard(
-            command, latest_feedback, *active_limiter_config);
+            command, latest_feedback, *active_limiter_config,
+            options.aim_task == "smallbuff");
       }
       if (smallbuff_final_guard.yaw_limited || smallbuff_final_guard.pitch_limited) {
-        buff_motion_adapter.reset();
-        active_mpc_motion_adapter->reset();
+        if (options.aim_task != "smallbuff") {
+          buff_motion_adapter.reset();
+          active_mpc_motion_adapter->reset();
+        }
         command_guard.synchronize(command, command_time);
       }
+    }
+    if (use_buff_mpc_output && options.aim_task == "smallbuff") {
+      // 角度被安全限幅时，速度也按上一帧实际下发值经过加速度斜坡。
+      active_mpc_motion_adapter->apply(
+          command, command_time,
+          smallbuff_final_guard.yaw_limited || smallbuff_final_guard.pitch_limited);
+    } else if (options.aim_task == "smallbuff" && !use_buff_mpc_output) {
+      buff_motion_adapter.apply(command, command_time);
     }
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
