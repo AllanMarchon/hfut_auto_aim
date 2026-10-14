@@ -172,6 +172,10 @@ def validate_hardware(report: Report, repo_root: Path, hardware: Any, camera_inf
     require_number(report, camera.get("height"), "hardware.camera.height", positive=True)
     require_number(report, camera.get("fps"), "hardware.camera.fps", positive=True)
     require_number(report, camera.get("exposure_time_us"), "hardware.camera.exposure_time_us", positive=True)
+    if "buff_exposure_time_us" in camera:
+        require_number(
+            report, camera.get("buff_exposure_time_us"),
+            "hardware.camera.buff_exposure_time_us", positive=True)
     require_number(report, camera.get("gain"), "hardware.camera.gain")
     require_bool(report, camera.get("flip_image"), "hardware.camera.flip_image")
     require_choice(report, camera.get("calibration_mode"), "hardware.camera.calibration_mode", {"strict", "scale", "center_crop"})

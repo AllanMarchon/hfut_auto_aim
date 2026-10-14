@@ -315,6 +315,7 @@ std::optional<PowerRune> Buff_Detector::detect_sp25(cv::Mat & bgr_img, bool mult
   auto r_center = get_r_center(fanblades, bgr_img);
   const auto rune_type = multi_candidate ? BIG : SMALL;
   const auto guard_profile = target_guard_profiles_[guard_index(rune_type)];
+  bool fire_suppressed_by_target_guard = false;
   if (guard_profile.enabled && std::isfinite(r_center.x) && std::isfinite(r_center.y)) {
     auto selected_target = fanblades.end();
     for (auto it = fanblades.begin(); it != fanblades.end(); ++it) {
@@ -327,14 +328,15 @@ std::optional<PowerRune> Buff_Detector::detect_sp25(cv::Mat & bgr_img, bool mult
       }
     }
     if (selected_target == fanblades.end()) {
-      tools::logger()->debug("[Buff_Detector] SP25 all candidates blocked after fire");
-      handle_lose();
-      return std::nullopt;
+      // Keep tracking the current target and suppress only the fire advice.
+      selected_target = fanblades.begin();
+      fire_suppressed_by_target_guard = true;
     }
     for (auto & blade : fanblades) blade.type = _light;
     selected_target->type = _target;
   }
   PowerRune powerrune(fanblades, r_center, last_powerrune_);
+  powerrune.fire_suppressed_by_target_guard = fire_suppressed_by_target_guard;
 
   /// handle error
   if (powerrune.is_unsolve()) {
@@ -441,26 +443,36 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   cv::Point2f r_center = r_center_sum * static_cast<float>(1.0 / quality_sum);
   const auto guard_profile = target_guard_profiles_[guard_index(rune_type)];
   std::size_t blocked_target_count = 0;
+  bool fire_suppressed_by_target_guard = false;
   if (guard_profile.enabled && std::isfinite(r_center.x) && std::isfinite(r_center.y)) {
-    target_fanblades.erase(
-      std::remove_if(
-        target_fanblades.begin(), target_fanblades.end(), [&](FanBlade & blade) {
-          const double phase = std::atan2(
-            static_cast<double>(blade.center.y - r_center.y),
-            static_cast<double>(blade.center.x - r_center.x));
-          if (!blocked_after_fire(rune_type, phase, now)) return false;
-          ++blocked_target_count;
-          target_r_samples.erase(
-            std::remove_if(
-              target_r_samples.begin(), target_r_samples.end(), [&](const TargetRSample & sample) {
-                return cv::norm(sample.blade_center - blade.center) <= 1.0;
-              }),
-            target_r_samples.end());
-          blade.type = _light;
-          other_fanblades.emplace_back(std::move(blade));
-          return true;
-        }),
-      target_fanblades.end());
+    const auto is_blocked_target = [&](const FanBlade & blade) {
+      const double phase = std::atan2(
+        static_cast<double>(blade.center.y - r_center.y),
+        static_cast<double>(blade.center.x - r_center.x));
+      return blocked_after_fire(rune_type, phase, now);
+    };
+    blocked_target_count = static_cast<std::size_t>(
+      std::count_if(target_fanblades.begin(), target_fanblades.end(), is_blocked_target));
+    if (blocked_target_count == target_fanblades.size()) {
+      // Keep a valid target observation for pose/tracking continuity, but do not fire at it.
+      fire_suppressed_by_target_guard = true;
+    } else if (blocked_target_count > 0) {
+      target_fanblades.erase(
+        std::remove_if(
+          target_fanblades.begin(), target_fanblades.end(), [&](FanBlade & blade) {
+            if (!is_blocked_target(blade)) return false;
+            target_r_samples.erase(
+              std::remove_if(
+                target_r_samples.begin(), target_r_samples.end(), [&](const TargetRSample & sample) {
+                  return cv::norm(sample.blade_center - blade.center) <= 1.0;
+                }),
+              target_r_samples.end());
+            blade.type = _light;
+            other_fanblades.emplace_back(std::move(blade));
+            return true;
+          }),
+        target_fanblades.end());
+    }
   }
   if (target_fanblades.empty()) {
     log_szu_debug(
@@ -551,6 +563,7 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
     return std::nullopt;
   }
   PowerRune powerrune(fanblades, r_center, last_powerrune_);
+  powerrune.fire_suppressed_by_target_guard = fire_suppressed_by_target_guard;
   powerrune.observation_quality = quality_sum / static_cast<double>(r_center_count);
   powerrune.r_center_consistency_px = target_radius;
   powerrune.r_center_spread_px = r_center_spread;
@@ -589,9 +602,11 @@ std::optional<PowerRune> Buff_Detector::detect_szu(cv::Mat & bgr_img, PowerRune_
   std::optional<PowerRune> P;
   P.emplace(powerrune);
   last_powerrune_ = P;
+  const char * guard_stage = fire_suppressed_by_target_guard
+                               ? "target_fire_suppressed"
+                               : (blocked_target_count > 0 ? "target_filtered_after_fire" : "ok");
   log_szu_debug(
-    blocked_target_count > 0 ? "target_filtered_after_fire" : "ok", stats,
-    results.size(), target_fanblades.size(), other_fanblades.size());
+    guard_stage, stats, results.size(), target_fanblades.size(), other_fanblades.size());
   return P;
 }
 

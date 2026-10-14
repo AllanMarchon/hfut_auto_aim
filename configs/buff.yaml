@@ -32,11 +32,11 @@ szu_pose_reacquire_after_rejections: 20
 smallbuff_static_model: false           # true=静止模型；false=默认旋转模型
 #yaw pitch的正方向是左上
 yaw_offset: 3.0                        # 度
-pitch_offset: 3.2                     # 度
-predict_time: 0.20                    # 打符预测提前量，秒
+pitch_offset: 3.8                      # 度
+predict_time: 0.0                   # 打符预测提前量，秒
 
-# 目标叶片保护：实际开火后短时间内拒绝重新锁回同一条符盘相位。
-# 只作用于打符检测器，普通自瞄不读取这里。
+# 目标叶片保护：优先切换未保护相位；全部受保护时继续跟踪，但抑制开火建议。
+# 只作用于打符链路，普通自瞄不读取这里。
 target_guard:
   enable: true
   smallbuff:
@@ -60,8 +60,8 @@ fire_advice:
 # controller.yaml 使用 MPC 时生效；静止小符跟踪固定点，旋转小符和大符跟踪各自模型的动态预测轨迹。
 # 加速度单位 rad/s^2；速度单位 deg/s；误差增益单位 1/s。
 smallbuff_mpc:
-  max_yaw_acceleration: 140.0
-  max_pitch_acceleration: 145.0
+  max_yaw_acceleration: 100.0
+  max_pitch_acceleration: 100.0
   yaw_error_gain: 2.0
   pitch_error_gain: 2.0
   max_yaw_velocity: 80.0

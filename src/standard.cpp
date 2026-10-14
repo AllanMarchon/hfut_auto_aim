@@ -80,6 +80,9 @@ struct Options {
   int camera_height{0};
   double camera_fps{0.0};
   double camera_exposure_time_us{0.0};
+  double autoaim_camera_exposure_time_us{0.0};
+  double buff_camera_exposure_time_us{0.0};
+  bool camera_exposure_overridden{false};
   double camera_gain{0.0};
   bool camera_flip_image{false};
   std::string camera_info_path;
@@ -893,8 +896,11 @@ void loadHardwareConfig(Options& options) {
     options.camera_width = parseInt(camera["width"], options.camera_width);
     options.camera_height = parseInt(camera["height"], options.camera_height);
     options.camera_fps = parseDouble(camera["fps"], options.camera_fps);
-    options.camera_exposure_time_us =
+    options.autoaim_camera_exposure_time_us =
         parseDouble(camera["exposure_time_us"], options.camera_exposure_time_us);
+    options.buff_camera_exposure_time_us = parseDouble(
+        camera["buff_exposure_time_us"], options.autoaim_camera_exposure_time_us);
+    options.camera_exposure_time_us = options.autoaim_camera_exposure_time_us;
     options.camera_gain = parseDouble(camera["gain"], options.camera_gain);
     options.camera_flip_image = parseBool(camera["flip_image"], options.camera_flip_image);
     options.camera_info_path = parseString(camera["camera_info"], options.camera_info_path);
@@ -978,7 +984,7 @@ Options parseOptions(int argc, char** argv) {
           "  --camera-sn SN           海康相机序列号，留空取第一台\n"
           "  --camera-index N         OpenCV 设备序号\n"
           "  --camera-info PATH       ROS camera_info YAML\n"
-          "  --exposure-time-us US    工业相机曝光覆盖\n"
+          "  --exposure-time-us US    覆盖当前任务的工业相机曝光\n"
           "  --gain VALUE             工业相机增益覆盖\n"
           "  --flip-image             旋转工业相机画面 180 度\n"
           "  --serial-port PATH       串口设备\n"
@@ -1032,6 +1038,7 @@ Options parseOptions(int argc, char** argv) {
       options.camera_info_path = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--exposure-time-us"); !value.empty()) {
       options.camera_exposure_time_us = std::stod(value);
+      options.camera_exposure_overridden = true;
     } else if (auto value = optionValue(argc, argv, i, arg, "--gain"); !value.empty()) {
       options.camera_gain = std::stod(value);
     } else if (auto value = optionValue(argc, argv, i, arg, "--serial-port"); !value.empty()) {
@@ -1082,6 +1089,14 @@ Options parseOptions(int argc, char** argv) {
   if (options.aim_task != "autoaim" && options.aim_task != "smallbuff" &&
       options.aim_task != "bigbuff") {
     throw std::invalid_argument("任务模式必须是 autoaim/smallbuff/bigbuff");
+  }
+  if (!options.camera_exposure_overridden) {
+    options.camera_exposure_time_us = isBuffTask(options)
+        ? options.buff_camera_exposure_time_us
+        : options.autoaim_camera_exposure_time_us;
+  }
+  if (!std::isfinite(options.camera_exposure_time_us) || options.camera_exposure_time_us < 0.0) {
+    throw std::invalid_argument("当前任务相机曝光必须是有限非负数");
   }
   if (options.serial_read_timeout_ms < 0) {
     throw std::invalid_argument("串口读取超时必须 >= 0");
@@ -1580,11 +1595,12 @@ int run(const Options& options) {
 
   std::printf(
       "[standard] camera=%s serial=%s:%s@%d read_timeout=%dms write_timeout=%dms "
-      "task=%s dry_run=%s serial_send=%s fire=%s enemy=%s bullet=%.2f\n",
+      "task=%s exposure=%.0fus dry_run=%s serial_send=%s fire=%s enemy=%s bullet=%.2f\n",
       options.camera_backend.c_str(), hfut::io::infantryPacketLayoutName(serial_config.tx_layout),
       options.serial_port.c_str(), options.serial_baudrate, options.serial_read_timeout_ms,
       options.serial_write_timeout_ms,
       options.aim_task.c_str(),
+      options.camera_exposure_time_us,
       options.dry_run ? "true" : "false",
       options.serial_send ? "true" : "false",
       options.enable_fire ? "enabled" : "disabled",
@@ -2064,6 +2080,10 @@ int run(const Options& options) {
     }
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
+    const bool target_guard_fire_blocked =
+        use_buff_task && power_rune.has_value() &&
+        power_rune->fire_suppressed_by_target_guard;
+    if (target_guard_fire_blocked) command.fire_advice = false;
     const FireGateResult fire_gate = applyFireGate(
         command, raw_desired_yaw, raw_desired_pitch, *active_limiter_config);
     const bool fire_advice = use_buff_mpc_output ? buff_mpc_output.plan.fire : sp_command.shoot;
@@ -2202,7 +2222,7 @@ int run(const Options& options) {
           "smallbuff_guard=%d/%d distance=%.3f "
           "%s "
           "pnp_ypr=%.1f/%.1f/%.1fdeg "
-          "sp_fire=%d fire=%d gate=%d latency=%.1fms "
+          "sp_fire=%d fire=%d gate=%d target_guard=%d latency=%.1fms "
           "timing=rx %.1f cam %.1f det %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
           options.aim_task.c_str(), static_cast<unsigned long long>(frames), runtime_fps,
           detection_count, tracked_count,
@@ -2222,7 +2242,8 @@ int run(const Options& options) {
           command.distance, pnp_log_fields,
           pnp_yaw_deg, pnp_pitch_deg, pnp_roll_deg,
           fire_advice ? 1 : 0, command.fire_advice ? 1 : 0,
-          fire_gate.blocked ? 1 : 0, elapsedMs(detect_start, aim_end),
+          fire_gate.blocked ? 1 : 0, target_guard_fire_blocked ? 1 : 0,
+          elapsedMs(detect_start, aim_end),
           elapsedMs(serial_rx_start, serial_rx_end), elapsedMs(capture_start, capture_end),
           elapsedMs(detect_start, detect_end), elapsedMs(track_start, track_end),
           elapsedMs(aim_start, aim_end), elapsedMs(serial_tx_start, serial_tx_end),

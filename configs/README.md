@@ -11,7 +11,7 @@
 
 ## 运行时配置
 
-`src/standard.cpp` 启动后会读取 `hardware.yaml` 和 `camera_info.yaml`，再把相机内参、畸变、相机到枪管外参、敌方颜色和可选 OpenVINO device 写入 `build/sp25_runtime.yaml`。视觉算法模块实际读取这个运行时 YAML。
+`src/standard.cpp` 启动后会读取 `hardware.yaml` 和 `camera_info.yaml`，再把相机内参、畸变、相机到枪管外参、敌方颜色和可选 OpenVINO device 写入 `build/sp25_runtime.yaml`。视觉算法模块实际读取这个运行时 YAML。`hardware.camera.exposure_time_us` 用于普通自瞄，`buff_exposure_time_us` 用于小符和大符；启动参数 `--exposure-time-us` 可覆盖当前任务选中的曝光。
 
 这样做的目的是把上车经常变化的硬件参数集中在 `hardware.yaml`，让 `standard3.yaml` 主要负责算法参数。换相机、换串口、改外参时，一般不需要到算法配置里到处同步。
 

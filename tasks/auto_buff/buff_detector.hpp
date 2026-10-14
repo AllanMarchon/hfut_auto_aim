@@ -25,7 +25,7 @@ public:
 
   std::optional<PowerRune> detect(cv::Mat & bgr_img, PowerRune_type rune_type);
 
-  // 仅在串口实际放行一发后调用，用于避免视觉重识别时继续锁住刚激活的叶片。
+  // 仅在串口实际放行一发后调用，建立短暂的防重复开火相位记录。
   void notify_fire(PowerRune_type rune_type);
 
   std::optional<PowerRune> detect_24(cv::Mat & bgr_img);
