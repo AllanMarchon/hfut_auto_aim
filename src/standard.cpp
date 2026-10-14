@@ -1479,6 +1479,15 @@ int run(const Options& options) {
 
   const auto serial_config = makeSerialConfig(options);
   auto command_limiter_config = loadCommandLimiterConfig(options.controller_config);
+  bool smallbuff_static_model = false;
+  if (options.aim_task == "smallbuff") {
+    const auto buff_yaml = YAML::LoadFile(adapted_config_path);
+    if (buff_yaml["smallbuff_control_mode"]) {
+      throw std::invalid_argument(
+          "buff.smallbuff_control_mode 已更名为 smallbuff_static_model，请设置 true 或 false");
+    }
+    smallbuff_static_model = parseBool(buff_yaml["smallbuff_static_model"], false);
+  }
   if (options.aim_task == "smallbuff") {
     // 小符云台能力和反馈增益单独从 buff.yaml 读取，避免被普通自瞄的激进参数带着震动。
     const auto buff_mpc_overrides = auto_buff::loadSmallBuffMpcOverrides(adapted_config_path);
@@ -1497,6 +1506,16 @@ int run(const Options& options) {
       command_limiter_config.serial_command_pitch_error_gain =
         *buff_mpc_overrides.pitch_error_gain;
     }
+    if (!smallbuff_static_model) {
+      if (buff_mpc_overrides.rotating_yaw_error_gain.has_value()) {
+        command_limiter_config.serial_command_yaw_error_gain =
+          *buff_mpc_overrides.rotating_yaw_error_gain;
+      }
+      if (buff_mpc_overrides.rotating_pitch_error_gain.has_value()) {
+        command_limiter_config.serial_command_pitch_error_gain =
+          *buff_mpc_overrides.rotating_pitch_error_gain;
+      }
+    }
     if (buff_mpc_overrides.max_yaw_velocity_rad_s.has_value()) {
       command_limiter_config.serial_command_max_yaw_velocity_rad_s =
         *buff_mpc_overrides.max_yaw_velocity_rad_s;
@@ -1505,15 +1524,6 @@ int run(const Options& options) {
       command_limiter_config.serial_command_max_pitch_velocity_rad_s =
         *buff_mpc_overrides.max_pitch_velocity_rad_s;
     }
-  }
-  bool smallbuff_static_model = false;
-  if (options.aim_task == "smallbuff") {
-    const auto buff_yaml = YAML::LoadFile(adapted_config_path);
-    if (buff_yaml["smallbuff_control_mode"]) {
-      throw std::invalid_argument(
-          "buff.smallbuff_control_mode 已更名为 smallbuff_static_model，请设置 true 或 false");
-    }
-    smallbuff_static_model = parseBool(buff_yaml["smallbuff_static_model"], false);
   }
   const bool smallbuff_static_control = options.aim_task == "smallbuff" && smallbuff_static_model;
   const bool use_buff_mpc_planner =

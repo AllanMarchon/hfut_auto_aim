@@ -14,7 +14,7 @@
 namespace auto_buff
 {
 
-// 小符专用控制覆盖项。未填写的字段继续使用 controller.yaml 的值。
+// 小符专用控制覆盖项。未填写的字段继续使用 controller.yaml 的值；rotating_* 仅覆盖旋转模型。
 // 速度字段在读取 YAML 后统一转换为弧度每秒，便于直接送入控制器。
 struct SmallBuffMpcOverrides
 {
@@ -22,6 +22,8 @@ struct SmallBuffMpcOverrides
   std::optional<double> max_pitch_acceleration_rad_s2;
   std::optional<double> yaw_error_gain;
   std::optional<double> pitch_error_gain;
+  std::optional<double> rotating_yaw_error_gain;
+  std::optional<double> rotating_pitch_error_gain;
   std::optional<double> max_yaw_velocity_rad_s;
   std::optional<double> max_pitch_velocity_rad_s;
 };

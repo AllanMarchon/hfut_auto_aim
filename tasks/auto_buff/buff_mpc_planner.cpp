@@ -131,6 +131,8 @@ SmallBuffMpcOverrides loadSmallBuffMpcOverrides(const std::string & buff_config)
   result.max_pitch_acceleration_rad_s2 = readPositive("max_pitch_acceleration", "rad/s^2");
   result.yaw_error_gain = readNonNegative("yaw_error_gain");
   result.pitch_error_gain = readNonNegative("pitch_error_gain");
+  result.rotating_yaw_error_gain = readNonNegative("rotating_yaw_error_gain");
+  result.rotating_pitch_error_gain = readNonNegative("rotating_pitch_error_gain");
   const auto max_yaw_velocity_deg_s = readPositive("max_yaw_velocity", "deg/s");
   const auto max_pitch_velocity_deg_s = readPositive("max_pitch_velocity", "deg/s");
   if (max_yaw_velocity_deg_s.has_value()) {

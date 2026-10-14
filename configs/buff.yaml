@@ -66,6 +66,8 @@ smallbuff_mpc:
   max_pitch_acceleration: 100.0
   yaw_error_gain: 2.0
   pitch_error_gain: 2.0
+  rotating_yaw_error_gain: 4.0          # smallbuff_static_model=false 时覆盖上面的 yaw 增益
+  rotating_pitch_error_gain: 4.0       # smallbuff_static_model=false 时覆盖上面的 pitch 增益
   max_yaw_velocity: 80.0
   max_pitch_velocity: 60.0
 
