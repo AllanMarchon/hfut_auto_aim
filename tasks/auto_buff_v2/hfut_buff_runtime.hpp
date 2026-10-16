@@ -37,7 +37,7 @@ public:
   FrameResult process(const cv::Mat & image, auto_buff_v2::Timestamp timestamp,
                       const Eigen::Quaterniond & q_gimbal2world, bool enemy_red);
 
-  auto_aim::Plan plan(double bullet_speed, const io::GimbalState & gimbal,
+  auto_aim::Plan plan(double bullet_speed, const ::io::GimbalState & gimbal,
                       auto_buff_v2::Timestamp now);
 
   std::uint64_t target_generation() const { return target_generation_; }

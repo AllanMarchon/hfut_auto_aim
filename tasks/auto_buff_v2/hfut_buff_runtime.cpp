@@ -36,7 +36,7 @@ FrameResult Runtime::process(
 }
 
 auto_aim::Plan Runtime::plan(
-  double bullet_speed, const io::GimbalState & gimbal, auto_buff_v2::Timestamp now)
+  double bullet_speed, const ::io::GimbalState & gimbal, auto_buff_v2::Timestamp now)
 {
   return planner_->plan(target_generation_, model_->state(), bullet_speed, gimbal, now);
 }
