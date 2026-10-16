@@ -3,7 +3,7 @@
 
 namespace io
 {
-// 供 buff_v2 规划器使用的最小云台状态视图；真实 HFUT 串口反馈在
+// 供 buff 规划器使用的最小云台状态视图；真实 HFUT 串口反馈在
 // standard.cpp 边界处转换后再传入。
 struct GimbalState
 {

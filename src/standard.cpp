@@ -46,7 +46,7 @@
 #include "tasks/auto_aim/solver.hpp"
 #include "tasks/auto_aim/tracker.hpp"
 #include "tasks/auto_aim/yolo.hpp"
-#include "tasks/auto_buff_v2/hfut_buff_runtime.hpp"
+#include "tasks/auto_buff/hfut_buff_runtime.hpp"
 #include "tools/math_tools.hpp"
 
 namespace {
@@ -161,11 +161,11 @@ bool parseBool(const YAML::Node& node, bool fallback);
 double degToRad(double degrees);
 
 // 读取打符专用的云台控制参数，避免复用普通自瞄的控制调参。
-void loadBuffV2ControlConfig(
+void loadBuffControlConfig(
     const std::string& path, const std::string& aim_task, CommandLimiterConfig& config) {
   const YAML::Node root = YAML::LoadFile(path);
-  const YAML::Node buff_v2 = root["buff_v2"];
-  const YAML::Node control = buff_v2["control"];
+  const YAML::Node buff = root["buff"];
+  const YAML::Node control = buff["control"];
   if (!control) return;
 
   const YAML::Node profile = control[aim_task];
@@ -191,41 +191,41 @@ void loadBuffV2ControlConfig(
 
   config.max_yaw_acc_rad_s2 = readPositive(
       node["max_yaw_acceleration"], config.max_yaw_acc_rad_s2,
-      "buff_v2.control." + aim_task + ".max_yaw_acceleration");
+      "buff.control." + aim_task + ".max_yaw_acceleration");
   config.max_pitch_acc_rad_s2 = readPositive(
       node["max_pitch_acceleration"], config.max_pitch_acc_rad_s2,
-      "buff_v2.control." + aim_task + ".max_pitch_acceleration");
+      "buff.control." + aim_task + ".max_pitch_acceleration");
   config.serial_command_yaw_error_gain = readNonNegative(
       node["yaw_error_gain"], config.serial_command_yaw_error_gain,
-      "buff_v2.control." + aim_task + ".yaw_error_gain");
+      "buff.control." + aim_task + ".yaw_error_gain");
   config.serial_command_pitch_error_gain = readNonNegative(
       node["pitch_error_gain"], config.serial_command_pitch_error_gain,
-      "buff_v2.control." + aim_task + ".pitch_error_gain");
+      "buff.control." + aim_task + ".pitch_error_gain");
   config.serial_command_max_yaw_velocity_rad_s = degToRad(readPositive(
       node["max_yaw_velocity"], config.serial_command_max_yaw_velocity_rad_s * kRadToDeg,
-      "buff_v2.control." + aim_task + ".max_yaw_velocity"));
+      "buff.control." + aim_task + ".max_yaw_velocity"));
   config.serial_command_max_pitch_velocity_rad_s = degToRad(readPositive(
       node["max_pitch_velocity"], config.serial_command_max_pitch_velocity_rad_s * kRadToDeg,
-      "buff_v2.control." + aim_task + ".max_pitch_velocity"));
+      "buff.control." + aim_task + ".max_pitch_velocity"));
 
   const YAML::Node angle_limit = control["angle_limit"];
   if (angle_limit) {
     config.max_yaw_diff_rad = degToRad(readPositive(
         angle_limit["max_yaw_diff"], config.max_yaw_diff_rad * kRadToDeg,
-        "buff_v2.control.angle_limit.max_yaw_diff"));
+        "buff.control.angle_limit.max_yaw_diff"));
     config.max_pitch_diff_rad = degToRad(readPositive(
         angle_limit["max_pitch_diff"], config.max_pitch_diff_rad * kRadToDeg,
-        "buff_v2.control.angle_limit.max_pitch_diff"));
+        "buff.control.angle_limit.max_pitch_diff"));
   }
 
   const YAML::Node rate_limit = control["rate_limit"];
   if (rate_limit) {
     config.max_yaw_step_rad = degToRad(readPositive(
         rate_limit["max_yaw_step_deg"], config.max_yaw_step_rad * kRadToDeg,
-        "buff_v2.control.rate_limit.max_yaw_step_deg"));
+        "buff.control.rate_limit.max_yaw_step_deg"));
     config.max_pitch_step_rad = degToRad(readPositive(
         rate_limit["max_pitch_step_deg"], config.max_pitch_step_rad * kRadToDeg,
-        "buff_v2.control.rate_limit.max_pitch_step_deg"));
+        "buff.control.rate_limit.max_pitch_step_deg"));
   }
 
   const YAML::Node fire_gate = control["fire_gate"];
@@ -233,10 +233,10 @@ void loadBuffV2ControlConfig(
     config.enable_fire_gate = parseBool(fire_gate["enable"], config.enable_fire_gate);
     config.fire_yaw_tolerance_rad = degToRad(readPositive(
         fire_gate["yaw_tolerance"], config.fire_yaw_tolerance_rad * kRadToDeg,
-        "buff_v2.control.fire_gate.yaw_tolerance"));
+        "buff.control.fire_gate.yaw_tolerance"));
     config.fire_pitch_tolerance_rad = degToRad(readPositive(
         fire_gate["pitch_tolerance"], config.fire_pitch_tolerance_rad * kRadToDeg,
-        "buff_v2.control.fire_gate.pitch_tolerance"));
+        "buff.control.fire_gate.pitch_tolerance"));
   }
 }
 
@@ -1429,7 +1429,7 @@ void drawArmors(cv::Mat& image, const std::list<auto_aim::Armor>& armors) {
   }
 }
 
-void drawBuffV2(cv::Mat& image, const hfut::buff::Runtime & runtime) {
+void drawBuff(cv::Mat& image, const hfut::buff::Runtime & runtime) {
   const auto & elements = runtime.elements();
   for (const auto & candidate : elements.candidates) {
     const cv::Scalar color(80, 180, 255);
@@ -1490,12 +1490,12 @@ int run(const Options& options) {
       source_calibration, solver_width, solver_height, calibration_mode);
   const auto adapted_config_path = writeRuntimeSp25Config(options, solver_calibration, algorithm_config);
   const auto buff_root = YAML::LoadFile(adapted_config_path);
-  // smallbuff 和 bigbuff 统一使用 simple_auto_aim 的 v2 打符链路。
-  const bool use_buff_v2 = use_buff_task &&
+  // smallbuff 和 bigbuff 统一使用 simple_auto_aim 的打符链路。
+  const bool use_buff = use_buff_task &&
       (options.aim_task == "smallbuff" || options.aim_task == "bigbuff") &&
-      parseBool(buff_root["buff_v2"]["enabled"], true);
-  if (use_buff_task && !use_buff_v2) {
-    throw std::invalid_argument("当前打符入口只支持 buff_v2，请将 buff_v2.enabled 设置为 true");
+      parseBool(buff_root["buff"]["enabled"], true);
+  if (use_buff_task && !use_buff) {
+    throw std::invalid_argument("当前打符入口只支持 buff，请将 buff.enabled 设置为 true");
   }
 
   auto camera = createCameraSource(options, toIntrinsics(source_calibration));
@@ -1504,7 +1504,7 @@ int run(const Options& options) {
   const auto serial_config = makeSerialConfig(options);
   auto command_limiter_config = loadCommandLimiterConfig(options.controller_config);
   if (use_buff_task) {
-    loadBuffV2ControlConfig(adapted_config_path, options.aim_task, command_limiter_config);
+    loadBuffControlConfig(adapted_config_path, options.aim_task, command_limiter_config);
   }
   hfut::io::HfutSerialGimbalConfig gimbal_config;
   gimbal_config.serial = serial_config;
@@ -1528,10 +1528,10 @@ int run(const Options& options) {
           ? loadOutpostCommandLimiterConfig(options.controller_config, command_limiter_config)
           : command_limiter_config;
   SimpleCommandGuard command_guard(command_limiter_config);
-  // v2 打符路径在串口前额外限制速度斜率，避免模型重捕获或正弦拟合突变
+  // 打符路径在串口前额外限制速度斜率，避免模型重捕获或正弦拟合突变
   // 直接变成前馈力矩脉冲。
   FinalVelocityAccelerationAdapter buff_motion_adapter(
-      command_limiter_config, use_buff_v2);
+      command_limiter_config, use_buff);
   FinalVelocityAccelerationAdapter mpc_motion_adapter(command_limiter_config);
   FinalVelocityAccelerationAdapter outpost_mpc_motion_adapter(outpost_limiter_config);
 
@@ -1540,10 +1540,10 @@ int run(const Options& options) {
   std::unique_ptr<auto_aim::Tracker> tracker;
   std::unique_ptr<auto_aim::Aimer> aimer;
   std::unique_ptr<auto_aim::Shooter> shooter;
-  std::unique_ptr<hfut::buff::Runtime> buff_v2_runtime;
+  std::unique_ptr<hfut::buff::Runtime> buff_runtime;
   if (use_buff_task) {
     // bigbuff 通过 big_rune=true 启用正弦运动拟合和大符专用状态模型。
-    buff_v2_runtime = std::make_unique<hfut::buff::Runtime>(
+    buff_runtime = std::make_unique<hfut::buff::Runtime>(
         adapted_config_path, options.aim_task == "bigbuff");
   } else {
     detector = std::make_unique<auto_aim::YOLO>(adapted_config_path, false);
@@ -1640,9 +1640,9 @@ int run(const Options& options) {
       command_limiter_config.serial_command_max_yaw_velocity_rad_s * kRadToDeg,
       command_limiter_config.serial_command_max_pitch_velocity_rad_s * kRadToDeg);
   if (options.aim_task == "smallbuff") {
-    std::printf("[standard] smallbuff path=buff_v2\n");
+    std::printf("[standard] smallbuff path=buff\n");
   } else if (options.aim_task == "bigbuff") {
-    std::printf("[standard] bigbuff path=buff_v2 model=sine_fit\n");
+    std::printf("[standard] bigbuff path=buff model=sine_fit\n");
   }
   if (use_outpost_profile) {
     std::printf(
@@ -1777,46 +1777,46 @@ int run(const Options& options) {
     FinalVelocityAccelerationAdapter* active_mpc_motion_adapter = &mpc_motion_adapter;
     io::Command sp_command{false, false, 0.0, 0.0};
     auto_aim::Plan mpc_plan{};
-    auto_aim::Plan buff_v2_plan{};
+    auto_aim::Plan buff_plan{};
     bool have_mpc_plan = false;
 
     if (use_buff_task) {
-      const auto v2_start = std::chrono::steady_clock::now();
-      const auto v2_frame = buff_v2_runtime->process(
+      const auto buff_start = std::chrono::steady_clock::now();
+      const auto buff_frame = buff_runtime->process(
           frame.image, timestamp, feedbackQuaternion(aligned_feedback, command_limiter_config),
           options.enemy_color == "red");
       detect_end = std::chrono::steady_clock::now();
-      detection_count = static_cast<int>(v2_frame.bullseye_count + v2_frame.icon_count);
-      buff_tracking_ready = v2_frame.target.has_value();
+      detection_count = static_cast<int>(buff_frame.bullseye_count + buff_frame.icon_count);
+      buff_tracking_ready = buff_frame.target.has_value();
       track_start = detect_end;
       track_end = std::chrono::steady_clock::now();
       aim_start = track_end;
 
-      io::GimbalState v2_gimbal;
-      // v2 规划器与符模型使用同一个世界坐标系；先将 HFUT 串口反馈转换后，
+      io::GimbalState buff_gimbal;
+      // buff 规划器与符模型使用同一个世界坐标系；先将 HFUT 串口反馈转换后，
       // 再交给开火判定与规划结果进行比较。
-      v2_gimbal.yaw = static_cast<float>(
+      buff_gimbal.yaw = static_cast<float>(
           command_limiter_config.feedback_yaw_to_world_sign * aligned_feedback.yaw_rad);
       // HFUT 反馈没有提供云台 yaw 速度；chassis_wz 是底盘角速度，不能传给符瞄准器。
-      v2_gimbal.yaw_vel = 0.0F;
-      v2_gimbal.pitch = static_cast<float>(
+      buff_gimbal.yaw_vel = 0.0F;
+      buff_gimbal.pitch = static_cast<float>(
           command_limiter_config.sp_pitch_to_command_sign * aligned_feedback.pitch_rad);
-      v2_gimbal.pitch_vel = 0.0F;
-      v2_gimbal.bullet_speed = static_cast<float>(bullet_speed);
-      buff_v2_plan = buff_v2_runtime->plan(bullet_speed, v2_gimbal, timestamp);
-      command_distance = v2_frame.target
-          ? std::hypot(v2_frame.target->center.x(), v2_frame.target->center.y())
+      buff_gimbal.pitch_vel = 0.0F;
+      buff_gimbal.bullet_speed = static_cast<float>(bullet_speed);
+      buff_plan = buff_runtime->plan(bullet_speed, buff_gimbal, timestamp);
+      command_distance = buff_frame.target
+          ? std::hypot(buff_frame.target->center.x(), buff_frame.target->center.y())
           : 0.0;
-      sp_command.control = buff_v2_plan.control;
-      sp_command.shoot = buff_v2_plan.fire;
-      sp_command.yaw = buff_v2_plan.yaw;
-      sp_command.pitch = buff_v2_plan.pitch;
+      sp_command.control = buff_plan.control;
+      sp_command.shoot = buff_plan.fire;
+      sp_command.yaw = buff_plan.yaw;
+      sp_command.pitch = buff_plan.pitch;
       sp_command.horizon_distance = command_distance;
-      buff_motion_applied = buff_v2_plan.control;
+      buff_motion_applied = buff_plan.control;
       tracked_count = buff_tracking_ready ? 1 : 0;
       track_state = buff_tracking_ready ? "tracking" :
         (detection_count > 0 ? "detecting" : "lost");
-      buff_solver_ms = elapsedMs(v2_start, std::chrono::steady_clock::now());
+      buff_solver_ms = elapsedMs(buff_start, std::chrono::steady_clock::now());
     } else {
       solver->set_R_gimbal2world(feedbackQuaternion(aligned_feedback, command_limiter_config));
       armors = detector->detect(frame.image, static_cast<int>(frame.seq));
@@ -1869,11 +1869,11 @@ int run(const Options& options) {
     bool command_guard_applied = false;
     double raw_desired_yaw = command.yaw;
     double raw_desired_pitch = command.pitch;
-    if (use_buff_task && buff_v2_plan.control) {
-      command.yaw_vel = active_limiter_config->feedback_yaw_to_world_sign * buff_v2_plan.yaw_vel;
-      command.yaw_acc = active_limiter_config->feedback_yaw_to_world_sign * buff_v2_plan.yaw_acc;
-      command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * buff_v2_plan.pitch_vel;
-      command.pitch_acc = active_limiter_config->sp_pitch_to_command_sign * buff_v2_plan.pitch_acc;
+    if (use_buff_task && buff_plan.control) {
+      command.yaw_vel = active_limiter_config->feedback_yaw_to_world_sign * buff_plan.yaw_vel;
+      command.yaw_acc = active_limiter_config->feedback_yaw_to_world_sign * buff_plan.yaw_acc;
+      command.pitch_vel = active_limiter_config->sp_pitch_to_command_sign * buff_plan.pitch_vel;
+      command.pitch_acc = active_limiter_config->sp_pitch_to_command_sign * buff_plan.pitch_acc;
     }
     if (use_mpc_planner && have_mpc_plan) {
       command.yaw_vel = active_limiter_config->feedback_yaw_to_world_sign * mpc_plan.yaw_vel;
@@ -1896,10 +1896,10 @@ int run(const Options& options) {
     if (!use_mpc_planner && !command_guard_applied) {
       buff_motion_applied = command_guard.apply(
           command, latest_feedback, track_state, command_time,
-          use_buff_task && buff_v2_plan.control);
+          use_buff_task && buff_plan.control);
     }
     SmallBuffFinalGuardResult smallbuff_final_guard;
-    // v2 大符和小符共用串口出口的反馈相对角度硬限幅。
+    // 大符和小符共用串口出口的反馈相对角度硬限幅。
     const bool use_buff_final_guard = use_buff_task;
     if (use_buff_final_guard) {
       const auto command_feedback_age = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1920,7 +1920,7 @@ int run(const Options& options) {
         // 串口出口再做一次硬限角，不能让前级滤波状态把打符命令带离反馈角保护范围。
         smallbuff_final_guard = applySmallBuffFinalAngleGuard(
             command, latest_feedback, *active_limiter_config,
-            options.aim_task == "smallbuff" || use_buff_v2);
+            options.aim_task == "smallbuff" || use_buff);
       }
       if (smallbuff_final_guard.yaw_limited || smallbuff_final_guard.pitch_limited) {
         buff_motion_adapter.reset();
@@ -1929,7 +1929,7 @@ int run(const Options& options) {
       }
     }
     if (use_buff_task) {
-      // v2 小符和大符都保留模型给出的速度轨迹，同时限制速度变化率。
+      // 小符和大符都保留模型给出的速度轨迹，同时限制速度变化率。
       buff_motion_adapter.apply(command, command_time);
     }
     const double desired_yaw = command.yaw;
@@ -2005,7 +2005,7 @@ int run(const Options& options) {
     if (options.display || publish_visual_frame) {
       cv::Mat visual = frame.image.clone();
       if (use_buff_task) {
-        drawBuffV2(visual, *buff_v2_runtime);
+        drawBuff(visual, *buff_runtime);
       } else {
         drawArmors(visual, armors);
       }
@@ -2025,7 +2025,7 @@ int run(const Options& options) {
     if (visual_end - last_log > std::chrono::seconds(1)) {
       std::printf(
           "[standard] task=%s frames=%llu fps=%.1f detections=%d tracked=%d state=%s "
-           "buff_v2=%d "
+           "buff=%d "
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg "

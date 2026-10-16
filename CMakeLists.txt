@@ -104,8 +104,8 @@ target_link_libraries(auto_aim PUBLIC
   ${HFUT_SPDLOG_TARGET}
 )
 
-# 从 simple_auto_aim 移植的 buff_v2 链路，在 standard.cpp 边界完成 HFUT 适配。
-add_subdirectory(tasks/auto_buff_v2)
+# 从 simple_auto_aim 移植的 buff 链路，在 standard.cpp 边界完成 HFUT 适配。
+add_subdirectory(tasks/auto_buff)
 
 # HFUT 实车 IO：保留已跑通的海康相机、infantry 串口和 Web 可视化。
 add_library(hfut_real_io STATIC
@@ -159,7 +159,7 @@ target_include_directories(standard PRIVATE
 )
 target_link_libraries(standard PRIVATE
   auto_aim
-  auto_buff_v2
+  auto_buff
   tools
   hfut_real_io
   ${OpenCV_LIBS}

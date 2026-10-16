@@ -3,7 +3,7 @@
 # 这个文件保留旧工程 controller.yaml 的存放习惯。standard 默认使用
 # SP TinyMPC 二阶轨迹规划；必要时可通过 planner.mode 切回已跑通的
 # Aimer + 轻量保护链路。smallbuff/bigbuff 使用 configs/buff.yaml 的
-# buff_v2.control，不读取本文件中的普通自瞄控制数值。
+# buff.control，不读取本文件中的普通自瞄控制数值。
 # 串口打包格式仍由 hardware.yaml 的 serial 段决定。
 gimbal_pipeline:
   ros__parameters:

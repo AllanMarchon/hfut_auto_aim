@@ -2,7 +2,7 @@
 # standard 启动时从 hardware.yaml 同步相机内参、畸变和相机到枪管外参。
 
 # 打符后端。standard 对 smallbuff/bigbuff 默认启用。
-buff_v2:
+buff:
   enabled: true
   planner_mode: njust
   model:
