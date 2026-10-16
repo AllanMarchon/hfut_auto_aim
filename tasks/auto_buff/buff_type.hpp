@@ -88,6 +88,8 @@ public:
   RPointDiagnostics r_point_diagnostics;
   // Keep this observation for control, but suppress firing for the current frame.
   bool fire_suppressed_by_target_guard = false;
+  // 目标切换到相邻叶片时置位，首帧 MPC 需要重新以当前云台反馈对齐。
+  bool target_phase_discontinuity = false;
 
   // RP26 语义轮廓分支提供的姿态锚点。它们只用于小符解算，不改变普通自瞄链路。
   std::vector<cv::Point2f> rp26_pose_image_points;
