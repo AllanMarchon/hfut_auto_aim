@@ -1,8 +1,9 @@
-# SP25 实车入口 standard 的控制输出配置。
+# SP25 实车入口 standard 的普通自瞄控制输出配置。
 #
 # 这个文件保留旧工程 controller.yaml 的存放习惯。standard 默认使用
 # SP TinyMPC 二阶轨迹规划；必要时可通过 planner.mode 切回已跑通的
-# Aimer + 轻量保护链路。
+# Aimer + 轻量保护链路。smallbuff/bigbuff 使用 configs/buff.yaml 的
+# buff_v2.control，不读取本文件中的普通自瞄控制数值。
 # 串口打包格式仍由 hardware.yaml 的 serial 段决定。
 gimbal_pipeline:
   ros__parameters:
@@ -13,8 +14,7 @@ gimbal_pipeline:
       planner:
         mode: mpc
 
-      # SP TinyMPC 参数。普通自瞄使用时由 auto_aim::Planner 读取；
-      # smallbuff 使用同一组二阶约束和权重生成小符参考轨迹。
+      # SP TinyMPC 参数，仅普通自瞄使用。
       # yaw_offset / pitch_offset 单位：度；max_*_acc 单位：rad/s²。
       # MPC 模式下 max_*_acc 同时作为 TinyMPC 内部约束和最终串口下发云台加速度限幅。
       mpc_planner:

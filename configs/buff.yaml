@@ -1,8 +1,7 @@
 # 26 赛季打符配置：日常调参项放前面，固定实现参数使用代码默认值。
 # standard 启动时从 hardware.yaml 同步相机内参、畸变和相机到枪管外参。
 
-# simple_auto_aim 打符后端。standard 对 smallbuff/bigbuff 默认启用，
-# 旧 auto_buff 链路仍保留，便于现场快速回退。
+# 打符后端。standard 对 smallbuff/bigbuff 默认启用。
 buff_v2:
   enabled: true
   planner_mode: njust
@@ -24,11 +23,11 @@ buff_v2:
     ballistic:
       type: vacuum
     njust:
-      shoot_delay: 0.04
-      rune_idle_duration: 0.4
-      rune_shoot_duration: 0.2
-      yaw_tolerance: 0.11
-      pitch_tolerance: 0.11
+      shoot_delay: 0.04          # 发射延迟，单位秒
+      rune_idle_duration: 0.4    # 符叶周期的等待时间，单位秒
+      rune_shoot_duration: 0.2   # 符叶周期的开火时间，单位秒
+      yaw_tolerance: 0.11        # 符叶横向容差，单位米
+      pitch_tolerance: 0.11      # 符叶纵向容差，单位米
   detector:
     type: climber
     climber:
@@ -45,75 +44,37 @@ buff_v2:
       r_center_refine_max_shift: 5.0
       dedup_distance: 18.0
 
-# 检测器
-detector_backend: szu                 # szu=深大 26 五点模型；sp25=备用 baseline
-szu_model: assets/szu_rune_model_0624.onnx
-model: assets/yolo11_buff_int8.xml    # 仅 detector_backend=sp25 时使用
-device: GPU
-szu_preprocess_mode: letterbox        # letterbox=等比例缩放；center_crop=中心裁剪
-szu_confidence: 0.8                   # 网络目标置信度阈值
-szu_keypoint_confidence: 0.8          # 网络关键点置信度阈值
-confidence: 0.7                      # 仅 SP25 backend 使用
-iou_threshold: 0.4                   # 仅 SP25 backend 使用
-szu_traditional_refine: true          # 网络四角的传统局部精修
-szu_traditional_r_refine: true        # 精修可视 R 中心，仅影响 R 点观测/诊断
-szu_r_red_minus_blue_threshold: 50.0  # 红方 R 颜色差分阈值；增大可排除较弱红色反光
-szu_r_blue_minus_red_threshold: 62.0  # 蓝方 R 颜色差分阈值；增大可排除较弱蓝色反光
-szu_rp26_refine: false                # 关闭 RP26 轮廓锚点分支
-szu_use_rp26_pose: false              # 固定用网络四角几何解算姿态
-szu_use_r_in_pnp: false                # R 点不参与 PnP 拟合或镜像分支选择
-szu_r_object_normal_offset_m: -0.1     # R 点重投影诊断模型的法向偏移，单位米
-szu_target_class_id: 0                 # 当前待击打叶片类别
-szu_debug_log: false                   # 排查检测问题时临时开启
+  # 打符专用云台控制参数，不读取普通自瞄 controller.yaml 的对应数值。
+  # 加速度单位 rad/s^2；速度单位 deg/s；误差增益单位 1/s。
+  control:
+    smallbuff:
+      max_yaw_acceleration: 100.0
+      max_pitch_acceleration: 100.0
+      yaw_error_gain: 4.0
+      pitch_error_gain: 4.0
+      max_yaw_velocity: 80.0
+      max_pitch_velocity: 60.0
+    bigbuff:
+      max_yaw_acceleration: 50.0
+      max_pitch_acceleration: 100.0
+      yaw_error_gain: 6.0
+      pitch_error_gain: 6.0
+      max_yaw_velocity: 120.0
+      max_pitch_velocity: 90.0
+    angle_limit:
+      max_yaw_diff: 15.0
+      max_pitch_diff: 10.0
+    rate_limit:
+      max_yaw_step_deg: 1.5
+      max_pitch_step_deg: 1.0
+    fire_gate:
+      enable: true
+      yaw_tolerance: 3.0
+      pitch_tolerance: 2.0
 
-# 姿态连续性保护：一般不需要调
-szu_corner_reprojection_max_px: 15.0
-szu_pose_max_jump_deg: 15.0
-szu_pose_max_translation_jump_m: 0.35
-szu_pose_reacquire_after_rejections: 20
-
-# 瞄准与控制
-smallbuff_static_model: false           # true=静止模型；false=默认旋转模型
-#yaw pitch的正方向是左上
-yaw_offset: -8.4                        # 度
-pitch_offset: -2.0                      # 度
-predict_time: 0.0                      # 兼容旧配置的通用预测时间；单位秒
-# smallbuff_predict_time: 0.0          # 可选小符覆盖项；可为负，范围 [-0.5, 0.5] 秒
-# bigbuff_predict_time: 0.0            # 可选大符覆盖项；未设置时回退到 predict_time
-
-# 目标叶片保护：优先切换未保护相位；全部受保护时继续跟踪，但抑制开火建议。
-# 只作用于打符链路，普通自瞄不读取这里。
-target_guard:
-  enable: true
-  smallbuff:
-    cooldown_s: 1.00                   # 开火后的短暂防重锁窗口；未确认命中时保留补打机会
-    phase_tolerance_deg: 28.0          # 保护相位容差
-  bigbuff:
-    cooldown_s: 1.00
-    phase_tolerance_deg: 28.0
-
-# 打符开火建议（只影响小符/大符；最终是否允许发射仍由 controller.yaml 的 fire_gate 把关）
-fire_advice:
-  smallbuff:
-    max_angle_step_deg: 5.0            # 连续帧预测瞄准角最大变化量，超过后重新累计稳定帧
-    stable_frames: 2                   # 满足角度连续性的最少帧数，2 表示至少观察到一帧稳定变化
-    min_interval_s: 0.700              # 已通过最终对齐门控后的最小建议间隔；首发不等待
-  bigbuff:
-    max_angle_step_deg: 5.0
-    stable_frames: 2
-    min_interval_s: 0.700
-
-# controller.yaml 使用 MPC 时生效；静止小符跟踪固定点，旋转小符和大符跟踪各自模型的动态预测轨迹。
-# 加速度单位 rad/s^2；速度单位 deg/s；误差增益单位 1/s。
-smallbuff_mpc:
-  max_yaw_acceleration: 100.0
-  max_pitch_acceleration: 100.0
-  yaw_error_gain: 2.0
-  pitch_error_gain: 2.0
-  rotating_yaw_error_gain: 4.0          # smallbuff_static_model=false 时覆盖上面的 yaw 增益
-  rotating_pitch_error_gain: 4.0       # smallbuff_static_model=false 时覆盖上面的 pitch 增益
-  max_yaw_velocity: 80.0
-  max_pitch_velocity: 60.0
+# 瞄准偏置，单位：度。yaw/pitch 正方向按当前云台坐标约定。
+yaw_offset: -8.4
+pitch_offset: -2.0
 
 # 标定：相机内参/畸变和相机到枪管外参由 hardware.yaml 覆盖。
 # R_gimbal2imubody 仍从本文件读取；其余数值是独立运行时的回退值。

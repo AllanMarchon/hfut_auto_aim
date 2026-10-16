@@ -42,7 +42,7 @@ std::optional<SPRuneObservation> SPRuneSolver::solve(const RuneElements & elemen
   const cv::Point2f right(up.y, -up.x);
   if ((sides[0] - bull->center).dot(right) < (sides[1] - bull->center).dot(right))
     std::swap(sides[0], sides[1]);
-  // 保留 auto_buff 的平面 127 mm 菱形和 700 mm 符臂尺寸。
+  // 保留比赛符盘的平面 127 mm 菱形和 700 mm 符臂尺寸。
   const std::vector<cv::Point3f> object{{0, 0, 0.827f}, {0, 0.127f, 0.7f},
     {0, 0, 0.573f}, {0, -0.127f, 0.7f}};
   const std::vector<cv::Point2f> image{*top, sides[0], *bottom, sides[1]};

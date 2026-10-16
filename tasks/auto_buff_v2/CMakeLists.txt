@@ -3,7 +3,6 @@ add_library(auto_buff_v2 STATIC
   hfut_buff_runtime.cpp
   detectors/njust_rune_detector.cpp
   detectors/climber_rune_detector.cpp
-  detectors/szu_rune_detector.cpp
   rune_energy_fitter.cpp
   models/njust_rune_model.cpp
   models/sp_rune_model.cpp

@@ -8,14 +8,11 @@
 #include "climber_rune_detector.hpp"
 #include "njust_rune_detector.hpp"
 #include "rune_detector.hpp"
-#include "szu_rune_detector.hpp"
 
 namespace auto_buff_v2
 {
 inline std::unique_ptr<RuneDetector> make_rune_detector(const BuffConfig::Detector & config)
 {
-  if (config.type == "szu")
-    return std::make_unique<SzuRuneDetector>(config.parameters["szu"]);
   if (config.type == "climber")
     return std::make_unique<ClimberRuneDetector>(config.parameters["climber"]);
   if (config.type == "njust") {

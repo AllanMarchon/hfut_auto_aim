@@ -10,7 +10,7 @@
 
 namespace auto_buff_v2
 {
-// 将 auto_buff 的 SmallTarget/BigTarget 估计适配到 v2 规划接口。
+// 将独立运动模型估计适配到 v2 规划接口。
 class SPRuneModel final : public RuneModel
 {
 public:

@@ -104,31 +104,7 @@ target_link_libraries(auto_aim PUBLIC
   ${HFUT_SPDLOG_TARGET}
 )
 
-# SP25 打符核心。小符 MPC 复用普通自瞄的 TinyMPC 求解器，但不改变普通自瞄链路。
-add_library(auto_buff STATIC
-  tasks/auto_buff/buff_aimer.cpp
-  tasks/auto_buff/buff_detector.cpp
-  tasks/auto_buff/buff_mpc_planner.cpp
-  tasks/auto_buff/buff_solver.cpp
-  tasks/auto_buff/buff_target.cpp
-  tasks/auto_buff/buff_type.cpp
-  tasks/auto_buff/szu_rune_detector.cpp
-  tasks/auto_buff/yolo11_buff.cpp
-)
-target_include_directories(auto_buff PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(auto_buff PUBLIC
-  tools
-  tinympcstatic
-  Eigen3::Eigen
-  ${OpenCV_LIBS}
-  yaml-cpp
-  openvino::runtime
-  ${HFUT_FMT_TARGET}
-  ${HFUT_SPDLOG_TARGET}
-)
-
-# 从 simple_auto_aim 移植的 buff_v2 链路，在 standard.cpp 边界完成 HFUT 适配，
-# 暂不删除旧打符链路。
+# 从 simple_auto_aim 移植的 buff_v2 链路，在 standard.cpp 边界完成 HFUT 适配。
 add_subdirectory(tasks/auto_buff_v2)
 
 # HFUT 实车 IO：保留已跑通的海康相机、infantry 串口和 Web 可视化。
@@ -183,7 +159,6 @@ target_include_directories(standard PRIVATE
 )
 target_link_libraries(standard PRIVATE
   auto_aim
-  auto_buff
   auto_buff_v2
   tools
   hfut_real_io
