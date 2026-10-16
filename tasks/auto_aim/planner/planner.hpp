@@ -29,6 +29,7 @@ struct Plan
   float pitch;
   float pitch_vel;
   float pitch_acc;
+  float distance{-1.0F};
 };
 
 class Planner
@@ -37,6 +38,8 @@ class Planner
   Eigen::Vector4d debug_xyza;
   Planner(const std::string & config_path, const std::string & planner_profile = "mpc_planner");
 
+  // 使用外部提供的打符参考轨迹复用共享 yaw/pitch MPC。
+  Plan plan(const Trajectory & trajectory, double yaw0, double distance);
   Plan plan(Target target, double bullet_speed);
   Plan plan(std::optional<Target> target, double bullet_speed);
 

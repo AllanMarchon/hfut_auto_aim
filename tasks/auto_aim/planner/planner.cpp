@@ -55,6 +55,57 @@ Planner::Planner(const std::string & config_path, const std::string & planner_pr
   setup_pitch_solver(config_path);
 }
 
+Plan Planner::plan(const Trajectory & trajectory, double yaw0, double distance)
+{
+  if (!trajectory.allFinite() || !std::isfinite(yaw0) || !std::isfinite(distance)) {
+    tools::logger()->warn("[Planner] 打符参考轨迹无效");
+    return {false};
+  }
+
+  // 打符跟踪器已经生成了完整参考轨迹，这里只负责复用通用云台 MPC。
+  Eigen::VectorXd x0(2);
+  x0 << trajectory(0, 0), trajectory(1, 0);
+  if (tiny_set_x0(yaw_solver_, x0) != 0) return {false};
+  yaw_solver_->work->Xref = trajectory.block(0, 0, 2, HORIZON);
+  const int yaw_status = tiny_solve(yaw_solver_);
+
+  x0 << trajectory(2, 0), trajectory(3, 0);
+  if (tiny_set_x0(pitch_solver_, x0) != 0) return {false};
+  pitch_solver_->work->Xref = trajectory.block(2, 0, 2, HORIZON);
+  const int pitch_status = tiny_solve(pitch_solver_);
+  if (yaw_status != 0 || pitch_status != 0) {
+    if (!warned_solver_status_) {
+      tools::logger()->warn(
+        "[Planner] 打符 TinyMPC 未在最大迭代次数内收敛 yaw={} pitch={}", yaw_status,
+        pitch_status);
+      warned_solver_status_ = true;
+    }
+  }
+
+  Plan result{};
+  result.control = true;
+  result.fire = false;
+  result.target_yaw = tools::limit_rad(trajectory(0, HALF_HORIZON) + yaw0);
+  result.target_pitch = trajectory(2, HALF_HORIZON);
+  result.yaw = tools::limit_rad(yaw_solver_->work->x(0, HALF_HORIZON) + yaw0);
+  result.yaw_vel = yaw_solver_->work->x(1, HALF_HORIZON);
+  result.yaw_acc = yaw_solver_->work->u(0, HALF_HORIZON);
+  result.pitch = pitch_solver_->work->x(0, HALF_HORIZON);
+  result.pitch_vel = pitch_solver_->work->x(1, HALF_HORIZON);
+  result.pitch_acc = pitch_solver_->work->u(0, HALF_HORIZON);
+  result.distance = static_cast<float>(distance);
+
+  if (
+    !std::isfinite(result.target_yaw) || !std::isfinite(result.target_pitch) ||
+    !std::isfinite(result.yaw) || !std::isfinite(result.yaw_vel) ||
+    !std::isfinite(result.yaw_acc) || !std::isfinite(result.pitch) ||
+    !std::isfinite(result.pitch_vel) || !std::isfinite(result.pitch_acc)) {
+    tools::logger()->warn("[Planner] 打符 TinyMPC 输出非有限值");
+    return {false};
+  }
+  return result;
+}
+
 Plan Planner::plan(Target target, double bullet_speed)
 {
   // 0. Check bullet speed
