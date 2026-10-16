@@ -52,6 +52,7 @@ struct DebugMjpegStatus {
   double limiter_yaw_error_deg{0.0};
   double limiter_pitch_error_deg{0.0};
   double distance_m{0.0};
+  double pnp_blade_distance_m{0.0};
   double pnp_first_distance_m{0.0};
   double yaw_error_deg{0.0};
   double pitch_error_deg{0.0};

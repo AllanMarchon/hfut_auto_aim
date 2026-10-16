@@ -46,6 +46,8 @@ set(HFUT_HIK_LIBRARY "" CACHE FILEPATH "Hikrobot libMvCameraControl.so override"
 
 # SP25 工具库。
 add_library(tools STATIC
+  tools/ballistic_solver.cpp
+  tools/camera2gimbal_extrinsic.cpp
   tools/extended_kalman_filter.cpp
   tools/img_tools.cpp
   tools/logger.cpp
@@ -125,6 +127,10 @@ target_link_libraries(auto_buff PUBLIC
   ${HFUT_SPDLOG_TARGET}
 )
 
+# 从 simple_auto_aim 移植的 buff_v2 链路，在 standard.cpp 边界完成 HFUT 适配，
+# 暂不删除旧打符链路。
+add_subdirectory(tasks/auto_buff_v2)
+
 # HFUT 实车 IO：保留已跑通的海康相机、infantry 串口和 Web 可视化。
 add_library(hfut_real_io STATIC
   io/camera/opencv_camera_source.cpp
@@ -178,6 +184,7 @@ target_include_directories(standard PRIVATE
 target_link_libraries(standard PRIVATE
   auto_aim
   auto_buff
+  auto_buff_v2
   tools
   hfut_real_io
   ${OpenCV_LIBS}

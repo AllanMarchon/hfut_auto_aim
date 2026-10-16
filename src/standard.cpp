@@ -52,6 +52,7 @@
 #include "tasks/auto_buff/buff_solver.hpp"
 #include "tasks/auto_buff/buff_target.hpp"
 #include "tasks/auto_buff/buff_type.hpp"
+#include "tasks/auto_buff_v2/hfut_buff_runtime.hpp"
 #include "tools/math_tools.hpp"
 
 namespace {
@@ -1434,6 +1435,27 @@ void drawPowerRune(cv::Mat& image, const PowerRuneVisual& rune) {
   }
 }
 
+void drawBuffV2(cv::Mat& image, const hfut::buff::Runtime & runtime) {
+  const auto & elements = runtime.elements();
+  for (const auto & candidate : elements.candidates) {
+    const cv::Scalar color(80, 180, 255);
+    for (size_t i = 0; i < candidate.points.size(); ++i) {
+      cv::line(image, candidate.points[i], candidate.points[(i + 1) % candidate.points.size()],
+               color, 1, cv::LINE_AA);
+    }
+  }
+  for (const auto & bull : elements.bullseyes) {
+    const cv::Scalar color = bull.active ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 180, 255);
+    cv::circle(image, bull.center, 5, color, 2, cv::LINE_AA);
+    if (!bull.active) {
+      for (size_t i = 0; i < bull.corners.size(); ++i) {
+        cv::line(image, bull.corners[i], bull.corners[(i + 1) % bull.corners.size()],
+                 color, 2, cv::LINE_AA);
+      }
+    }
+  }
+}
+
 void drawCrosshair(cv::Mat& image) {
   const cv::Point center(image.cols / 2, image.rows / 2);
   cv::line(image, {center.x - 18, center.y}, {center.x + 18, center.y}, cv::Scalar(80, 255, 80), 1);
@@ -1473,6 +1495,9 @@ int run(const Options& options) {
   const auto solver_calibration = hfut::video::adaptCalibration(
       source_calibration, solver_width, solver_height, calibration_mode);
   const auto adapted_config_path = writeRuntimeSp25Config(options, solver_calibration, algorithm_config);
+  const auto buff_root = YAML::LoadFile(adapted_config_path);
+  const bool use_buff_v2 = use_buff_task && options.aim_task == "smallbuff" &&
+      parseBool(buff_root["buff_v2"]["enabled"], true);
 
   auto camera = createCameraSource(options, toIntrinsics(source_calibration));
   if (!camera->open()) throw std::runtime_error("相机打开失败: " + camera->errorMessage());
@@ -1570,19 +1595,24 @@ int run(const Options& options) {
   std::unique_ptr<auto_buff::SmallTarget> buff_small_target;
   std::unique_ptr<auto_buff::BigTarget> buff_big_target;
   std::unique_ptr<auto_buff::Aimer> buff_aimer;
+  std::unique_ptr<hfut::buff::Runtime> buff_v2_runtime;
   if (use_buff_task) {
-    buff_detector = std::make_unique<auto_buff::Buff_Detector>(adapted_config_path);
-    buff_solver = std::make_unique<auto_buff::Solver>(adapted_config_path);
-    buff_small_target = std::make_unique<auto_buff::SmallTarget>();
-    buff_big_target = std::make_unique<auto_buff::BigTarget>();
-    buff_aimer = std::make_unique<auto_buff::Aimer>(adapted_config_path);
-    if (use_buff_mpc_planner) {
-      if (options.aim_task == "smallbuff") {
-        small_buff_controller = std::make_unique<auto_buff::SmallBuffController>(
-            options.controller_config, adapted_config_path, *buff_aimer);
-      } else {
-        big_buff_controller = std::make_unique<auto_buff::BigBuffController>(
-            options.controller_config, adapted_config_path, *buff_aimer);
+    if (use_buff_v2) {
+      buff_v2_runtime = std::make_unique<hfut::buff::Runtime>(adapted_config_path, false);
+    } else {
+      buff_detector = std::make_unique<auto_buff::Buff_Detector>(adapted_config_path);
+      buff_solver = std::make_unique<auto_buff::Solver>(adapted_config_path);
+      buff_small_target = std::make_unique<auto_buff::SmallTarget>();
+      buff_big_target = std::make_unique<auto_buff::BigTarget>();
+      buff_aimer = std::make_unique<auto_buff::Aimer>(adapted_config_path);
+      if (use_buff_mpc_planner) {
+        if (options.aim_task == "smallbuff") {
+          small_buff_controller = std::make_unique<auto_buff::SmallBuffController>(
+              options.controller_config, adapted_config_path, *buff_aimer);
+        } else {
+          big_buff_controller = std::make_unique<auto_buff::BigBuffController>(
+              options.controller_config, adapted_config_path, *buff_aimer);
+        }
       }
     }
   } else {
@@ -1798,6 +1828,8 @@ int run(const Options& options) {
     frame.gimbal_yaw = aligned_feedback.yaw_rad;
     frame.gimbal_pitch = aligned_feedback.pitch_rad;
     auto timestamp = frame_time;
+    const bool publish_visual_frame = web_server &&
+      (frames + 1U) % static_cast<uint64_t>(options.web_frame_step) == 0U;
 
     const double bullet_speed = latest_feedback.bullet_speed >= 14.0
                                     ? latest_feedback.bullet_speed
@@ -1828,21 +1860,70 @@ int run(const Options& options) {
     double pnp_yaw_deg = 0.0;
     double pnp_pitch_deg = 0.0;
     double pnp_roll_deg = 0.0;
+    double buff_solver_ms = 0.0;
     const CommandLimiterConfig* active_limiter_config = &command_limiter_config;
     FinalVelocityAccelerationAdapter* active_mpc_motion_adapter = &mpc_motion_adapter;
     io::Command sp_command{false, false, 0.0, 0.0};
     auto_aim::Plan mpc_plan{};
+    auto_aim::Plan buff_v2_plan{};
     bool have_mpc_plan = false;
     auto_buff::BuffMpcPlan buff_mpc_output;
 
     if (use_buff_task) {
+      if (use_buff_v2) {
+        const auto v2_start = std::chrono::steady_clock::now();
+        const auto v2_frame = buff_v2_runtime->process(
+            frame.image, timestamp, feedbackQuaternion(aligned_feedback, command_limiter_config),
+            options.enemy_color == "red");
+        detect_end = std::chrono::steady_clock::now();
+        detection_count = static_cast<int>(v2_frame.bullseye_count + v2_frame.icon_count);
+        buff_tracking_ready = v2_frame.target.has_value();
+        track_start = detect_end;
+        track_end = std::chrono::steady_clock::now();
+        aim_start = track_end;
+
+        io::GimbalState v2_gimbal;
+        // v2 规划器与符模型使用同一个世界坐标系；先将 HFUT 串口反馈转换后，
+        // 再交给开火判定与规划结果进行比较。
+        v2_gimbal.yaw = static_cast<float>(
+            command_limiter_config.feedback_yaw_to_world_sign * aligned_feedback.yaw_rad);
+        // HFUT 反馈没有提供云台 yaw 速度；chassis_wz 是底盘角速度，不能传给符瞄准器。
+        v2_gimbal.yaw_vel = 0.0F;
+        v2_gimbal.pitch = static_cast<float>(
+            command_limiter_config.sp_pitch_to_command_sign * aligned_feedback.pitch_rad);
+        v2_gimbal.pitch_vel = 0.0F;
+        v2_gimbal.bullet_speed = static_cast<float>(bullet_speed);
+        buff_v2_plan = buff_v2_runtime->plan(bullet_speed, v2_gimbal, timestamp);
+        command_distance = v2_frame.target
+            ? std::hypot(v2_frame.target->center.x(), v2_frame.target->center.y())
+            : 0.0;
+        sp_command.control = buff_v2_plan.control;
+        sp_command.shoot = buff_v2_plan.fire;
+        sp_command.yaw = buff_v2_plan.yaw;
+        sp_command.pitch = buff_v2_plan.pitch;
+        sp_command.horizon_distance = command_distance;
+        buff_motion.command = sp_command;
+        buff_motion.yaw_velocity = buff_v2_plan.yaw_vel;
+        buff_motion.yaw_acceleration = buff_v2_plan.yaw_acc;
+        buff_motion.pitch_velocity = buff_v2_plan.pitch_vel;
+        buff_motion.pitch_acceleration = buff_v2_plan.pitch_acc;
+        buff_motion.motion_valid = buff_v2_plan.control;
+        tracked_count = buff_tracking_ready ? 1 : 0;
+        track_state = buff_tracking_ready ? "tracking" :
+          (detection_count > 0 ? "detecting" : "lost");
+        buff_solver_ms = elapsedMs(v2_start, std::chrono::steady_clock::now());
+      } else {
       buff_solver->set_R_gimbal2world(feedbackQuaternion(aligned_feedback, command_limiter_config));
       power_rune = buff_detector->detect(
           frame.image, options.aim_task == "smallbuff" ? auto_buff::SMALL : auto_buff::BIG);
       detection_count = power_rune.has_value() ? 1 : 0;
+      detect_end = std::chrono::steady_clock::now();
       if (power_rune.has_value()) {
+        const auto buff_solver_start = std::chrono::steady_clock::now();
         buff_solver->solve(power_rune);
-        if (options.display || web_server) {
+        buff_solver_ms = elapsedMs(buff_solver_start, std::chrono::steady_clock::now());
+        const bool need_power_rune_visual = options.display || publish_visual_frame;
+        if (need_power_rune_visual) {
           power_rune_visual = makePowerRuneVisual(*power_rune);
         }
         pnp_reprojection_error_px = power_rune->pnp_reprojection_error_px;
@@ -1871,8 +1952,6 @@ int run(const Options& options) {
           std::fprintf(stderr, "[standard] 打符连续 7 帧无有效姿态，重置当前 PnP 姿态\n");
         }
       }
-      detect_end = std::chrono::steady_clock::now();
-
       track_start = detect_end;
       if (options.aim_task == "smallbuff") {
         if (smallbuff_static_control) {
@@ -1955,6 +2034,7 @@ int run(const Options& options) {
       }
       tracked_count = buff_tracking_ready ? 1 : 0;
       track_state = buff_tracking_ready ? "tracking" : (power_rune.has_value() ? "detecting" : "lost");
+      }
     } else {
       solver->set_R_gimbal2world(feedbackQuaternion(aligned_feedback, command_limiter_config));
       armors = detector->detect(frame.image, static_cast<int>(frame.seq));
@@ -2004,6 +2084,9 @@ int run(const Options& options) {
     hfut::GimbalCommand command = convertCommand(
         sp_command, command_distance, latest_feedback, options.enable_fire, *active_limiter_config);
     const bool use_buff_mpc_output = use_buff_mpc_planner && buff_mpc_output.valid;
+    const bool target_phase_switch =
+        use_buff_task && power_rune.has_value() &&
+        power_rune->target_phase_discontinuity;
     const auto command_time = std::chrono::steady_clock::now();
     bool command_guard_applied = false;
     double raw_desired_yaw = command.yaw;
@@ -2113,10 +2196,12 @@ int run(const Options& options) {
       }
     }
     if (use_buff_mpc_output && options.aim_task == "smallbuff") {
-      // 角度被安全限幅时，速度也按上一帧实际下发值经过加速度斜坡。
+      // 换叶首帧需要快速重捕获；角度仍受安全限幅，但不再额外把速度
+      // 压成上一帧的斜坡，否则新目标会表现为“慢慢转过去”。
       active_mpc_motion_adapter->apply(
           command, command_time,
-          smallbuff_final_guard.yaw_limited || smallbuff_final_guard.pitch_limited);
+          (smallbuff_final_guard.yaw_limited || smallbuff_final_guard.pitch_limited) &&
+          !target_phase_switch);
     } else if (options.aim_task == "smallbuff" && !use_buff_mpc_output) {
       buff_motion_adapter.apply(command, command_time);
     }
@@ -2126,6 +2211,7 @@ int run(const Options& options) {
         use_buff_task && power_rune.has_value() &&
         power_rune->fire_suppressed_by_target_guard;
     if (target_guard_fire_blocked) command.fire_advice = false;
+    if (target_phase_switch) command.fire_advice = false;
     const FireGateResult fire_gate = applyFireGate(
         command, raw_desired_yaw, raw_desired_pitch, *active_limiter_config);
     const bool fire_advice = use_buff_mpc_output ? buff_mpc_output.plan.fire : sp_command.shoot;
@@ -2164,7 +2250,8 @@ int run(const Options& options) {
     web_status.fps = runtime_fps;
     web_status.latency_ms = elapsedMs(detect_start, aim_end);
     web_status.detections = detection_count;
-    web_status.poses = power_rune.has_value() ? 1 : 0;
+    web_status.poses = use_buff_v2 ? (buff_tracking_ready ? 1 : 0) :
+                                   (power_rune.has_value() ? 1 : 0);
     web_status.armors = use_buff_task ? 0 : detection_count;
     web_status.tracked = tracked_count > 0 ? 1 : 0;
     web_status.track_state = track_state;
@@ -2192,6 +2279,7 @@ int run(const Options& options) {
     web_status.limiter_yaw_error_deg = fire_gate.yaw_error_rad * kRadToDeg;
     web_status.limiter_pitch_error_deg = fire_gate.pitch_error_rad * kRadToDeg;
     web_status.distance_m = command.distance;
+    web_status.pnp_blade_distance_m = pnp_blade_horizontal_distance_m;
     web_status.feedback_age_ms = options.dry_run ? 0.0 : static_cast<double>(current_feedback_age.count());
     web_status.feedback_alignment_used = used_aligned_feedback;
     web_status.fire_advice = fire_advice;
@@ -2205,16 +2293,17 @@ int run(const Options& options) {
     web_status.serial_rx = hfut::io::infantryPacketLayoutName(serial_config.rx_layout);
 
     const auto visual_start = std::chrono::steady_clock::now();
-    if (options.display || web_server) {
+    if (options.display || publish_visual_frame) {
       cv::Mat visual = frame.image.clone();
       if (use_buff_task) {
-        drawPowerRune(visual, power_rune_visual);
+        if (use_buff_v2) drawBuffV2(visual, *buff_v2_runtime);
+        else drawPowerRune(visual, power_rune_visual);
       } else {
         drawArmors(visual, armors);
       }
       drawCrosshair(visual);
       drawOverlay(visual, web_status);
-      if (web_server && frames % static_cast<uint64_t>(options.web_frame_step) == 0U) {
+      if (publish_visual_frame) {
         web_server->publish(visual, web_status);
       }
       if (options.display) {
@@ -2244,16 +2333,29 @@ int run(const Options& options) {
         std::snprintf(
             pnp_log_fields, sizeof(pnp_log_fields),
             "pnp_model=%s pnp_valid=%d pnp_rp26=%d pnp=%.2fpx "
-            "pnp_origin=%.3fm pnp_blade=%.3fm pnp_blade_camera=%.3fm",
+            "pnp_origin=%.3fm pnp_blade_h=%.3fm pnp_blade_camera=%.3fm",
             pnp_model, pnp_pose_valid ? 1 : 0, pnp_used_rp26_pose ? 1 : 0,
             pnp_reprojection_error_px, pnp_center_distance_m,
             pnp_blade_horizontal_distance_m, pnp_blade_camera_distance_m);
       } else {
         std::snprintf(
             pnp_log_fields, sizeof(pnp_log_fields),
-            "pnp=%.2fpx/%.2fpx pnp_origin=%.3fm pnp_blade=%.3fm pnp_blade_camera=%.3fm",
+            "pnp=%.2fpx/%.2fpx pnp_origin=%.3fm pnp_blade_h=%.3fm pnp_blade_camera=%.3fm",
             pnp_reprojection_error_px, 0.0, pnp_center_distance_m,
             pnp_blade_horizontal_distance_m, pnp_blade_camera_distance_m);
+      }
+      char szu_timing_fields[256];
+      const auto * szu_stats = use_buff_task && buff_detector
+        ? buff_detector->szu_debug_stats() : nullptr;
+      if (szu_stats != nullptr) {
+        std::snprintf(
+            szu_timing_fields, sizeof(szu_timing_fields),
+            "szu_ms=pre %.1f tensor %.1f infer %.1f post %.1f refine %.1f rp26 %.1f nms %.1f total %.1f",
+            szu_stats->preprocess_ms, szu_stats->tensor_ms, szu_stats->inference_ms,
+            szu_stats->postprocess_ms, szu_stats->traditional_refine_ms,
+            szu_stats->rp26_refine_ms, szu_stats->nms_ms, szu_stats->total_ms);
+      } else {
+        std::snprintf(szu_timing_fields, sizeof(szu_timing_fields), "szu_ms=na");
       }
       std::printf(
           "[standard] task=%s frames=%llu fps=%.1f detections=%d tracked=%d state=%s "
@@ -2261,11 +2363,12 @@ int run(const Options& options) {
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg "
-          "smallbuff_guard=%d/%d distance=%.3f "
+          "smallbuff_guard=%d/%d plan_distance=%.3f "
+          "%s "
           "%s "
           "pnp_ypr=%.1f/%.1f/%.1fdeg "
-          "sp_fire=%d fire=%d gate=%d target_guard=%d latency=%.1fms "
-          "timing=rx %.1f cam %.1f det %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
+          "sp_fire=%d fire=%d gate=%d target_guard=%d target_switch=%d latency=%.1fms "
+          "timing=rx %.1f cam %.1f det %.1f pnp %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
           options.aim_task.c_str(), static_cast<unsigned long long>(frames), runtime_fps,
           detection_count, tracked_count,
            track_state.c_str(), buff_motion_applied ? 1 : 0, use_buff_mpc_output ? 1 : 0,
@@ -2282,12 +2385,14 @@ int run(const Options& options) {
           smallbuff_final_guard.yaw_limited ? 1 : 0,
           smallbuff_final_guard.pitch_limited ? 1 : 0,
           command.distance, pnp_log_fields,
+          szu_timing_fields,
           pnp_yaw_deg, pnp_pitch_deg, pnp_roll_deg,
           fire_advice ? 1 : 0, command.fire_advice ? 1 : 0,
           fire_gate.blocked ? 1 : 0, target_guard_fire_blocked ? 1 : 0,
+          target_phase_switch ? 1 : 0,
           elapsedMs(detect_start, aim_end),
           elapsedMs(serial_rx_start, serial_rx_end), elapsedMs(capture_start, capture_end),
-          elapsedMs(detect_start, detect_end), elapsedMs(track_start, track_end),
+          elapsedMs(detect_start, detect_end), buff_solver_ms, elapsedMs(track_start, track_end),
           elapsedMs(aim_start, aim_end), elapsedMs(serial_tx_start, serial_tx_end),
           elapsedMs(visual_start, visual_end), elapsedMs(loop_start, visual_end),
           serial_send_ok ? 1 : 0);

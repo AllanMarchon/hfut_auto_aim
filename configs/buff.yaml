@@ -1,6 +1,50 @@
 # 26 赛季打符配置：日常调参项放前面，固定实现参数使用代码默认值。
 # standard 启动时从 hardware.yaml 同步相机内参、畸变和相机到枪管外参。
 
+# simple_auto_aim 小符后端。standard 在 buff 分支中仅对 smallbuff 默认启用，
+# 旧 auto_buff 链路仍保留，便于现场快速回退。
+buff_v2:
+  enabled: true
+  planner_mode: njust
+  model:
+    type: njust
+    njust:
+      prediction_method: weighted_least_squares
+      motion_fit:
+        small:
+          window_seconds: 2.0
+          min_fit_seconds: 0.5
+          weight_half_life_seconds: 2.0
+        big:
+          window_seconds: 6.0
+          min_fit_seconds: 1.5
+          weight_half_life_seconds: 3.0
+  aimer:
+    type: njust
+    ballistic:
+      type: vacuum
+    njust:
+      shoot_delay: 0.04
+      rune_idle_duration: 0.4
+      rune_shoot_duration: 0.2
+      yaw_tolerance: 0.11
+      pitch_tolerance: 0.11
+  detector:
+    type: climber
+    climber:
+      model: assets/buff_repvgg.xml
+      device: CPU
+      max_bullseyes: 2
+      ConfidenceThreshold: 0.2
+      IouThreshold: 0.2
+      binary_threshold: 100
+      dilate_kernel_size: 5
+      dilate_iterations: 1
+      r_center_mask_ratio: 0.8
+      r_center_contour_div: 3.0
+      r_center_refine_max_shift: 5.0
+      dedup_distance: 18.0
+
 # 检测器
 detector_backend: szu                 # szu=深大 26 五点模型；sp25=备用 baseline
 szu_model: assets/szu_rune_model_0624.onnx

@@ -77,6 +77,7 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"limiter_yaw_error_deg\":" << finiteOrZero(status.limiter_yaw_error_deg)
       << ",\"limiter_pitch_error_deg\":" << finiteOrZero(status.limiter_pitch_error_deg)
       << ",\"distance_m\":" << finiteOrZero(status.distance_m)
+      << ",\"pnp_blade_distance_m\":" << finiteOrZero(status.pnp_blade_distance_m)
       << ",\"pnp_first_distance_m\":" << finiteOrZero(status.pnp_first_distance_m)
       << ",\"yaw_error_deg\":" << finiteOrZero(status.yaw_error_deg)
       << ",\"pitch_error_deg\":" << finiteOrZero(status.pitch_error_deg)
@@ -425,6 +426,7 @@ const TELEMETRY = [
   ['dry run', 'dry_run', null, ''],
   ['fire enabled', 'fire_enabled', null, ''],
   ['distance', 'distance_m', 3, ' m'],
+  ['pnp blade distance', 'pnp_blade_distance_m', 3, ' m'],
   ['lim yaw err', 'limiter_yaw_error_deg', 2, ' deg'],
   ['lim pitch err', 'limiter_pitch_error_deg', 2, ' deg'],
   ['fire blocked', 'fire_blocked_by_limiter', null, ''],
@@ -495,6 +497,7 @@ function normalizeStatus(status) {
   status.command_yaw_acc_deg_s2 = finite(status.command_yaw_acc_rad_s2) * RAD_TO_DEG;
   status.command_pitch_acc_deg_s2 = finite(status.command_pitch_acc_rad_s2) * RAD_TO_DEG;
   status.distance_m = finite(status.distance_m);
+  status.pnp_blade_distance_m = finite(status.pnp_blade_distance_m);
   status.pnp_first_distance_m = finite(status.pnp_first_distance_m);
   return status;
 }
@@ -536,7 +539,7 @@ function updateCards(status) {
   document.getElementById('value-distance').textContent =
       `${fmt(finite(status.distance_m), 2, ' m')}`;
   document.getElementById('meta-distance').textContent =
-      'yaw/pitch target';
+      `plan=${fmt(finite(status.distance_m), 2, ' m')} pnp=${fmt(finite(status.pnp_blade_distance_m), 2, ' m')}`;
 
   document.getElementById('value-fire').textContent = status.fire ? 'SEND' : (status.fire_advice ? 'BLOCK' : 'HOLD');
   document.getElementById('meta-fire').textContent =
