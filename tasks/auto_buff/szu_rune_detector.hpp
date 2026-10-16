@@ -2,6 +2,7 @@
 #define AUTO_BUFF__SZU_RUNE_DETECTOR_HPP
 
 #include <array>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -45,6 +46,15 @@ public:
 
   struct DebugStats
   {
+    // 最近一次 detect() 的阶段耗时，单位毫秒；仅用于诊断，不参与控制。
+    double preprocess_ms = 0.0;
+    double tensor_ms = 0.0;
+    double inference_ms = 0.0;
+    double postprocess_ms = 0.0;
+    double traditional_refine_ms = 0.0;
+    double rp26_refine_ms = 0.0;
+    double nms_ms = 0.0;
+    double total_ms = 0.0;
     int anchors = 0;
     int confidence_pass = 0;
     int keypoint_pass = 0;

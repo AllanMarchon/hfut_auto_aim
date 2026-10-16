@@ -206,6 +206,7 @@ SzuRuneDetector::SzuRuneDetector(const std::string & config_path)
 std::vector<SzuRuneDetector::Detection> SzuRuneDetector::detect(
   const cv::Mat & image, bool is_big_rune)
 {
+  const auto detect_start = std::chrono::steady_clock::now();
   debug_stats_ = {};
   if (image.empty()) return {};
 
@@ -216,15 +217,38 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::detect(
   int crop_y = 0;
   cv::Mat input;
   preprocess(image, input, scale, pad_w, pad_h, crop_x, crop_y);
+  const auto preprocess_end = std::chrono::steady_clock::now();
+  debug_stats_.preprocess_ms = std::chrono::duration<double, std::milli>(
+    preprocess_end - detect_start).count();
 
+  const auto tensor_start = preprocess_end;
   ov::Tensor input_tensor(
     ov::element::f32, {1, 3, static_cast<size_t>(input_height_), static_cast<size_t>(input_width_)});
   fill_nchw_rgb_float_tensor(input, input_tensor);
   infer_request_.set_input_tensor(input_tensor);
-  infer_request_.infer();
+  const auto tensor_end = std::chrono::steady_clock::now();
+  debug_stats_.tensor_ms = std::chrono::duration<double, std::milli>(
+    tensor_end - tensor_start).count();
 
+  const auto inference_start = tensor_end;
+  infer_request_.infer();
+  const auto inference_end = std::chrono::steady_clock::now();
+  debug_stats_.inference_ms = std::chrono::duration<double, std::milli>(
+    inference_end - inference_start).count();
+
+  const auto postprocess_start = inference_end;
   auto detections = postprocess(scale, pad_w, pad_h, crop_x, crop_y, image.cols, image.rows);
+  const auto postprocess_end = std::chrono::steady_clock::now();
+  debug_stats_.postprocess_ms = std::chrono::duration<double, std::milli>(
+    postprocess_end - postprocess_start).count();
+
+  const auto traditional_start = postprocess_end;
   refine_detections(image, detections);
+  const auto traditional_end = std::chrono::steady_clock::now();
+  debug_stats_.traditional_refine_ms = std::chrono::duration<double, std::milli>(
+    traditional_end - traditional_start).count();
+
+  const auto rp26_start = traditional_end;
   refine_rp26_detections(image, detections, is_big_rune);
   if (!is_big_rune && rp26_refine_enabled_ && rp26_strict_) {
     detections.erase(
@@ -234,6 +258,10 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::detect(
         }),
       detections.end());
   }
+  const auto rp26_end = std::chrono::steady_clock::now();
+  debug_stats_.rp26_refine_ms = std::chrono::duration<double, std::milli>(
+    rp26_end - rp26_start).count();
+
   // 传统算法是网络结果的精修和补充，失败时保留有限的网络点，不能把检测直接清空。
   detections.erase(
     std::remove_if(
@@ -246,7 +274,13 @@ std::vector<SzuRuneDetector::Detection> SzuRuneDetector::detect(
         });
       }),
     detections.end());
+  const auto nms_start = std::chrono::steady_clock::now();
   auto result = nms(detections);
+  const auto nms_end = std::chrono::steady_clock::now();
+  debug_stats_.nms_ms = std::chrono::duration<double, std::milli>(
+    nms_end - nms_start).count();
+  debug_stats_.total_ms = std::chrono::duration<double, std::milli>(
+    nms_end - detect_start).count();
   debug_stats_.nms_output = static_cast<int>(result.size());
   return result;
 }

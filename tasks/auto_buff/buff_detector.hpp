@@ -34,6 +34,12 @@ public:
 
   std::optional<PowerRune> detect_debug(cv::Mat & bgr_img, cv::Point2f v);
 
+  // SZU 后端最近一次检测的分段耗时；SP25 后端返回空指针。
+  const SzuRuneDetector::DebugStats * szu_debug_stats() const
+  {
+    return szu_detector_ ? &szu_detector_->debug_stats() : nullptr;
+  }
+
 private:
   void handle_img(const cv::Mat & bgr_img, cv::Mat & dilated_img);
 
