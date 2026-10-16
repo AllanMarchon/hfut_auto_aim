@@ -1496,7 +1496,9 @@ int run(const Options& options) {
       source_calibration, solver_width, solver_height, calibration_mode);
   const auto adapted_config_path = writeRuntimeSp25Config(options, solver_calibration, algorithm_config);
   const auto buff_root = YAML::LoadFile(adapted_config_path);
-  const bool use_buff_v2 = use_buff_task && options.aim_task == "smallbuff" &&
+  // smallbuff 和 bigbuff 都使用 simple_auto_aim 的 v2 打符链路；关闭配置后仍可回退旧链路。
+  const bool use_buff_v2 = use_buff_task &&
+      (options.aim_task == "smallbuff" || options.aim_task == "bigbuff") &&
       parseBool(buff_root["buff_v2"]["enabled"], true);
 
   auto camera = createCameraSource(options, toIntrinsics(source_calibration));
@@ -1576,10 +1578,10 @@ int run(const Options& options) {
           ? loadOutpostCommandLimiterConfig(options.controller_config, command_limiter_config)
           : command_limiter_config;
   SimpleCommandGuard command_guard(command_limiter_config);
-  // 非 MPC 小符路径在串口前额外限制速度斜率，避免目标抖动直接变成前馈力矩脉冲。
-  // 大符的 MPC 路径使用下方同一套二阶输出适配器。
+  // v2 打符路径在串口前额外限制速度斜率，避免模型重捕获或正弦拟合突变
+  // 直接变成前馈力矩脉冲；关闭 v2 后旧大符链路不改变原有行为。
   FinalVelocityAccelerationAdapter buff_motion_adapter(
-      command_limiter_config, options.aim_task == "smallbuff");
+      command_limiter_config, use_buff_v2);
   FinalVelocityAccelerationAdapter mpc_motion_adapter(command_limiter_config);
   FinalVelocityAccelerationAdapter outpost_mpc_motion_adapter(outpost_limiter_config);
 
@@ -1598,7 +1600,9 @@ int run(const Options& options) {
   std::unique_ptr<hfut::buff::Runtime> buff_v2_runtime;
   if (use_buff_task) {
     if (use_buff_v2) {
-      buff_v2_runtime = std::make_unique<hfut::buff::Runtime>(adapted_config_path, false);
+      // bigbuff 通过 big_rune=true 启用正弦运动拟合和大符专用状态模型。
+      buff_v2_runtime = std::make_unique<hfut::buff::Runtime>(
+          adapted_config_path, options.aim_task == "bigbuff");
     } else {
       buff_detector = std::make_unique<auto_buff::Buff_Detector>(adapted_config_path);
       buff_solver = std::make_unique<auto_buff::Solver>(adapted_config_path);
@@ -1716,8 +1720,12 @@ int run(const Options& options) {
     std::printf("[standard] smallbuff_static_model=%s path=%s\n",
                 smallbuff_static_model ? "true" : "false", control_path);
   } else if (options.aim_task == "bigbuff") {
-    std::printf("[standard] bigbuff path=%s model=variable_speed_sine\n",
-                use_buff_mpc_planner ? "dynamic_tinympc" : "aimer_feedback_error");
+    if (use_buff_v2) {
+      std::printf("[standard] bigbuff path=buff_v2_big_rune model=sine_fit\n");
+    } else {
+      std::printf("[standard] bigbuff path=%s model=variable_speed_sine\n",
+                  use_buff_mpc_planner ? "dynamic_tinympc" : "aimer_feedback_error");
+    }
   }
   if (use_outpost_profile) {
     std::printf(
@@ -2158,14 +2166,16 @@ int run(const Options& options) {
     } else if (options.aim_task == "smallbuff") {
       // 小符速度适配器同样延后到最终角度保护后执行。
       active_mpc_motion_adapter->reset();
-    } else if (use_buff_task) {
-      // 没有有效的打符 MPC 计划时清空适配器状态，避免大符重获目标后
-      // 继承上一段 MPC 的速度/加速度历史。
+    } else if (use_buff_task && !use_buff_v2) {
+      // 旧打符链路没有 v2 的连续速度状态；重获目标后清空旧 MPC 适配器，
+      // 避免继承上一段计划的速度/加速度历史。
       buff_motion_adapter.reset();
       active_mpc_motion_adapter->reset();
     }
     SmallBuffFinalGuardResult smallbuff_final_guard;
-    const bool use_buff_final_guard = options.aim_task == "smallbuff" || use_buff_mpc_output;
+    // v2 大符和小符一样，在串口出口使用反馈相对角度硬限幅。
+    const bool use_buff_final_guard = options.aim_task == "smallbuff" ||
+      use_buff_v2 || use_buff_mpc_output;
     if (use_buff_final_guard) {
       const auto command_feedback_age = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - last_feedback_time);
@@ -2185,7 +2195,7 @@ int run(const Options& options) {
         // 串口出口再做一次硬限角，不能让前级滤波状态把打符命令带离反馈角保护范围。
         smallbuff_final_guard = applySmallBuffFinalAngleGuard(
             command, latest_feedback, *active_limiter_config,
-            options.aim_task == "smallbuff");
+            options.aim_task == "smallbuff" || use_buff_v2);
       }
       if (smallbuff_final_guard.yaw_limited || smallbuff_final_guard.pitch_limited) {
         if (options.aim_task != "smallbuff") {
@@ -2202,7 +2212,8 @@ int run(const Options& options) {
           command, command_time,
           (smallbuff_final_guard.yaw_limited || smallbuff_final_guard.pitch_limited) &&
           !target_phase_switch);
-    } else if (options.aim_task == "smallbuff" && !use_buff_mpc_output) {
+    } else if (use_buff_v2 && !use_buff_mpc_output) {
+      // v2 小符和大符都保留模型给出的速度轨迹，同时限制速度变化率。
       buff_motion_adapter.apply(command, command_time);
     }
     const double desired_yaw = command.yaw;

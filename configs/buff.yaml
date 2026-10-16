@@ -1,7 +1,7 @@
 # 26 赛季打符配置：日常调参项放前面，固定实现参数使用代码默认值。
 # standard 启动时从 hardware.yaml 同步相机内参、畸变和相机到枪管外参。
 
-# simple_auto_aim 小符后端。standard 在 buff 分支中仅对 smallbuff 默认启用，
+# simple_auto_aim 打符后端。standard 对 smallbuff/bigbuff 默认启用，
 # 旧 auto_buff 链路仍保留，便于现场快速回退。
 buff_v2:
   enabled: true
