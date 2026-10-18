@@ -106,6 +106,13 @@ Plan Planner::plan(const Trajectory & trajectory, double yaw0, double distance)
   return result;
 }
 
+void Planner::setArmorAvoidanceConfig(const ArmorAvoidanceConfig & config)
+{
+  if (sameArmorAvoidanceConfig(armor_avoidance_config_, config)) return;
+  armor_avoidance_config_ = config;
+  armor_avoidance_result_ = optimizeArmorAvoidance(config);
+}
+
 Plan Planner::plan(Target target, double bullet_speed)
 {
   // 0. Check bullet speed
@@ -287,6 +294,11 @@ Eigen::Matrix<double, 2, 1> Planner::aim(const Target & target, double bullet_sp
       xyz = xyza.head<3>();
       yaw = xyza[3];
     }
+  }
+  if (armor_avoidance_config_.enabled) {
+    if (!armor_avoidance_result_.valid) throw std::runtime_error("装甲板没有可用的避区瞄准点");
+    applyArmorAvoidanceOffset(
+      armor_avoidance_result_, yaw, xyz.x(), xyz.y(), xyz.z());
   }
   debug_xyza = Eigen::Vector4d(xyz.x(), xyz.y(), xyz.z(), yaw);
 

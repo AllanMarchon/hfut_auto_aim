@@ -147,6 +147,25 @@ io::Command Aimer::aim(
   return command;
 }
 
+void Aimer::setArmorAvoidanceConfig(const ArmorAvoidanceConfig & config)
+{
+  if (sameArmorAvoidanceConfig(armor_avoidance_config_, config)) return;
+  armor_avoidance_config_ = config;
+  armor_avoidance_result_ = optimizeArmorAvoidance(config);
+}
+
+AimPoint Aimer::apply_armor_avoidance(const Eigen::Vector4d & xyza) const
+{
+  if (!armor_avoidance_config_.enabled) return {true, xyza};
+  if (!armor_avoidance_result_.valid) return {false, xyza};
+
+  Eigen::Vector4d adjusted = xyza;
+  const double yaw = xyza[3];
+  applyArmorAvoidanceOffset(
+    armor_avoidance_result_, yaw, adjusted[0], adjusted[1], adjusted[2]);
+  return {true, adjusted};
+}
+
 AimPoint Aimer::choose_aim_point(const Target & target)
 {
   Eigen::VectorXd ekf_x = target.ekf_x();
@@ -157,11 +176,11 @@ AimPoint Aimer::choose_aim_point(const Target & target)
   if (aim_observed_armor_) {
     const int id = std::clamp(target.last_id, 0, static_cast<int>(armor_num) - 1);
     lock_id_ = id;
-    return {true, armor_xyza_list[id]};
+    return apply_armor_avoidance(armor_xyza_list[id]);
   }
 
   // 如果装甲板未发生过跳变，则只有当前装甲板的位置已知
-  if (!target.jumped) return {true, armor_xyza_list[0]};
+  if (!target.jumped) return apply_armor_avoidance(armor_xyza_list[0]);
 
   // 整车旋转中心的球坐标yaw
   auto center_yaw = std::atan2(ekf_x[2], ekf_x[0]);
@@ -195,12 +214,12 @@ AimPoint Aimer::choose_aim_point(const Target & target)
       if (lock_id_ != id0 && lock_id_ != id1)
         lock_id_ = (std::abs(delta_angle_list[id0]) < std::abs(delta_angle_list[id1])) ? id0 : id1;
 
-      return {true, armor_xyza_list[lock_id_]};
+      return apply_armor_avoidance(armor_xyza_list[lock_id_]);
     }
 
     // 只有一个装甲板在可射击范围内时，退出锁定模式
     lock_id_ = -1;
-    return {true, armor_xyza_list[id_list[0]]};
+    return apply_armor_avoidance(armor_xyza_list[id_list[0]]);
   }
 
   double coming_angle, leaving_angle;
@@ -215,8 +234,10 @@ AimPoint Aimer::choose_aim_point(const Target & target)
   // 在小陀螺时，一侧的装甲板不断出现，另一侧的装甲板不断消失，显然前者被打中的概率更高
   for (int i = 0; i < armor_num; i++) {
     if (std::abs(delta_angle_list[i]) > coming_angle) continue;
-    if (ekf_x[7] > 0 && delta_angle_list[i] < leaving_angle) return {true, armor_xyza_list[i]};
-    if (ekf_x[7] < 0 && delta_angle_list[i] > -leaving_angle) return {true, armor_xyza_list[i]};
+    if (ekf_x[7] > 0 && delta_angle_list[i] < leaving_angle)
+      return apply_armor_avoidance(armor_xyza_list[i]);
+    if (ekf_x[7] < 0 && delta_angle_list[i] > -leaving_angle)
+      return apply_armor_avoidance(armor_xyza_list[i]);
   }
 
   return {false, armor_xyza_list[0]};

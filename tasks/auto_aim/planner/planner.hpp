@@ -7,6 +7,7 @@
 #include <string>
 
 #include "tasks/auto_aim/target.hpp"
+#include "tasks/auto_aim/armor_avoidance_optimizer.hpp"
 #include "tinympc/tiny_api.hpp"
 
 namespace auto_aim
@@ -42,6 +43,7 @@ class Planner
   Plan plan(const Trajectory & trajectory, double yaw0, double distance);
   Plan plan(Target target, double bullet_speed);
   Plan plan(std::optional<Target> target, double bullet_speed);
+  void setArmorAvoidanceConfig(const ArmorAvoidanceConfig & config);
 
 private:
   double yaw_offset_;
@@ -49,6 +51,8 @@ private:
   double fire_thresh_;
   double low_speed_delay_time_, high_speed_delay_time_, decision_speed_;
   std::string planner_profile_;
+  ArmorAvoidanceConfig armor_avoidance_config_;
+  ArmorAvoidanceResult armor_avoidance_result_;
 
   TinySolver * yaw_solver_;
   TinySolver * pitch_solver_;

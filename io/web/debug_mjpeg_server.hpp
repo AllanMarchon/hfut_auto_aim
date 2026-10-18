@@ -69,6 +69,17 @@ struct DebugMjpegStatus {
   std::string serial_rx;
 };
 
+// Web 页面设置的装甲板尺寸、加固圆和散布参数，会传入实际自瞄链路。
+struct ArmorAvoidanceSettings {
+  bool enabled{false};
+  double plate_width_mm{135.0};
+  double plate_height_mm{56.0};
+  double center_x_mm{0.0};
+  double center_y_mm{0.0};
+  double radius_mm{20.0};
+  double dispersion_sigma_mm{10.0};
+};
+
 class DebugMjpegServer {
  public:
   explicit DebugMjpegServer(DebugMjpegServerConfig config = {});
@@ -84,11 +95,13 @@ class DebugMjpegServer {
   std::string url() const;
 
   void publish(const cv::Mat& image, const DebugMjpegStatus& status);
+  ArmorAvoidanceSettings armorAvoidanceSettings() const;
 
  private:
   void acceptLoop();
   void handleClient(int client_fd);
   bool bindListenSocket();
+  bool setArmorAvoidanceSettings(const ArmorAvoidanceSettings& settings);
 
   DebugMjpegServerConfig config_;
   std::atomic<bool> running_{false};
@@ -98,6 +111,7 @@ class DebugMjpegServer {
   std::condition_variable frame_cv_;
   std::vector<uint8_t> latest_jpeg_;
   DebugMjpegStatus latest_status_;
+  ArmorAvoidanceSettings armor_avoidance_settings_;
   uint64_t frame_version_{0};
   std::string error_message_;
   std::mutex clients_mutex_;

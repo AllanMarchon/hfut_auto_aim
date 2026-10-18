@@ -1583,6 +1583,22 @@ int run(const Options& options) {
                 web_server->url().c_str());
   }
 
+  const auto update_armor_avoidance = [&]() {
+    if (!web_server || use_buff_task) return;
+    const auto web_settings = web_server->armorAvoidanceSettings();
+    auto_aim::ArmorAvoidanceConfig config;
+    config.enabled = web_settings.enabled;
+    config.plate_width_mm = web_settings.plate_width_mm;
+    config.plate_height_mm = web_settings.plate_height_mm;
+    config.center_x_mm = web_settings.center_x_mm;
+    config.center_y_mm = web_settings.center_y_mm;
+    config.radius_mm = web_settings.radius_mm;
+    config.dispersion_sigma_mm = web_settings.dispersion_sigma_mm;
+    if (aimer) aimer->setArmorAvoidanceConfig(config);
+    if (mpc_planner) mpc_planner->setArmorAvoidanceConfig(config);
+    if (outpost_mpc_planner) outpost_mpc_planner->setArmorAvoidanceConfig(config);
+  };
+
   std::printf(
       "[standard] camera=%s serial=%s:%s@%d read_timeout=%dms write_timeout=%dms "
       "task=%s exposure=%.0fus dry_run=%s serial_send=%s fire=%s enemy=%s bullet=%.2f\n",
@@ -1838,6 +1854,7 @@ int run(const Options& options) {
       }
       auto_aim::Planner* active_mpc_planner =
           (target_is_outpost && outpost_mpc_planner) ? outpost_mpc_planner.get() : mpc_planner.get();
+      update_armor_avoidance();
       if (use_mpc_planner) {
         if (!targets.empty() && active_mpc_planner) {
           try {

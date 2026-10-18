@@ -8,6 +8,7 @@
 
 #include "io/cboard.hpp"
 #include "io/command.hpp"
+#include "armor_avoidance_optimizer.hpp"
 #include "target.hpp"
 
 namespace auto_aim
@@ -31,6 +32,7 @@ public:
   io::Command aim(
     std::list<Target> targets, std::chrono::steady_clock::time_point timestamp, double bullet_speed,
     io::ShootMode shoot_mode, bool to_now = true);
+  void setArmorAvoidanceConfig(const ArmorAvoidanceConfig & config);
 
 private:
   double yaw_offset_;
@@ -43,8 +45,11 @@ private:
   double low_speed_delay_time_;
   double decision_speed_;
   bool aim_observed_armor_{true};
+  ArmorAvoidanceConfig armor_avoidance_config_;
+  ArmorAvoidanceResult armor_avoidance_result_;
 
   AimPoint choose_aim_point(const Target & target);
+  AimPoint apply_armor_avoidance(const Eigen::Vector4d & xyza) const;
 };
 
 }  // namespace auto_aim

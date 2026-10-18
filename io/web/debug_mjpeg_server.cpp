@@ -8,10 +8,12 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <sstream>
 #include <utility>
 
@@ -94,6 +96,94 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"serial_rx\":\"" << escapeJson(status.serial_rx) << "\""
       << '}';
   return out.str();
+}
+
+std::string armorAvoidanceJson(const ArmorAvoidanceSettings& settings) {
+  std::ostringstream out;
+  out << '{'
+      << "\"enabled\":" << (settings.enabled ? "true" : "false")
+      << ",\"plate_width_mm\":" << settings.plate_width_mm
+      << ",\"plate_height_mm\":" << settings.plate_height_mm
+      << ",\"center_x_mm\":" << settings.center_x_mm
+      << ",\"center_y_mm\":" << settings.center_y_mm
+      << ",\"radius_mm\":" << settings.radius_mm
+      << ",\"dispersion_sigma_mm\":" << settings.dispersion_sigma_mm
+      << '}';
+  return out.str();
+}
+
+bool parseJsonNumber(const std::string& json, const std::string& key, double& value) {
+  const std::string needle = "\"" + key + "\"";
+  const size_t key_pos = json.find(needle);
+  if (key_pos == std::string::npos) return false;
+  const size_t colon = json.find(':', key_pos + needle.size());
+  if (colon == std::string::npos) return false;
+  const char* begin = json.c_str() + colon + 1;
+  while (*begin == ' ' || *begin == '\t' || *begin == '\r' || *begin == '\n') ++begin;
+  char* end = nullptr;
+  const double parsed = std::strtod(begin, &end);
+  if (end == begin || !std::isfinite(parsed)) return false;
+  while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') ++end;
+  if (*end != ',' && *end != '}') return false;
+  value = parsed;
+  return true;
+}
+
+bool parseJsonBool(const std::string& json, const std::string& key, bool& value) {
+  const std::string needle = "\"" + key + "\"";
+  const size_t key_pos = json.find(needle);
+  if (key_pos == std::string::npos) return false;
+  const size_t colon = json.find(':', key_pos + needle.size());
+  if (colon == std::string::npos) return false;
+  size_t value_pos = colon + 1;
+  while (value_pos < json.size() &&
+         (json[value_pos] == ' ' || json[value_pos] == '\t' || json[value_pos] == '\r' ||
+          json[value_pos] == '\n')) {
+    ++value_pos;
+  }
+  if (json.compare(value_pos, 4, "true") == 0) {
+    value = true;
+    return true;
+  }
+  if (json.compare(value_pos, 5, "false") == 0) {
+    value = false;
+    return true;
+  }
+  return false;
+}
+
+bool parseArmorAvoidanceJson(const std::string& json, ArmorAvoidanceSettings& settings) {
+  return parseJsonBool(json, "enabled", settings.enabled) &&
+         parseJsonNumber(json, "plate_width_mm", settings.plate_width_mm) &&
+         parseJsonNumber(json, "plate_height_mm", settings.plate_height_mm) &&
+         parseJsonNumber(json, "center_x_mm", settings.center_x_mm) &&
+         parseJsonNumber(json, "center_y_mm", settings.center_y_mm) &&
+         parseJsonNumber(json, "radius_mm", settings.radius_mm) &&
+         parseJsonNumber(json, "dispersion_sigma_mm", settings.dispersion_sigma_mm);
+}
+
+size_t requestContentLength(const std::string& request) {
+  const size_t headers_end = request.find("\r\n\r\n");
+  if (headers_end == std::string::npos) return 0;
+  std::istringstream headers(request.substr(0, headers_end));
+  std::string line;
+  std::getline(headers, line);
+  while (std::getline(headers, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    const size_t colon = line.find(':');
+    if (colon == std::string::npos) continue;
+    std::string name = line.substr(0, colon);
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    if (name != "content-length") continue;
+    try {
+      return static_cast<size_t>(std::stoul(line.substr(colon + 1)));
+    } catch (...) {
+      return 0;
+    }
+  }
+  return 0;
 }
 
 std::string indexHtml() {
@@ -272,6 +362,42 @@ std::string indexHtml() {
     .telemetry span:nth-child(odd) { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .telemetry span:nth-child(even) { color: var(--text); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
     .status-line { color: var(--muted); font-size: 12px; margin-top: 10px; }
+    .avoidance-block {
+      margin-top: 14px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }
+    .avoidance-description { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 6px 0 9px; }
+    .plate-editor {
+      display: block;
+      width: 100%;
+      height: 220px;
+      border: 1px solid #2b313a;
+      border-radius: 5px;
+      background: #101318;
+      touch-action: none;
+      user-select: none;
+    }
+    .plate-editor .plate { fill: #26313c; stroke: #d6e1ef; stroke-width: 2; }
+    .plate-editor .plate-grid { stroke: rgba(154,164,178,0.19); stroke-width: 1; }
+    .plate-editor .avoid-circle { fill: rgba(255,92,112,0.2); stroke: var(--red); stroke-width: 2; }
+    .plate-editor .circle-center { stroke: #fff; stroke-width: 1.5; }
+    .plate-editor .circle-handle { fill: #ffd166; stroke: #101318; stroke-width: 2; cursor: ew-resize; }
+    .plate-editor .axis-label { fill: var(--muted); font: 11px Arial, sans-serif; }
+    .avoidance-controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 9px;
+    }
+    .avoidance-control { display: grid; gap: 4px; min-width: 0; }
+    .avoidance-control span { color: var(--muted); font-size: 11px; }
+    .avoidance-control input[type="number"] {
+      width: 100%; min-width: 0; color: var(--text); background: var(--panel-2);
+      border: 1px solid var(--border); border-radius: 4px; padding: 6px 7px; font: inherit;
+    }
+    .avoidance-enable { color: var(--text); margin-top: 9px; }
+    .avoidance-note { color: var(--yellow); font-size: 11px; line-height: 1.45; margin-top: 8px; }
     @media (max-width: 1100px) {
       main { grid-template-columns: 1fr; }
       .side-panel { order: 2; }
@@ -354,6 +480,34 @@ std::string indexHtml() {
       <summary>Telemetry</summary>
       <div id="telemetry" class="telemetry"></div>
     </details>
+    <section class="avoidance-block" aria-label="装甲板避区参数">
+      <div class="chart-head">
+        <h2>装甲板避区参数</h2>
+        <span id="avoidance-sync" class="status-line">加载中</span>
+      </div>
+      <div class="avoidance-description">
+        在矩形装甲板上拖动红色圆心和黄色把手，设置加固区域的位置与半径；坐标原点在矩形中心，x 向右、y 向上。启用后，参数会传给实际自瞄目标点计算。
+      </div>
+      <svg id="plate-editor" class="plate-editor" viewBox="0 0 360 240" role="img" aria-label="可拖动的装甲板和加固区域圆形">
+        <rect id="plate-rect" class="plate" rx="2"></rect>
+        <g id="plate-grid"></g>
+        <circle id="avoid-circle" class="avoid-circle" cx="180" cy="120" r="20"></circle>
+        <line id="circle-cross-x" class="circle-center" x1="170" y1="120" x2="190" y2="120"></line>
+        <line id="circle-cross-y" class="circle-center" x1="180" y1="110" x2="180" y2="130"></line>
+        <circle id="circle-handle" class="circle-handle" cx="200" cy="120" r="6"></circle>
+        <text id="plate-label" class="axis-label" x="180" y="228" text-anchor="middle">装甲板局部坐标 (mm)</text>
+      </svg>
+      <div class="avoidance-controls">
+        <label class="avoidance-control"><span>板宽 W (mm)</span><input id="plate-width" type="number" min="50" max="500" step="1"></label>
+        <label class="avoidance-control"><span>板高 H (mm)</span><input id="plate-height" type="number" min="50" max="400" step="1"></label>
+        <label class="avoidance-control"><span>圆心 x (mm)</span><input id="circle-x" type="number" step="1"></label>
+        <label class="avoidance-control"><span>圆心 y (mm)</span><input id="circle-y" type="number" step="1"></label>
+        <label class="avoidance-control"><span>加固半径 R (mm)</span><input id="circle-radius" type="number" min="1" max="300" step="1"></label>
+        <label class="avoidance-control"><span>每轴散布 σ (mm)</span><input id="dispersion-sigma" type="number" min="0" max="100" step="1"></label>
+      </div>
+      <label class="toggle avoidance-enable"><input id="avoidance-enabled" type="checkbox"> 启用实际避区瞄准</label>
+      <div class="avoidance-note">默认板宽高参考当前小装甲板几何；散布 σ 需根据实测弹着数据标定。若没有可用的非加固区，算法会停止瞄准该目标。</div>
+    </section>
     <div id="status-note" class="status-line">waiting for status...</div>
   </aside>
 </main>
@@ -440,6 +594,17 @@ const defaultVisible = CHARTS.flatMap(chart => chart.series.map(series => series
 let visibleSeries = new Set(loadJson('hfut-visible-series', defaultVisible));
 let history = [];
 let latestStatus = null;
+let avoidanceSettings = {
+  enabled: false,
+  plate_width_mm: 135,
+  plate_height_mm: 56,
+  center_x_mm: 0,
+  center_y_mm: 0,
+  radius_mm: 20,
+  dispersion_sigma_mm: 10
+};
+let avoidanceSaveTimer = null;
+let plateDragMode = null;
 
 function loadJson(key, fallback) {
   try {
@@ -465,6 +630,189 @@ function fmt(value, digits = 1, unit = '') {
   if (typeof value === 'number') return Number.isFinite(value) ? `${value.toFixed(digits)}${unit}` : '--';
   return String(value);
 }
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeAvoidanceSettings(settings) {
+  settings.plate_width_mm = clamp(finite(settings.plate_width_mm, 135), 50, 500);
+  settings.plate_height_mm = clamp(finite(settings.plate_height_mm, 56), 50, 400);
+  settings.center_x_mm = clamp(finite(settings.center_x_mm), -settings.plate_width_mm / 2, settings.plate_width_mm / 2);
+  settings.center_y_mm = clamp(finite(settings.center_y_mm), -settings.plate_height_mm / 2, settings.plate_height_mm / 2);
+  settings.radius_mm = clamp(finite(settings.radius_mm, 20), 1, 300);
+  settings.dispersion_sigma_mm = clamp(finite(settings.dispersion_sigma_mm, 10), 0, 100);
+  settings.enabled = Boolean(settings.enabled);
+  return settings;
+}
+
+function drawAvoidancePlate() {
+  avoidanceSettings = normalizeAvoidanceSettings(avoidanceSettings);
+  const {plate_width_mm: widthMm, plate_height_mm: heightMm} = avoidanceSettings;
+  const scale = Math.min(270 / widthMm, 180 / heightMm);
+  const plateWidth = widthMm * scale;
+  const plateHeight = heightMm * scale;
+  const left = (360 - plateWidth) / 2;
+  const top = 10 + (190 - plateHeight) / 2;
+  const centerX = left + plateWidth / 2;
+  const centerY = top + plateHeight / 2;
+  const circleX = centerX + avoidanceSettings.center_x_mm * scale;
+  const circleY = centerY - avoidanceSettings.center_y_mm * scale;
+  const circleRadius = avoidanceSettings.radius_mm * scale;
+
+  const plate = document.getElementById('plate-rect');
+  plate.setAttribute('x', left);
+  plate.setAttribute('y', top);
+  plate.setAttribute('width', plateWidth);
+  plate.setAttribute('height', plateHeight);
+
+  const grid = document.getElementById('plate-grid');
+  grid.textContent = '';
+  for (let i = 1; i < 4; ++i) {
+    const x = left + plateWidth * i / 4;
+    const y = top + plateHeight * i / 4;
+    const vertical = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    vertical.setAttribute('class', 'plate-grid');
+    vertical.setAttribute('x1', x); vertical.setAttribute('x2', x);
+    vertical.setAttribute('y1', top); vertical.setAttribute('y2', top + plateHeight);
+    grid.appendChild(vertical);
+    const horizontal = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    horizontal.setAttribute('class', 'plate-grid');
+    horizontal.setAttribute('x1', left); horizontal.setAttribute('x2', left + plateWidth);
+    horizontal.setAttribute('y1', y); horizontal.setAttribute('y2', y);
+    grid.appendChild(horizontal);
+  }
+
+  const circle = document.getElementById('avoid-circle');
+  circle.setAttribute('cx', circleX); circle.setAttribute('cy', circleY);
+  circle.setAttribute('r', circleRadius);
+  const crossX = document.getElementById('circle-cross-x');
+  crossX.setAttribute('x1', circleX - 6); crossX.setAttribute('x2', circleX + 6);
+  crossX.setAttribute('y1', circleY); crossX.setAttribute('y2', circleY);
+  const crossY = document.getElementById('circle-cross-y');
+  crossY.setAttribute('x1', circleX); crossY.setAttribute('x2', circleX);
+  crossY.setAttribute('y1', circleY - 6); crossY.setAttribute('y2', circleY + 6);
+  const handle = document.getElementById('circle-handle');
+  handle.setAttribute('cx', circleX + circleRadius); handle.setAttribute('cy', circleY);
+  circle.setAttribute('opacity', avoidanceSettings.enabled ? '1' : '0.3');
+  crossX.setAttribute('opacity', avoidanceSettings.enabled ? '1' : '0.3');
+  crossY.setAttribute('opacity', avoidanceSettings.enabled ? '1' : '0.3');
+  handle.setAttribute('opacity', avoidanceSettings.enabled ? '1' : '0.3');
+
+  for (const [id, key] of [
+    ['plate-width', 'plate_width_mm'], ['plate-height', 'plate_height_mm'],
+    ['circle-x', 'center_x_mm'], ['circle-y', 'center_y_mm'],
+    ['circle-radius', 'radius_mm'], ['dispersion-sigma', 'dispersion_sigma_mm']
+  ]) {
+    const input = document.getElementById(id);
+    if (document.activeElement !== input) input.value = Number(avoidanceSettings[key].toFixed(1));
+  }
+  document.getElementById('avoidance-enabled').checked = avoidanceSettings.enabled;
+}
+
+function scheduleAvoidanceSave() {
+  drawAvoidancePlate();
+  document.getElementById('avoidance-sync').textContent = '待同步';
+  clearTimeout(avoidanceSaveTimer);
+  avoidanceSaveTimer = setTimeout(async () => {
+    try {
+      const response = await fetch('/avoidance.json', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(avoidanceSettings),
+        cache: 'no-store'
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      avoidanceSettings = normalizeAvoidanceSettings(await response.json());
+      drawAvoidancePlate();
+      document.getElementById('avoidance-sync').textContent = '已同步';
+    } catch (error) {
+      document.getElementById('avoidance-sync').textContent = '同步失败';
+    }
+  }, 100);
+}
+
+async function loadAvoidanceSettings() {
+  try {
+    const response = await fetch('/avoidance.json', {cache: 'no-store'});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    avoidanceSettings = normalizeAvoidanceSettings(await response.json());
+    drawAvoidancePlate();
+    document.getElementById('avoidance-sync').textContent = '已同步';
+  } catch (_) {
+    drawAvoidancePlate();
+    document.getElementById('avoidance-sync').textContent = '本地编辑';
+  }
+}
+
+function svgPoint(event) {
+  const svg = document.getElementById('plate-editor');
+  const point = new DOMPoint(event.clientX, event.clientY);
+  return point.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+function plateGeometry() {
+  const scale = Math.min(270 / avoidanceSettings.plate_width_mm, 180 / avoidanceSettings.plate_height_mm);
+  return {scale, centerX: 180, centerY: 105};
+}
+
+document.getElementById('plate-editor').addEventListener('pointerdown', event => {
+  const point = svgPoint(event);
+  const {scale, centerX, centerY} = plateGeometry();
+  const circleX = centerX + avoidanceSettings.center_x_mm * scale;
+  const circleY = centerY - avoidanceSettings.center_y_mm * scale;
+  const radius = avoidanceSettings.radius_mm * scale;
+  const handleDistance = Math.hypot(point.x - (circleX + radius), point.y - circleY);
+  const circleDistance = Math.hypot(point.x - circleX, point.y - circleY);
+  if (handleDistance <= 14) plateDragMode = 'radius';
+  else if (circleDistance <= radius + 12) plateDragMode = 'center';
+  else plateDragMode = 'center';
+  event.currentTarget.setPointerCapture(event.pointerId);
+  if (plateDragMode === 'center') {
+    avoidanceSettings.center_x_mm = clamp((point.x - centerX) / scale, -avoidanceSettings.plate_width_mm / 2, avoidanceSettings.plate_width_mm / 2);
+    avoidanceSettings.center_y_mm = clamp((centerY - point.y) / scale, -avoidanceSettings.plate_height_mm / 2, avoidanceSettings.plate_height_mm / 2);
+  } else {
+    avoidanceSettings.radius_mm = clamp(Math.hypot(point.x - circleX, point.y - circleY) / scale, 1, 300);
+  }
+  scheduleAvoidanceSave();
+});
+
+document.getElementById('plate-editor').addEventListener('pointermove', event => {
+  if (!plateDragMode) return;
+  const point = svgPoint(event);
+  const {scale, centerX, centerY} = plateGeometry();
+  if (plateDragMode === 'center') {
+    avoidanceSettings.center_x_mm = clamp((point.x - centerX) / scale, -avoidanceSettings.plate_width_mm / 2, avoidanceSettings.plate_width_mm / 2);
+    avoidanceSettings.center_y_mm = clamp((centerY - point.y) / scale, -avoidanceSettings.plate_height_mm / 2, avoidanceSettings.plate_height_mm / 2);
+  } else {
+    const circleX = centerX + avoidanceSettings.center_x_mm * scale;
+    const circleY = centerY - avoidanceSettings.center_y_mm * scale;
+    avoidanceSettings.radius_mm = clamp(Math.hypot(point.x - circleX, point.y - circleY) / scale, 1, 300);
+  }
+  scheduleAvoidanceSave();
+});
+
+for (const eventName of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  document.getElementById('plate-editor').addEventListener(eventName, () => { plateDragMode = null; });
+}
+
+for (const [id, key] of [
+  ['plate-width', 'plate_width_mm'], ['plate-height', 'plate_height_mm'],
+  ['circle-x', 'center_x_mm'], ['circle-y', 'center_y_mm'],
+  ['circle-radius', 'radius_mm'], ['dispersion-sigma', 'dispersion_sigma_mm']
+]) {
+  document.getElementById(id).addEventListener('input', event => {
+    const parsed = Number(event.target.value);
+    if (!Number.isFinite(parsed)) return;
+    avoidanceSettings[key] = parsed;
+    scheduleAvoidanceSave();
+  });
+  document.getElementById(id).addEventListener('blur', drawAvoidancePlate);
+}
+document.getElementById('avoidance-enabled').addEventListener('change', event => {
+  avoidanceSettings.enabled = event.target.checked;
+  scheduleAvoidanceSave();
+});
 
 function normalizeStatus(status) {
   status.fire_advice = Boolean(status.fire_advice ?? status.fire ?? false);
@@ -742,6 +1090,8 @@ document.getElementById('clear-history').addEventListener('click', () => {
 });
 window.addEventListener('resize', drawAllCharts);
 buildToggles();
+drawAvoidancePlate();
+loadAvoidanceSettings();
 setInterval(refreshStatus, POLL_MS);
 refreshStatus();
 </script>
@@ -787,7 +1137,9 @@ std::string requestPath(const std::string& request) {
   if (method_end == std::string::npos) return "/";
   const size_t path_end = request.find(' ', method_end + 1);
   if (path_end == std::string::npos) return "/";
-  return request.substr(method_end + 1, path_end - method_end - 1);
+  const std::string target = request.substr(method_end + 1, path_end - method_end - 1);
+  const size_t query = target.find('?');
+  return query == std::string::npos ? target : target.substr(0, query);
 }
 
 }  // namespace
@@ -861,6 +1213,29 @@ void DebugMjpegServer::publish(const cv::Mat& image, const DebugMjpegStatus& sta
   frame_cv_.notify_all();
 }
 
+ArmorAvoidanceSettings DebugMjpegServer::armorAvoidanceSettings() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return armor_avoidance_settings_;
+}
+
+bool DebugMjpegServer::setArmorAvoidanceSettings(const ArmorAvoidanceSettings& settings) {
+  const bool valid =
+      std::isfinite(settings.plate_width_mm) && settings.plate_width_mm >= 50.0 &&
+      settings.plate_width_mm <= 500.0 && std::isfinite(settings.plate_height_mm) &&
+      settings.plate_height_mm >= 50.0 && settings.plate_height_mm <= 400.0 &&
+      std::isfinite(settings.center_x_mm) &&
+      std::abs(settings.center_x_mm) <= settings.plate_width_mm / 2.0 &&
+      std::isfinite(settings.center_y_mm) &&
+      std::abs(settings.center_y_mm) <= settings.plate_height_mm / 2.0 &&
+      std::isfinite(settings.radius_mm) && settings.radius_mm >= 1.0 &&
+      settings.radius_mm <= 300.0 && std::isfinite(settings.dispersion_sigma_mm) &&
+      settings.dispersion_sigma_mm >= 0.0 && settings.dispersion_sigma_mm <= 100.0;
+  if (!valid) return false;
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  armor_avoidance_settings_ = settings;
+  return true;
+}
+
 bool DebugMjpegServer::bindListenSocket() {
   server_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd_ < 0) {
@@ -925,14 +1300,66 @@ void DebugMjpegServer::handleClient(int client_fd) {
   timeval send_timeout{};
   send_timeout.tv_sec = 1;
   ::setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
+  timeval recv_timeout{};
+  recv_timeout.tv_sec = 2;
+  ::setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &recv_timeout, sizeof(recv_timeout));
 
+  std::string request;
   char buffer[2048] = {};
-  const ssize_t n = ::recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-  if (n <= 0) {
+  size_t request_size = 0;
+  while (request_size < 8192 && request.find("\r\n\r\n") == std::string::npos) {
+    const ssize_t n = ::recv(client_fd, buffer, sizeof(buffer), 0);
+    if (n <= 0) break;
+    request.append(buffer, static_cast<size_t>(n));
+    request_size += static_cast<size_t>(n);
+  }
+  const size_t headers_end = request.find("\r\n\r\n");
+  if (headers_end == std::string::npos) {
     ::close(client_fd);
     return;
   }
-  const std::string path = requestPath(std::string(buffer, static_cast<size_t>(n)));
+  const size_t method_end = request.find(' ');
+  const std::string method = method_end == std::string::npos ? "" : request.substr(0, method_end);
+  const std::string path = requestPath(request);
+
+  if (path == "/avoidance.json" && method == "POST") {
+    const size_t content_length = requestContentLength(request);
+    if (content_length == 0 || content_length > 1024) {
+      const std::string body = "invalid content length\n";
+      sendString(client_fd, httpHeader("400 Bad Request", "text/plain", body.size()));
+      sendString(client_fd, body);
+      ::close(client_fd);
+      return;
+    }
+    const size_t body_start = headers_end + 4;
+    while (request.size() - body_start < content_length && request_size < 8192) {
+      const ssize_t n = ::recv(client_fd, buffer, sizeof(buffer), 0);
+      if (n <= 0) break;
+      request.append(buffer, static_cast<size_t>(n));
+      request_size += static_cast<size_t>(n);
+    }
+    if (request.size() - body_start < content_length) {
+      const std::string body = "incomplete request body\n";
+      sendString(client_fd, httpHeader("400 Bad Request", "text/plain", body.size()));
+      sendString(client_fd, body);
+      ::close(client_fd);
+      return;
+    }
+    ArmorAvoidanceSettings settings = armorAvoidanceSettings();
+    const std::string body_text = request.substr(body_start, content_length);
+    if (!parseArmorAvoidanceJson(body_text, settings) || !setArmorAvoidanceSettings(settings)) {
+      const std::string body = "invalid avoidance settings\n";
+      sendString(client_fd, httpHeader("400 Bad Request", "text/plain", body.size()));
+      sendString(client_fd, body);
+      ::close(client_fd);
+      return;
+    }
+    const std::string body = armorAvoidanceJson(armorAvoidanceSettings());
+    sendString(client_fd, httpHeader("200 OK", "application/json", body.size()));
+    sendString(client_fd, body);
+    ::close(client_fd);
+    return;
+  }
 
   if (path == "/" || path == "/index.html") {
     const std::string body = indexHtml();
@@ -949,6 +1376,14 @@ void DebugMjpegServer::handleClient(int client_fd) {
       status = latest_status_;
     }
     const std::string body = statusJson(status);
+    sendString(client_fd, httpHeader("200 OK", "application/json", body.size()));
+    sendString(client_fd, body);
+    ::close(client_fd);
+    return;
+  }
+
+  if (path == "/avoidance.json" && method == "GET") {
+    const std::string body = armorAvoidanceJson(armorAvoidanceSettings());
     sendString(client_fd, httpHeader("200 OK", "application/json", body.size()));
     sendString(client_fd, body);
     ::close(client_fd);
