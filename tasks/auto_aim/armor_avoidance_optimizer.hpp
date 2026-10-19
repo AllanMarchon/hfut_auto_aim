@@ -166,6 +166,14 @@ inline ArmorAvoidanceResult optimizeArmorAvoidance(const ArmorAvoidanceConfig & 
         consider_zero_scatter(x, y, config, best, best_clearance);
       }
     }
+    // 圆与板边相切附近可能只剩很窄的安全角落，额外沿圆周取样避免粗网格漏掉。
+    constexpr int circle_samples = 1440;
+    for (int i = 0; i < circle_samples; ++i) {
+      const double angle = 2.0 * 3.14159265358979323846 * i / circle_samples;
+      const double x = config.center_x_mm + (config.radius_mm + 0.05) * std::cos(angle);
+      const double y = config.center_y_mm + (config.radius_mm + 0.05) * std::sin(angle);
+      consider_zero_scatter(x, y, config, best, best_clearance);
+    }
     if (!best.valid) return best;
     const double fine_step = 0.25;
     const double start_x = std::max(-half_width, best.x_mm - step);
@@ -184,6 +192,7 @@ inline ArmorAvoidanceResult optimizeArmorAvoidance(const ArmorAvoidanceConfig & 
   const double grid_step = std::clamp(sigma * 0.5, 2.0, 8.0);
   ArmorAvoidanceResult best{false, 0.0, 0.0, -1.0, 0.0, 1.0};
   const auto consider = [&](double x, double y, ArmorAvoidanceResult & current) {
+    // 概率模型负责权衡散布与脱靶风险，但名义瞄准点仍必须位于圆形加固区之外。
     if (!inside_plate(x, y, config) || !outside_circle(x, y, config)) return;
     const auto candidate = evaluate(x, y, config);
     if (candidate.clean_probability > current.clean_probability) current = candidate;

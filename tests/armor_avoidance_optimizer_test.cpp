@@ -46,18 +46,29 @@ int main()
   assert(std::abs(probability_sum - 1.0) < 1e-8);
   assert(scattered.clean_probability > 0.0);
 
+  config.radius_mm = 5.0;
+  const auto small_circle = optimizeArmorAvoidance(config);
+  assert(small_circle.valid);
+  assert(std::hypot(small_circle.x_mm, small_circle.y_mm) > config.radius_mm);
+
   config.center_x_mm = -25.0;
   const auto offset_circle = optimizeArmorAvoidance(config);
   assert(offset_circle.valid);
   assert(offset_circle.x_mm > 0.0);
 
   config.center_x_mm = 0.0;
+  config.radius_mm = 20.0;
   config.dispersion_sigma_mm = 0.0;
   const auto deterministic = optimizeArmorAvoidance(config);
   assert(deterministic.valid);
   assert(std::hypot(deterministic.x_mm, deterministic.y_mm) > config.radius_mm);
   assert(std::abs(deterministic.x_mm) < config.plate_width_mm / 2.0);
   assert(std::abs(deterministic.y_mm) < config.plate_height_mm / 2.0);
+
+  config.radius_mm = 72.5;
+  const auto narrow_safe_corner = optimizeArmorAvoidance(config);
+  assert(narrow_safe_corner.valid);
+  assert(std::hypot(narrow_safe_corner.x_mm, narrow_safe_corner.y_mm) > config.radius_mm);
 
   config.radius_mm = 300.0;
   const auto covered_plate = optimizeArmorAvoidance(config);

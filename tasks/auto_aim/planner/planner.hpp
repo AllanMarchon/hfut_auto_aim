@@ -36,7 +36,7 @@ struct Plan
 class Planner
 {
   public:
-  Eigen::Vector4d debug_xyza;
+  Eigen::Vector4d debug_xyza = Eigen::Vector4d::Zero();
   Planner(const std::string & config_path, const std::string & planner_profile = "mpc_planner");
 
   // 使用外部提供的打符参考轨迹复用共享 yaw/pitch MPC。

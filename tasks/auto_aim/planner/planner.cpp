@@ -123,6 +123,7 @@ Plan Planner::plan(Target target, double bullet_speed)
   // 1. Predict fly_time
   Eigen::Vector3d xyz;
   auto min_dist = 1e10;
+  double selected_yaw = 0.0;
   const auto armor_xyza_list = target.armor_xyza_list();
   if (armor_xyza_list.empty()) return {false};
   for (auto & xyza : armor_xyza_list) {
@@ -130,7 +131,14 @@ Plan Planner::plan(Target target, double bullet_speed)
     if (dist < min_dist) {
       min_dist = dist;
       xyz = xyza.head<3>();
+      selected_yaw = xyza[3];
     }
+  }
+  if (armor_avoidance_config_.enabled) {
+    if (!armor_avoidance_result_.valid) return {false};
+    applyArmorAvoidanceOffset(
+      armor_avoidance_result_, selected_yaw, xyz.x(), xyz.y(), xyz.z());
+    min_dist = xyz.head<2>().norm();
   }
   auto bullet_traj = tools::Trajectory(bullet_speed, min_dist, xyz.z());
   if (bullet_traj.unsolvable) return {false};
@@ -299,6 +307,7 @@ Eigen::Matrix<double, 2, 1> Planner::aim(const Target & target, double bullet_sp
     if (!armor_avoidance_result_.valid) throw std::runtime_error("装甲板没有可用的避区瞄准点");
     applyArmorAvoidanceOffset(
       armor_avoidance_result_, yaw, xyz.x(), xyz.y(), xyz.z());
+    min_dist = xyz.head<2>().norm();
   }
   debug_xyza = Eigen::Vector4d(xyz.x(), xyz.y(), xyz.z(), yaw);
 
@@ -312,6 +321,8 @@ Eigen::Matrix<double, 2, 1> Planner::aim(const Target & target, double bullet_sp
 Trajectory Planner::get_trajectory(Target & target, double yaw0, double bullet_speed)
 {
   Trajectory traj;
+  Eigen::Vector4d horizon_xyza = Eigen::Vector4d::Zero();
+  bool captured_horizon_xyza = false;
 
   target.predict(-DT * (HALF_HORIZON + 1));
   auto yaw_pitch_last = aim(target, bullet_speed);
@@ -326,11 +337,19 @@ Trajectory Planner::get_trajectory(Target & target, double yaw0, double bullet_s
     auto yaw_vel = tools::limit_rad(yaw_pitch_next(0) - yaw_pitch_last(0)) / (2 * DT);
     auto pitch_vel = (yaw_pitch_next(1) - yaw_pitch_last(1)) / (2 * DT);
 
+    // 命令时域中心对应的预测瞄准点用于距离输出，避免留下最后一帧预测点。
+    if (i == HALF_HORIZON - 1) {
+      horizon_xyza = debug_xyza;
+      captured_horizon_xyza = true;
+    }
+
     traj.col(i) << tools::limit_rad(yaw_pitch(0) - yaw0), yaw_vel, yaw_pitch(1), pitch_vel;
 
     yaw_pitch_last = yaw_pitch;
     yaw_pitch = yaw_pitch_next;
   }
+
+  if (captured_horizon_xyza) debug_xyza = horizon_xyza;
 
   return traj;
 }

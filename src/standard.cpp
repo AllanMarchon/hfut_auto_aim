@@ -1865,7 +1865,13 @@ int run(const Options& options) {
             sp_command.shoot = mpc_plan.fire;
             sp_command.yaw = mpc_plan.yaw;
             sp_command.pitch = mpc_plan.pitch;
-            sp_command.horizon_distance = targetDistance(*target);
+            const Eigen::Vector4d planned_xyza = active_mpc_planner->debug_xyza;
+            const double planned_distance =
+                std::hypot(planned_xyza.x(), planned_xyza.y());
+            sp_command.horizon_distance = mpc_plan.control &&
+                    std::isfinite(planned_distance) && planned_distance > 0.0
+                ? planned_distance
+                : targetDistance(*target);
           } catch (const std::exception& e) {
             std::fprintf(stderr, "[standard] MPC 规划失败: %s\n", e.what());
           }
