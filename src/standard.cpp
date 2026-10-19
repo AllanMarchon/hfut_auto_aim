@@ -1460,7 +1460,7 @@ void drawOverlay(cv::Mat& image, const hfut::io::DebugMjpegStatus& status) {
   int y = 24;
   char buffer[256];
   std::snprintf(buffer, sizeof(buffer),
-                "SP25 task=%s frames=%llu fps=%.1f det=%d tracked=%d state=%s",
+                "SP25 task=%s frames=%llu frames_per_second=%.1f detections=%d tracked_targets=%d state=%s",
                 status.reason.c_str(),
                 static_cast<unsigned long long>(status.frames), status.fps,
                 status.detections, status.tracked, status.track_state.c_str());
@@ -2047,14 +2047,16 @@ int run(const Options& options) {
 
     if (visual_end - last_log > std::chrono::seconds(1)) {
       std::printf(
-          "[standard] task=%s frames=%llu fps=%.1f detections=%d tracked=%d state=%s "
+          "[standard] task=%s frames=%llu frames_per_second=%.1f detections=%d tracked_targets=%d state=%s "
            "buff=%d "
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg "
            "buff_guard=%d/%d plan_distance=%.3f "
            "sp_fire=%d fire=%d gate=%d latency=%.1fms "
-          "timing=rx %.1f cam %.1f det %.1f pnp %.1f trk %.1f aim %.1f tx %.1f vis %.1f loop %.1fms send_ok=%d\n",
+          "timing=serial_receive %.1fms camera_frame_wait %.1fms detection %.1fms "
+          "buff_processing %.1fms tracking %.1fms aiming %.1fms serial_transmit %.1fms "
+          "visualization %.1fms loop_total %.1fms send_success=%d\n",
           options.aim_task.c_str(), static_cast<unsigned long long>(frames), runtime_fps,
           detection_count, tracked_count,
            track_state.c_str(), buff_motion_applied ? 1 : 0,
