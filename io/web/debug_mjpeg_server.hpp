@@ -45,6 +45,15 @@ struct DebugMjpegStatus {
   double command_pitch_vel_rad_s{0.0};
   double command_yaw_acc_rad_s2{0.0};
   double command_pitch_acc_rad_s2{0.0};
+  double buff_rotation_speed_rad_s{0.0};
+  double buff_angle_delta_speed_rad_s{0.0};
+  double buff_motion_fit_cost{0.0};
+  bool buff_rotation_speed_valid{false};
+  bool buff_angle_delta_speed_valid{false};
+  bool buff_motion_fit_valid{false};
+  bool buff_sine_fit_valid{false};
+  bool buff_model_predicted{false};
+  bool buff_requires_warmup{true};
   double raw_target_yaw_deg{0.0};
   double raw_target_pitch_deg{0.0};
   double target_yaw_deg{0.0};

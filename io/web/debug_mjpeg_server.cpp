@@ -70,6 +70,15 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"command_pitch_vel_rad_s\":" << finiteOrZero(status.command_pitch_vel_rad_s)
       << ",\"command_yaw_acc_rad_s2\":" << finiteOrZero(status.command_yaw_acc_rad_s2)
       << ",\"command_pitch_acc_rad_s2\":" << finiteOrZero(status.command_pitch_acc_rad_s2)
+      << ",\"buff_rotation_speed_rad_s\":" << finiteOrZero(status.buff_rotation_speed_rad_s)
+      << ",\"buff_angle_delta_speed_rad_s\":" << finiteOrZero(status.buff_angle_delta_speed_rad_s)
+      << ",\"buff_motion_fit_cost\":" << finiteOrZero(status.buff_motion_fit_cost)
+      << ",\"buff_rotation_speed_valid\":" << (status.buff_rotation_speed_valid ? "true" : "false")
+      << ",\"buff_angle_delta_speed_valid\":" << (status.buff_angle_delta_speed_valid ? "true" : "false")
+      << ",\"buff_motion_fit_valid\":" << (status.buff_motion_fit_valid ? "true" : "false")
+      << ",\"buff_sine_fit_valid\":" << (status.buff_sine_fit_valid ? "true" : "false")
+      << ",\"buff_model_predicted\":" << (status.buff_model_predicted ? "true" : "false")
+      << ",\"buff_requires_warmup\":" << (status.buff_requires_warmup ? "true" : "false")
       << ",\"raw_target_yaw_deg\":" << finiteOrZero(status.raw_target_yaw_deg)
       << ",\"raw_target_pitch_deg\":" << finiteOrZero(status.raw_target_pitch_deg)
       << ",\"target_yaw_deg\":" << finiteOrZero(status.target_yaw_deg)
@@ -350,6 +359,14 @@ std::string indexHtml() {
       <canvas id="chart-fire"></canvas>
     </section>
 
+    <section class="chart-block" aria-label="buff rotation speed chart">
+      <div class="chart-head">
+        <h2>大符旋转速度</h2>
+        <div id="buff-speed-toggles" class="toggles"></div>
+      </div>
+      <canvas id="chart-buff-speed"></canvas>
+    </section>
+
     <details open>
       <summary>Telemetry</summary>
       <div id="telemetry" class="telemetry"></div>
@@ -410,6 +427,18 @@ const CHARTS = [
     series: [
       {key: 'fire_advice', label: 'fire_advice', color: COLORS.fire, digits: 0, step: true}
     ]
+  },
+  {
+    id: 'buff-speed',
+    canvas: 'chart-buff-speed',
+    toggles: 'buff-speed-toggles',
+    unit: 'rad/s',
+    series: [
+      {key: 'buff_rotation_speed_rad_s', label: '模型角速度', color: COLORS.command,
+        digits: 2, validWhen: 'buff_rotation_speed_valid'},
+      {key: 'buff_angle_delta_speed_rad_s', label: '角度差分', color: COLORS.feedback,
+        digits: 2, validWhen: 'buff_angle_delta_speed_valid', dash: [5, 4]}
+    ]
   }
 ];
 
@@ -433,11 +462,23 @@ const TELEMETRY = [
   ['cmd yaw vel', 'command_yaw_vel_deg_s', 1, ' deg/s'],
   ['cmd pitch vel', 'command_pitch_vel_deg_s', 1, ' deg/s'],
   ['cmd yaw acc', 'command_yaw_acc_deg_s2', 1, ' deg/s^2'],
-  ['cmd pitch acc', 'command_pitch_acc_deg_s2', 1, ' deg/s^2']
+  ['cmd pitch acc', 'command_pitch_acc_deg_s2', 1, ' deg/s^2'],
+  ['大符模型角速度', 'buff_rotation_speed_rad_s', 2, ' rad/s', 'buff_rotation_speed_valid'],
+  ['角度差分速度', 'buff_angle_delta_speed_rad_s', 2, ' rad/s', 'buff_angle_delta_speed_valid'],
+  ['运动拟合有效', 'buff_motion_fit_valid', null, ''],
+  ['正弦拟合有效', 'buff_sine_fit_valid', null, ''],
+  ['拟合代价', 'buff_motion_fit_cost', 4, ' rad^2', 'buff_motion_fit_valid'],
+  ['仅模型预测', 'buff_model_predicted', null, ''],
+  ['等待运动拟合', 'buff_requires_warmup', null, '']
 ];
 
 const defaultVisible = CHARTS.flatMap(chart => chart.series.map(series => series.key));
-let visibleSeries = new Set(loadJson('hfut-visible-series', defaultVisible));
+const savedVisibleSeries = [...loadJson('hfut-visible-series', defaultVisible)];
+if (!localStorage.getItem('hfut-buff-speed-series-v1')) {
+  savedVisibleSeries.push('buff_rotation_speed_rad_s', 'buff_angle_delta_speed_rad_s');
+  localStorage.setItem('hfut-buff-speed-series-v1', '1');
+}
+let visibleSeries = new Set(savedVisibleSeries);
 let history = [];
 let latestStatus = null;
 
@@ -567,11 +608,13 @@ function updateCards(status) {
 function updateTelemetry(status) {
   const root = document.getElementById('telemetry');
   root.textContent = '';
-  for (const [label, key, digits, unit] of TELEMETRY) {
+  for (const [label, key, digits, unit, validWhen] of TELEMETRY) {
     const name = document.createElement('span');
     const value = document.createElement('span');
     name.textContent = label;
-    value.textContent = digits === null ? fmt(status[key]) : fmt(finite(status[key]), digits, unit);
+    value.textContent = validWhen && !status[validWhen]
+      ? '--'
+      : (digits === null ? fmt(status[key]) : fmt(finite(status[key]), digits, unit));
     root.append(name, value);
   }
 }
@@ -582,7 +625,9 @@ function addSample(status) {
   for (const chart of CHARTS) {
     for (const series of chart.series) {
       const value = status[series.key];
-      sample[series.key] = typeof value === 'boolean' ? (value ? 1 : 0) : finite(value);
+      sample[series.key] = series.validWhen && !status[series.validWhen]
+        ? NaN
+        : (typeof value === 'boolean' ? (value ? 1 : 0) : finite(value, NaN));
     }
   }
   history.push(sample);
@@ -683,14 +728,20 @@ function drawChart(chart) {
   for (const series of seriesList) {
     ctx.strokeStyle = series.color;
     ctx.lineWidth = series.key.includes('error') ? 1.4 : 2;
+    ctx.setLineDash(series.dash || []);
     ctx.beginPath();
     let started = false;
     let prevX = 0;
     let prevY = 0;
     for (const sample of history) {
       if (sample.t < tMin) continue;
+      const value = finite(sample[series.key], NaN);
+      if (!Number.isFinite(value)) {
+        started = false;
+        continue;
+      }
       const x = xOf(sample.t);
-      const y = yOf(finite(sample[series.key]));
+      const y = yOf(value);
       if (!started) {
         ctx.moveTo(x, y);
         started = true;
@@ -704,14 +755,18 @@ function drawChart(chart) {
       prevY = y;
     }
     if (started) ctx.stroke();
+    ctx.setLineDash([]);
     if (history.length > 0) {
       const last = history[history.length - 1];
-      const lx = xOf(last.t);
-      const ly = yOf(finite(last[series.key]));
-      ctx.fillStyle = series.color;
-      ctx.beginPath();
-      ctx.arc(lx, ly, 3, 0, Math.PI * 2);
-      ctx.fill();
+      const value = finite(last[series.key], NaN);
+      if (Number.isFinite(value)) {
+        const lx = xOf(last.t);
+        const ly = yOf(value);
+        ctx.fillStyle = series.color;
+        ctx.beginPath();
+        ctx.arc(lx, ly, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
 }
