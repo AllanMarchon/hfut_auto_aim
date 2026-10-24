@@ -1683,6 +1683,16 @@ int run(const Options& options) {
   uint64_t frames = 0;
   int processed = 0;
   int buff_pose_missing_frames = 0;
+  struct BuffRotationObservation {
+    std::uint64_t generation{0};
+    std::size_t update_count{0};
+    auto_buff::Timestamp timestamp{};
+    double angle{0.0};
+  };
+  std::optional<BuffRotationObservation> previous_buff_rotation_observation;
+  auto_buff::Timestamp last_buff_angle_delta_timestamp{};
+  double last_buff_angle_delta_speed_rad_s = 0.0;
+  bool have_buff_angle_delta_speed = false;
   const auto elapsedMs = [](const auto& start, const auto& end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
   };
@@ -1789,6 +1799,15 @@ int run(const Options& options) {
     int tracked_count = 0;
     double command_distance = 0.0;
     double buff_solver_ms = 0.0;
+    double buff_rotation_speed_rad_s = 0.0;
+    double buff_angle_delta_speed_rad_s = 0.0;
+    double buff_motion_fit_cost = 0.0;
+    bool buff_rotation_speed_valid = false;
+    bool buff_angle_delta_speed_valid = false;
+    bool buff_motion_fit_valid = false;
+    bool buff_sine_fit_valid = false;
+    bool buff_model_predicted = false;
+    bool buff_requires_warmup = true;
     const CommandLimiterConfig* active_limiter_config = &command_limiter_config;
     FinalVelocityAccelerationAdapter* active_mpc_motion_adapter = &mpc_motion_adapter;
     io::Command sp_command{false, false, 0.0, 0.0};
@@ -1804,6 +1823,60 @@ int run(const Options& options) {
       detect_end = std::chrono::steady_clock::now();
       detection_count = static_cast<int>(buff_frame.bullseye_count + buff_frame.icon_count);
       buff_tracking_ready = buff_frame.target.has_value();
+      if (buff_frame.target) {
+        const auto& estimate = *buff_frame.target;
+        buff_rotation_speed_rad_s = estimate.rotation_speed;
+        buff_rotation_speed_valid = std::isfinite(estimate.rotation_speed) &&
+                                    estimate.update_count > 0;
+        buff_motion_fit_valid = estimate.sine_valid || estimate.has_fitted_motion;
+        buff_sine_fit_valid = estimate.sine_valid;
+        buff_model_predicted = estimate.predicted;
+        buff_requires_warmup = estimate.requires_warmup;
+        buff_motion_fit_cost = estimate.motion_fit_cost;
+
+        // 仅在图像观测更新模型角度后计算差分，预测帧不作为测量值。
+        if (estimate.update_count > 0) {
+          const BuffRotationObservation observation{
+            buff_runtime->target_generation(), estimate.update_count,
+            estimate.timestamp, estimate.rotation_angle};
+          if (!previous_buff_rotation_observation ||
+              previous_buff_rotation_observation->generation != observation.generation ||
+              estimate.update_count < previous_buff_rotation_observation->update_count) {
+            previous_buff_rotation_observation = observation;
+            have_buff_angle_delta_speed = false;
+          } else if (estimate.update_count > previous_buff_rotation_observation->update_count) {
+            const double dt = std::chrono::duration<double>(
+              observation.timestamp - previous_buff_rotation_observation->timestamp).count();
+            if (dt > 1e-4 && dt <= 0.5) {
+              // 用最短角差消除跨越正负 pi 时的跳变。
+              const double delta = std::remainder(
+                observation.angle - previous_buff_rotation_observation->angle, 2.0 * kPi);
+              last_buff_angle_delta_speed_rad_s = delta / dt;
+              last_buff_angle_delta_timestamp = observation.timestamp;
+              have_buff_angle_delta_speed = std::isfinite(last_buff_angle_delta_speed_rad_s);
+            } else {
+              have_buff_angle_delta_speed = false;
+            }
+            previous_buff_rotation_observation = observation;
+          }
+          // Web 页面低频取状态，短暂保留最近一次差分；长时间无观测则断开曲线。
+          if (have_buff_angle_delta_speed) {
+            const double sample_age = std::chrono::duration<double>(
+              timestamp - last_buff_angle_delta_timestamp).count();
+            buff_angle_delta_speed_valid = sample_age >= 0.0 && sample_age <= 0.5;
+            if (buff_angle_delta_speed_valid)
+              buff_angle_delta_speed_rad_s = last_buff_angle_delta_speed_rad_s;
+            else
+              have_buff_angle_delta_speed = false;
+          }
+        } else {
+          previous_buff_rotation_observation.reset();
+          have_buff_angle_delta_speed = false;
+        }
+      } else {
+        previous_buff_rotation_observation.reset();
+        have_buff_angle_delta_speed = false;
+      }
       track_start = detect_end;
       track_end = std::chrono::steady_clock::now();
       aim_start = track_end;
@@ -2002,6 +2075,15 @@ int run(const Options& options) {
     web_status.command_pitch_vel_rad_s = command.pitch_vel;
     web_status.command_yaw_acc_rad_s2 = command.yaw_acc;
     web_status.command_pitch_acc_rad_s2 = command.pitch_acc;
+    web_status.buff_rotation_speed_rad_s = buff_rotation_speed_rad_s;
+    web_status.buff_angle_delta_speed_rad_s = buff_angle_delta_speed_rad_s;
+    web_status.buff_motion_fit_cost = buff_motion_fit_cost;
+    web_status.buff_rotation_speed_valid = buff_rotation_speed_valid;
+    web_status.buff_angle_delta_speed_valid = buff_angle_delta_speed_valid;
+    web_status.buff_motion_fit_valid = buff_motion_fit_valid;
+    web_status.buff_sine_fit_valid = buff_sine_fit_valid;
+    web_status.buff_model_predicted = buff_model_predicted;
+    web_status.buff_requires_warmup = buff_requires_warmup;
     web_status.raw_target_yaw_deg = raw_desired_yaw * kRadToDeg;
     web_status.raw_target_pitch_deg = raw_desired_pitch * kRadToDeg;
     web_status.target_yaw_deg = desired_yaw * kRadToDeg;

@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 
 namespace auto_aim
 {
@@ -45,6 +44,8 @@ namespace armor_avoidance_detail
 {
 constexpr double kInvSqrtTwo{0.70710678118654752440};
 constexpr double kInvSqrtTwoPi{0.39894228040143267794};
+constexpr double kUnreinforcedDamageMultiplier{1.5};
+constexpr double kReinforcedDamageMultiplier{0.5};
 
 inline double normal_cdf(double value)
 {
@@ -71,6 +72,24 @@ inline double reinforced_probability(double x, double y, const ArmorAvoidanceCon
   const double sigma = config.dispersion_sigma_mm;
   const double half_width = config.plate_width_mm / 2.0;
   const double half_height = config.plate_height_mm / 2.0;
+  const double farthest_x = std::max(
+    std::abs(-half_width - config.center_x_mm),
+    std::abs(half_width - config.center_x_mm));
+  const double farthest_y = std::max(
+    std::abs(-half_height - config.center_y_mm),
+    std::abs(half_height - config.center_y_mm));
+  if (farthest_x * farthest_x + farthest_y * farthest_y <=
+      config.radius_mm * config.radius_mm) {
+    return plate_probability(x, y, config);
+  }
+
+  const double nearest_x = std::max(std::abs(config.center_x_mm) - half_width, 0.0);
+  const double nearest_y = std::max(std::abs(config.center_y_mm) - half_height, 0.0);
+  if (nearest_x * nearest_x + nearest_y * nearest_y >=
+      config.radius_mm * config.radius_mm) {
+    return 0.0;
+  }
+
   const double low =
     std::max({-half_width, config.center_x_mm - config.radius_mm, x - 6.0 * sigma});
   const double high =
@@ -107,6 +126,37 @@ inline ArmorAvoidanceResult evaluate(double x, double y, const ArmorAvoidanceCon
     std::clamp(1.0 - plate, 0.0, 1.0)};
 }
 
+inline double expected_damage(const ArmorAvoidanceResult & result)
+{
+  return kUnreinforcedDamageMultiplier * result.clean_probability +
+         kReinforcedDamageMultiplier * result.reinforced_probability;
+}
+
+inline double hit_probability(const ArmorAvoidanceResult & result)
+{
+  return result.clean_probability + result.reinforced_probability;
+}
+
+inline bool better_candidate(
+  const ArmorAvoidanceResult & candidate, const ArmorAvoidanceResult & current)
+{
+  if (!current.valid) return true;
+
+  constexpr double score_epsilon = 1e-10;
+  const double candidate_damage = expected_damage(candidate);
+  const double current_damage = expected_damage(current);
+  if (candidate_damage > current_damage + score_epsilon) return true;
+  if (candidate_damage < current_damage - score_epsilon) return false;
+
+  // 收益几乎相同时，优先保住命中概率，再选更靠近板面中心的位置。
+  const double candidate_hit = hit_probability(candidate);
+  const double current_hit = hit_probability(current);
+  if (candidate_hit > current_hit + score_epsilon) return true;
+  if (candidate_hit < current_hit - score_epsilon) return false;
+  return candidate.x_mm * candidate.x_mm + candidate.y_mm * candidate.y_mm <
+         current.x_mm * current.x_mm + current.y_mm * current.y_mm - score_epsilon;
+}
+
 inline bool outside_circle(double x, double y, const ArmorAvoidanceConfig & config)
 {
   const double dx = x - config.center_x_mm;
@@ -121,19 +171,13 @@ inline bool inside_plate(double x, double y, const ArmorAvoidanceConfig & config
 }
 
 inline void consider_zero_scatter(
-  double x, double y, const ArmorAvoidanceConfig & config, ArmorAvoidanceResult & best,
-  double & best_clearance)
+  double x, double y, const ArmorAvoidanceConfig & config, ArmorAvoidanceResult & best)
 {
-  if (!inside_plate(x, y, config) || !outside_circle(x, y, config)) return;
-  const double circle_clearance =
-    std::hypot(x - config.center_x_mm, y - config.center_y_mm) - config.radius_mm;
-  const double edge_clearance = std::min(
-    config.plate_width_mm / 2.0 - std::abs(x), config.plate_height_mm / 2.0 - std::abs(y));
-  const double clearance = std::min(circle_clearance, edge_clearance);
-  if (clearance > best_clearance) {
-    best_clearance = clearance;
-    best = {true, x, y, 1.0, 0.0, 0.0};
-  }
+  if (!inside_plate(x, y, config)) return;
+  const bool reinforced = !outside_circle(x, y, config);
+  const ArmorAvoidanceResult candidate{
+    true, x, y, reinforced ? 0.0 : 1.0, reinforced ? 1.0 : 0.0, 0.0};
+  if (better_candidate(candidate, best)) best = candidate;
 }
 }  // namespace armor_avoidance_detail
 
@@ -154,27 +198,27 @@ inline ArmorAvoidanceResult optimizeArmorAvoidance(const ArmorAvoidanceConfig & 
   const double sigma = config.dispersion_sigma_mm;
   if (sigma <= 1e-6) {
     ArmorAvoidanceResult best{false, 0.0, 0.0, 0.0, 0.0, 1.0};
-    double best_clearance = -std::numeric_limits<double>::infinity();
     const double step = 2.0;
     for (double y = -half_height; y <= half_height + 1e-9; y += step) {
       for (double x = -half_width; x <= half_width + 1e-9; x += step) {
-        consider_zero_scatter(x, y, config, best, best_clearance);
+        consider_zero_scatter(x, y, config, best);
       }
     }
     for (double y : {-half_height, half_height}) {
       for (double x : {-half_width, half_width}) {
-        consider_zero_scatter(x, y, config, best, best_clearance);
+        consider_zero_scatter(x, y, config, best);
       }
     }
-    // 圆与板边相切附近可能只剩很窄的安全角落，额外沿圆周取样避免粗网格漏掉。
+    // 圆边外侧取样，避免粗网格漏掉很窄的未加固区域。
     constexpr int circle_samples = 1440;
     for (int i = 0; i < circle_samples; ++i) {
       const double angle = 2.0 * 3.14159265358979323846 * i / circle_samples;
       const double x = config.center_x_mm + (config.radius_mm + 0.05) * std::cos(angle);
       const double y = config.center_y_mm + (config.radius_mm + 0.05) * std::sin(angle);
-      consider_zero_scatter(x, y, config, best, best_clearance);
+      consider_zero_scatter(x, y, config, best);
     }
-    if (!best.valid) return best;
+    // 即使加固圆覆盖整块板，也返回板内收益最高的加固区落点。
+    if (!best.valid) consider_zero_scatter(0.0, 0.0, config, best);
     const double fine_step = 0.25;
     const double start_x = std::max(-half_width, best.x_mm - step);
     const double end_x = std::min(half_width, best.x_mm + step);
@@ -182,21 +226,24 @@ inline ArmorAvoidanceResult optimizeArmorAvoidance(const ArmorAvoidanceConfig & 
     const double end_y = std::min(half_height, best.y_mm + step);
     for (double y = start_y; y <= end_y + 1e-9; y += fine_step) {
       for (double x = start_x; x <= end_x + 1e-9; x += fine_step) {
-        consider_zero_scatter(x, y, config, best, best_clearance);
+        consider_zero_scatter(x, y, config, best);
       }
     }
-    if (best_clearance <= 1e-6) return {false, 0.0, 0.0, 0.0, 0.0, 1.0};
     return best;
   }
 
   const double grid_step = std::clamp(sigma * 0.5, 2.0, 8.0);
   ArmorAvoidanceResult best{false, 0.0, 0.0, -1.0, 0.0, 1.0};
   const auto consider = [&](double x, double y, ArmorAvoidanceResult & current) {
-    // 概率模型负责权衡散布与脱靶风险，但名义瞄准点仍必须位于圆形加固区之外。
-    if (!inside_plate(x, y, config) || !outside_circle(x, y, config)) return;
+    // 整块板都参与比较，加固区内的高命中率落点也可以胜出。
+    if (!inside_plate(x, y, config)) return;
     const auto candidate = evaluate(x, y, config);
-    if (candidate.clean_probability > current.clean_probability) current = candidate;
+    if (better_candidate(candidate, current)) current = candidate;
   };
+  consider(0.0, 0.0, best);
+  consider(
+    std::clamp(config.center_x_mm, -half_width, half_width),
+    std::clamp(config.center_y_mm, -half_height, half_height), best);
   for (double y = -half_height; y <= half_height + 1e-9; y += grid_step) {
     for (double x = -half_width; x <= half_width + 1e-9; x += grid_step) {
       consider(x, y, best);
@@ -205,9 +252,7 @@ inline ArmorAvoidanceResult optimizeArmorAvoidance(const ArmorAvoidanceConfig & 
   for (double y : {-half_height, half_height}) {
     for (double x : {-half_width, half_width}) consider(x, y, best);
   }
-  if (!best.valid || best.clean_probability <= 1e-12) {
-    return {false, 0.0, 0.0, 0.0, 0.0, 1.0};
-  }
+  if (!best.valid) return {false, 0.0, 0.0, 0.0, 0.0, 1.0};
 
   // 在全局粗搜的最优点周围细化到 1 毫米，避免每帧对整板做高精度搜索。
   const double fine_step = 1.0;

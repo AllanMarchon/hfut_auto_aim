@@ -38,45 +38,65 @@ int main()
   config.dispersion_sigma_mm = 30.0;
   const auto scattered = optimizeArmorAvoidance(config);
   assert(scattered.valid);
-  assert(
-    std::hypot(scattered.x_mm - config.center_x_mm, scattered.y_mm - config.center_y_mm) >
-    config.radius_mm);
   const double probability_sum =
     scattered.clean_probability + scattered.reinforced_probability + scattered.miss_probability;
   assert(std::abs(probability_sum - 1.0) < 1e-8);
-  assert(scattered.clean_probability > 0.0);
+  const auto center_candidate = auto_aim::armor_avoidance_detail::evaluate(0.0, 0.0, config);
+  assert(
+    auto_aim::armor_avoidance_detail::expected_damage(scattered) + 1e-8 >=
+    auto_aim::armor_avoidance_detail::expected_damage(center_candidate));
 
   config.radius_mm = 5.0;
   const auto small_circle = optimizeArmorAvoidance(config);
   assert(small_circle.valid);
-  assert(std::hypot(small_circle.x_mm, small_circle.y_mm) > config.radius_mm);
+  assert(
+    auto_aim::armor_avoidance_detail::expected_damage(small_circle) + 1e-8 >=
+    auto_aim::armor_avoidance_detail::expected_damage(
+      auto_aim::armor_avoidance_detail::evaluate(0.0, 0.0, config)));
 
   config.center_x_mm = -25.0;
   const auto offset_circle = optimizeArmorAvoidance(config);
   assert(offset_circle.valid);
-  assert(offset_circle.x_mm > 0.0);
+  assert(std::isfinite(offset_circle.x_mm) && std::isfinite(offset_circle.y_mm));
 
   config.center_x_mm = 0.0;
   config.radius_mm = 20.0;
-  config.dispersion_sigma_mm = 0.0;
-  const auto deterministic = optimizeArmorAvoidance(config);
-  assert(deterministic.valid);
-  assert(std::hypot(deterministic.x_mm, deterministic.y_mm) > config.radius_mm);
-  assert(std::abs(deterministic.x_mm) < config.plate_width_mm / 2.0);
-  assert(std::abs(deterministic.y_mm) < config.plate_height_mm / 2.0);
+  config.dispersion_sigma_mm = 50.0;
+  const auto distant_small_circle = optimizeArmorAvoidance(config);
+  assert(distant_small_circle.valid);
+  assert(
+    std::hypot(distant_small_circle.x_mm, distant_small_circle.y_mm) < config.radius_mm);
+  const auto risky_clean_candidate =
+    auto_aim::armor_avoidance_detail::evaluate(45.0, 0.0, config);
+  assert(
+    auto_aim::armor_avoidance_detail::expected_damage(distant_small_circle) >
+    auto_aim::armor_avoidance_detail::expected_damage(risky_clean_candidate));
 
-  config.radius_mm = 72.5;
-  const auto narrow_safe_corner = optimizeArmorAvoidance(config);
-  assert(narrow_safe_corner.valid);
-  assert(std::hypot(narrow_safe_corner.x_mm, narrow_safe_corner.y_mm) > config.radius_mm);
+  config.dispersion_sigma_mm = 30.0;
+  config.radius_mm = 65.0;
+  const auto large_circle = optimizeArmorAvoidance(config);
+  assert(large_circle.valid);
+  assert(std::hypot(large_circle.x_mm, large_circle.y_mm) < 2.0);
+  assert(large_circle.reinforced_probability > 0.5);
+  const auto risky_corner_candidate =
+    auto_aim::armor_avoidance_detail::evaluate(62.0, 20.0, config);
+  assert(
+    auto_aim::armor_avoidance_detail::expected_damage(large_circle) >
+    auto_aim::armor_avoidance_detail::expected_damage(risky_corner_candidate));
 
   config.radius_mm = 300.0;
   const auto covered_plate = optimizeArmorAvoidance(config);
-  assert(!covered_plate.valid);
+  assert(covered_plate.valid);
+  assert(covered_plate.clean_probability < 1e-8);
+  assert(covered_plate.reinforced_probability > 0.0);
+  assert(std::hypot(covered_plate.x_mm, covered_plate.y_mm) < 2.0);
 
-  config.radius_mm = 74.0;
-  const auto fully_covered_board = optimizeArmorAvoidance(config);
-  assert(!fully_covered_board.valid);
+  config.dispersion_sigma_mm = 0.0;
+  const auto deterministic_covered_plate = optimizeArmorAvoidance(config);
+  assert(deterministic_covered_plate.valid);
+  assert(deterministic_covered_plate.clean_probability == 0.0);
+  assert(deterministic_covered_plate.reinforced_probability == 1.0);
+  assert(deterministic_covered_plate.miss_probability == 0.0);
 
   return 0;
 }
