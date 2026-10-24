@@ -32,7 +32,7 @@ buff:
     type: climber
     climber:
       model: assets/buff_repvgg.xml
-      device: CPU
+      device: GPU
       max_bullseyes: 2
       ConfidenceThreshold: 0.2
       IouThreshold: 0.2
@@ -55,10 +55,10 @@ buff:
       max_yaw_velocity: 80.0
       max_pitch_velocity: 60.0
     bigbuff:
-      max_yaw_acceleration: 50.0
+      max_yaw_acceleration: 80.0
       max_pitch_acceleration: 100.0
-      yaw_error_gain: 6.0
-      pitch_error_gain: 6.0
+      yaw_error_gain: 4.0
+      pitch_error_gain: 4.0
       max_yaw_velocity: 120.0
       max_pitch_velocity: 90.0
     angle_limit:
