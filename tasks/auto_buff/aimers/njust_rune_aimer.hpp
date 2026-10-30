@@ -12,7 +12,7 @@ class NjustRuneAimer final : public RuneAimer
 public:
   struct Config
   {
-    double shoot_delay = 0.04;
+    double shoot_delay = 0.04;  // 额外时间补偿，单位秒；与电控发弹延迟相加。
     double rune_idle_duration = 0.4;
     double rune_shoot_duration = 0.2;
     double yaw_tolerance = 0.07;

@@ -44,9 +44,9 @@ ClimberRuneAimer::Config ClimberRuneAimer::Config::load(const YAML::Node & node)
     result.predict_time = node["predict_time"].as<double>(result.predict_time);
   }
   if (!std::isfinite(result.fire_gap_time) || result.fire_gap_time < 0 ||
-      !std::isfinite(result.predict_time) || result.predict_time <= 0) {
+      !std::isfinite(result.predict_time)) {
     throw std::invalid_argument(
-      "buff.aimer.climber requires fire_gap_time >= 0 and predict_time > 0");
+      "buff.aimer.climber requires fire_gap_time >= 0 and finite predict_time");
   }
   return result;
 }
@@ -94,7 +94,12 @@ std::optional<RuneAim> ClimberRuneAimer::aim(
   }
   if (speed < 10 || speed > 28) speed = 24;
   predicted_ = target->predicted;
-  const auto future = offset_time(now, climber_config_.predict_time);
+  const double feedback_delay = gimbal.fire_delay_s.value_or(0.0);
+  if (!std::isfinite(feedback_delay) || feedback_delay < 0.0) return std::nullopt;
+  // 配置值作为额外补偿，与反馈发弹延迟相加；合成延迟必须非负。
+  const double shoot_delay = feedback_delay + climber_config_.predict_time;
+  if (!std::isfinite(shoot_delay) || shoot_delay < 0.0) return std::nullopt;
+  const auto future = offset_time(now, shoot_delay);
   const auto first = aim_at(*target, future, speed);
   if (!first) {
     first_in_aimer_ = true;
@@ -133,27 +138,21 @@ std::optional<RuneAim> ClimberRuneAimer::aim(
     if (first_in_aimer_) {
       first_in_aimer_ = false;
     } else {
-      // Climber 在前向和反向求解之间恢复原始估计。
-      const double dt = climber_config_.predict_time;
-      const auto previous_time = offset_time(target->timestamp, -dt);
-      const auto previous_first = aim_at(*target, previous_time, speed);
-      if (!previous_first) {
-        first_in_aimer_ = true;
-        return std::nullopt;
-      }
-      const auto previous = aim_at(
-        *target, offset_time(previous_time, previous_first->fly_time), speed);
-      if (!previous || std::abs(previous->fly_time - previous_first->fly_time) > 0.03) {
+      // 差分采样与发弹延迟独立，反馈为零时也不会除零；采样中心与瞄准时刻一致。
+      constexpr double dt = 0.01;
+      const auto before = aim_at(*target, offset_time(prediction_time, -dt), speed);
+      const auto after = aim_at(*target, offset_time(prediction_time, dt), speed);
+      if (!before || !after) {
         first_in_aimer_ = true;
         return std::nullopt;
       }
       result.yaw_vel =
-        std::remainder(second->angles.x() - previous->angles.x(), 2 * kPi) / (2 * dt);
-      result.yaw_acc = (std::remainder(second->angles.x() - gimbal.yaw, 2 * kPi) -
-                        std::remainder(gimbal.yaw - previous->angles.x(), 2 * kPi)) / (dt * dt);
+        std::remainder(after->angles.x() - before->angles.x(), 2 * kPi) / (2 * dt);
+      result.yaw_acc = (std::remainder(after->angles.x() - second->angles.x(), 2 * kPi) -
+                         std::remainder(second->angles.x() - before->angles.x(), 2 * kPi)) / (dt * dt);
       result.pitch_vel =
-        std::remainder(second->angles.y() - previous->angles.y(), 2 * kPi) / (2 * dt);
-      result.pitch_acc = (second->angles.y() - 2 * gimbal.pitch + previous->angles.y()) / (dt * dt);
+        (after->angles.y() - before->angles.y()) / (2 * dt);
+      result.pitch_acc = (after->angles.y() - 2 * second->angles.y() + before->angles.y()) / (dt * dt);
     }
   }
   return RuneAim{result, *second, prediction_time, speed};

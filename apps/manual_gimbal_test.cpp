@@ -215,6 +215,12 @@ void drawWindow(const MouseState& mouse, const Options& options,
     std::snprintf(line, sizeof(line), "feedback: none");
   }
   drawText(image, y, line, cv::Scalar(255, 210, 120));
+  if (have_feedback && feedback.fire_delay_s) {
+    std::snprintf(line, sizeof(line), "fire_delay=%.3fms", *feedback.fire_delay_s * 1000.0);
+  } else {
+    std::snprintf(line, sizeof(line), "fire_delay=empty");
+  }
+  drawText(image, y, line);
   drawText(image, y, "串口实际单位: rad / rad/s / rad/s²；q/Esc退出，Space暂停，r回中");
   cv::imshow("manual_gimbal_test", image);
 }
@@ -231,8 +237,7 @@ int main(int argc, char** argv) {
   hfut::io::InfantrySerialConfig serial_config;
   serial_config.port = options.port;
   serial_config.baudrate = options.baudrate;
-  serial_config.tx_layout = hfut::io::InfantryPacketLayout::kInfantry32;
-  serial_config.rx_layout = hfut::io::InfantryPacketLayout::kInfantry24;
+  serial_config.tx_layout = hfut::io::InfantryCommandLayout::kInfantry32;
   serial_config.tail_fields = hfut::io::Infantry32TailFields::kAcceleration;
   serial_config.command_angles_in_degrees = false;
   serial_config.feedback_angles_in_degrees = false;
@@ -262,7 +267,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  std::printf("手动云台测试已打开: %s @ %d，TX=infantry_32，RX=infantry，单位=rad\n",
+  std::printf("手动云台测试已打开: %s @ %d，TX=infantry_32，RX=infantry_20，单位=rad\n",
               options.port.c_str(), options.baudrate);
   auto last = std::chrono::steady_clock::now();
   auto last_print = last;

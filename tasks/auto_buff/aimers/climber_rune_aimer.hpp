@@ -11,7 +11,7 @@ public:
   struct Config
   {
     double fire_gap_time = 0.7;
-    double predict_time = 0.12;
+    double predict_time = 0.12;  // 额外时间补偿，单位秒；与电控发弹延迟相加。
     static Config load(const YAML::Node & node);
   };
 

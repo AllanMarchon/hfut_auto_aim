@@ -23,7 +23,7 @@ gimbal_pipeline:
         fire_thresh: 0.0035
         #目标旋转速度阈值7rad/s
         decision_speed: 7.0
-        #高/低 速目标额外预测延迟，弹道滞后，可以加一点点
+        # 高低速额外补偿，单位秒；会与电控反馈的发弹延迟相加，不要重复填写发弹延迟。
         high_speed_delay_time: 0.00
         low_speed_delay_time: 0.0
         

@@ -200,6 +200,7 @@ Plan Planner::plan(Target target, double bullet_speed)
     return {false};
   }
 
+  // 发弹延迟已计入参考轨迹；这里保留原有两步控制误差前视，不再重复加发弹延迟。
   auto shoot_offset_ = 2;
   plan.fire =
     std::hypot(
@@ -209,12 +210,14 @@ Plan Planner::plan(Target target, double bullet_speed)
   return plan;
 }
 
-Plan Planner::plan(std::optional<Target> target, double bullet_speed)
+Plan Planner::plan(std::optional<Target> target, double bullet_speed, double fire_delay_s)
 {
-  if (!target.has_value()) return {false};
+  if (!target.has_value() || !std::isfinite(fire_delay_s) || fire_delay_s < 0.0) return {false};
 
   double delay_time =
     std::abs(target->ekf_x()[7]) > decision_speed_ ? high_speed_delay_time_ : low_speed_delay_time_;
+  // 先预测到出膛时刻，再由下层加入弹丸飞行时间；高低速配置仅作为额外补偿。
+  delay_time += fire_delay_s;
 
   auto future = std::chrono::steady_clock::now() + std::chrono::microseconds(int(delay_time * 1e6));
 

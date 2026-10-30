@@ -1,6 +1,7 @@
 #include "io/serial/infantry_serial.hpp"
 
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace hfut::io {
@@ -10,28 +11,28 @@ constexpr double kRadToDeg = 180.0 / kPi;
 constexpr double kDegToRad = kPi / 180.0;
 }  // namespace
 
-bool parseInfantryPacketLayout(const std::string& value,
-                               InfantryPacketLayout& layout) {
-  if (value == "infantry" || value == "infantry_24" || value == "24") {
-    layout = InfantryPacketLayout::kInfantry24;
+bool parseInfantryCommandLayout(const std::string& value,
+                                InfantryCommandLayout& layout) {
+  if (value == "infantry_24") {
+    layout = InfantryCommandLayout::kInfantry24;
     return true;
   }
-  if (value == "infantry_16" || value == "16") {
-    layout = InfantryPacketLayout::kInfantry16;
+  if (value == "infantry_16") {
+    layout = InfantryCommandLayout::kInfantry16;
     return true;
   }
-  if (value == "infantry_32" || value == "32") {
-    layout = InfantryPacketLayout::kInfantry32;
+  if (value == "infantry_32") {
+    layout = InfantryCommandLayout::kInfantry32;
     return true;
   }
   return false;
 }
 
-const char* infantryPacketLayoutName(InfantryPacketLayout layout) {
+const char* infantryCommandLayoutName(InfantryCommandLayout layout) {
   switch (layout) {
-    case InfantryPacketLayout::kInfantry16: return "infantry_16";
-    case InfantryPacketLayout::kInfantry24: return "infantry";
-    case InfantryPacketLayout::kInfantry32: return "infantry_32";
+    case InfantryCommandLayout::kInfantry16: return "infantry_16";
+    case InfantryCommandLayout::kInfantry24: return "infantry_24";
+    case InfantryCommandLayout::kInfantry32: return "infantry_32";
   }
   return "unknown";
 }
@@ -131,35 +132,44 @@ bool InfantrySerialTransport::sendCommandPacket(const GimbalCommand& command) {
 bool InfantrySerialTransport::sendCommand(const GimbalCommand& command) {
   if (!isOpen() && !open()) return false;
   switch (config_.tx_layout) {
-    case InfantryPacketLayout::kInfantry16:
+    case InfantryCommandLayout::kInfantry16:
       return sendCommandPacket<16>(command);
-    case InfantryPacketLayout::kInfantry24:
+    case InfantryCommandLayout::kInfantry24:
       return sendCommandPacket<24>(command);
-    case InfantryPacketLayout::kInfantry32:
+    case InfantryCommandLayout::kInfantry32:
       return sendCommandPacket<32>(command);
   }
   return false;
 }
 
-template <std::size_t Capacity>
 bool InfantrySerialTransport::readFeedbackPacket(SerialFeedback& feedback) {
-  FixedPacket<Capacity> packet;
-  if (!FixedPacket<Capacity>::takeFromBuffer(rx_buffer_, packet)) return false;
+  static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559,
+                "feedback requires 32-bit IEEE 754 floats");
+  using FeedbackPacket = FixedPacket<kInfantryFeedbackPacketSize>;
+  FeedbackPacket packet;
+  if (!FeedbackPacket::takeFromBuffer(rx_buffer_, packet)) return false;
 
   std::uint8_t mode = 0;
   float roll = 0.0F;
   float pitch = 0.0F;
   float yaw = 0.0F;
+  float fire_delay_ms = 0.0F;
   packet.unload(mode, 1);
   packet.unload(roll, 2);
   packet.unload(pitch, 6);
   packet.unload(yaw, 10);
+  packet.unload(fire_delay_ms, 14);
 
   feedback.received = true;
   feedback.mode = mode;
   feedback.roll_rad = feedbackAngleToRad(roll);
   feedback.pitch_rad = feedbackAngleToRad(pitch);
   feedback.yaw_rad = feedbackAngleToRad(yaw);
+  feedback.fire_delay_s.reset();
+  // 电控发送毫秒，内部保存秒；非法延迟不作为有效值，不影响姿态反馈。
+  if (std::isfinite(fire_delay_ms) && fire_delay_ms >= 0.0F) {
+    feedback.fire_delay_s = static_cast<double>(fire_delay_ms) / 1000.0;
+  }
   return true;
 }
 
@@ -174,38 +184,16 @@ bool InfantrySerialTransport::readFeedback(SerialFeedback& feedback) {
     return false;
   }
   for (int i = 0; i < n; ++i) rx_buffer_.push_back(tmp[i]);
-  if (rx_buffer_.size() > 32 * 32) rx_buffer_.clear();
+  if (rx_buffer_.size() > 1024) rx_buffer_.clear();
 
-  switch (config_.rx_layout) {
-    case InfantryPacketLayout::kInfantry16: {
-      bool got_latest = false;
-      SerialFeedback parsed;
-      while (readFeedbackPacket<16>(parsed)) {
-        feedback = parsed;
-        got_latest = true;
-      }
-      return got_latest;
-    }
-    case InfantryPacketLayout::kInfantry24: {
-      bool got_latest = false;
-      SerialFeedback parsed;
-      while (readFeedbackPacket<24>(parsed)) {
-        feedback = parsed;
-        got_latest = true;
-      }
-      return got_latest;
-    }
-    case InfantryPacketLayout::kInfantry32: {
-      bool got_latest = false;
-      SerialFeedback parsed;
-      while (readFeedbackPacket<32>(parsed)) {
-        feedback = parsed;
-        got_latest = true;
-      }
-      return got_latest;
-    }
+  bool got_latest = false;
+  SerialFeedback parsed;
+  // 电控只发送新版20字节反馈；一次收到多帧时取最后一帧。
+  while (readFeedbackPacket(parsed)) {
+    feedback = parsed;
+    got_latest = true;
   }
-  return false;
+  return got_latest;
 }
 
 }  // namespace hfut::io

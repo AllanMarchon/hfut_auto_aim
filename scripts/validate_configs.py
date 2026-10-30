@@ -24,7 +24,8 @@ YOLO_MODELS = {
     "yolov8": "yolov8_model_path",
     "yolo11": "yolo11_model_path",
 }
-SERIAL_PROTOCOLS = {"infantry", "infantry_16", "infantry_24", "infantry_32", "16", "24", "32"}
+SERIAL_TX_PROTOCOLS = {"infantry_16", "infantry_24", "infantry_32"}
+SERIAL_RX_PROTOCOLS = {"infantry_20"}
 
 
 class Report:
@@ -202,9 +203,10 @@ def validate_hardware(report: Report, repo_root: Path, hardware: Any, camera_inf
         if not isinstance(serial.get("port"), str) or not serial.get("port"):
             report.error("hardware.serial.port 不能为空")
         require_number(report, serial.get("baudrate"), "hardware.serial.baudrate", positive=True)
-        require_choice(report, serial.get("protocol"), "hardware.serial.protocol", SERIAL_PROTOCOLS)
-        require_choice(report, serial.get("tx_protocol", serial.get("protocol")), "hardware.serial.tx_protocol", SERIAL_PROTOCOLS)
-        require_choice(report, serial.get("rx_protocol", serial.get("protocol")), "hardware.serial.rx_protocol", SERIAL_PROTOCOLS)
+        if "protocol" in serial:
+            report.error("hardware.serial.protocol 已移除，请分别配置 tx_protocol 和 rx_protocol")
+        require_choice(report, serial.get("tx_protocol"), "hardware.serial.tx_protocol", SERIAL_TX_PROTOCOLS)
+        require_choice(report, serial.get("rx_protocol"), "hardware.serial.rx_protocol", SERIAL_RX_PROTOCOLS)
         require_choice(report, serial.get("infantry32_tail_fields"), "hardware.serial.infantry32_tail_fields", {"duplicate_velocity", "acceleration"})
         require_false(
             report,

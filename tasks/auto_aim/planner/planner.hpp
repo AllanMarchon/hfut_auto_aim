@@ -42,7 +42,7 @@ class Planner
   // 使用外部提供的打符参考轨迹复用共享 yaw/pitch MPC。
   Plan plan(const Trajectory & trajectory, double yaw0, double distance);
   Plan plan(Target target, double bullet_speed);
-  Plan plan(std::optional<Target> target, double bullet_speed);
+  Plan plan(std::optional<Target> target, double bullet_speed, double fire_delay_s = 0.0);
   void setArmorAvoidanceConfig(const ArmorAvoidanceConfig & config);
 
 private:

@@ -23,7 +23,7 @@ buff:
     ballistic:
       type: vacuum
     njust:
-      shoot_delay: 0.04          # 发射延迟，单位秒
+      shoot_delay: 0.04          # 额外时间补偿，单位秒；与电控反馈发弹延迟相加，不要填完整机械延迟
       rune_idle_duration: 0.4    # 符叶周期的等待时间，单位秒
       rune_shoot_duration: 0.2   # 符叶周期的开火时间，单位秒
       yaw_tolerance: 0.11        # 符叶横向容差，单位米

@@ -85,9 +85,8 @@ struct Options {
 
   std::string serial_port{"/dev/ttyACM0"};
   int serial_baudrate{115200};
-  std::string serial_protocol{"infantry"};
-  std::string serial_tx_protocol{"infantry"};
-  std::string serial_rx_protocol{"infantry"};
+  std::string serial_tx_protocol{"infantry_32"};
+  std::string serial_rx_protocol{hfut::io::kInfantryFeedbackProtocol};
   std::string infantry32_tail_fields{"duplicate_velocity"};
   bool command_angles_in_degrees{false};
   bool feedback_angles_in_degrees{false};
@@ -1016,9 +1015,9 @@ void loadHardwareConfig(Options& options) {
   if (serial) {
     options.serial_port = parseString(serial["port"], options.serial_port);
     options.serial_baudrate = parseInt(serial["baudrate"], options.serial_baudrate);
-    options.serial_protocol = parseString(serial["protocol"], options.serial_protocol);
-    options.serial_tx_protocol = options.serial_protocol;
-    options.serial_rx_protocol = options.serial_protocol;
+    if (serial["protocol"]) {
+      throw std::invalid_argument("serial.protocol 已移除，请分别配置 tx_protocol 和 rx_protocol");
+    }
     options.serial_tx_protocol = parseString(serial["tx_protocol"], options.serial_tx_protocol);
     options.serial_rx_protocol = parseString(serial["rx_protocol"], options.serial_rx_protocol);
     options.infantry32_tail_fields = parseString(
@@ -1087,8 +1086,8 @@ Options parseOptions(int argc, char** argv) {
           "  --flip-image             旋转工业相机画面 180 度\n"
           "  --serial-port PATH       串口设备\n"
           "  --baudrate N             串口波特率\n"
-          "  --serial-tx-protocol NAME  infantry | infantry_16 | infantry_32\n"
-          "  --serial-rx-protocol NAME  infantry | infantry_16 | infantry_32\n"
+          "  --serial-tx-protocol NAME  infantry_16 | infantry_24 | infantry_32\n"
+          "  --serial-rx-protocol NAME  固定为 infantry_20（新版电控反馈）\n"
           "  --no-serial-send       打开串口收反馈，但不下发控制包\n"
           "  --enemy-color COLOR      red | blue\n"
           "  --bullet-speed MPS       弹速覆盖\n"
@@ -1143,10 +1142,6 @@ Options parseOptions(int argc, char** argv) {
       options.serial_port = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--baudrate"); !value.empty()) {
       options.serial_baudrate = std::stoi(value);
-    } else if (auto value = optionValue(argc, argv, i, arg, "--serial-protocol"); !value.empty()) {
-      options.serial_protocol = value;
-      options.serial_tx_protocol = value;
-      options.serial_rx_protocol = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--serial-tx-protocol"); !value.empty()) {
       options.serial_tx_protocol = value;
     } else if (auto value = optionValue(argc, argv, i, arg, "--serial-rx-protocol"); !value.empty()) {
@@ -1211,13 +1206,12 @@ Options parseOptions(int argc, char** argv) {
   if (options.web_frame_step <= 0) {
     throw std::invalid_argument("web_frame_step 必须 > 0");
   }
-  hfut::io::InfantryPacketLayout tx_layout;
-  if (!hfut::io::parseInfantryPacketLayout(options.serial_tx_protocol, tx_layout)) {
+  hfut::io::InfantryCommandLayout tx_layout;
+  if (!hfut::io::parseInfantryCommandLayout(options.serial_tx_protocol, tx_layout)) {
     throw std::invalid_argument("serial tx_protocol 不合法: " + options.serial_tx_protocol);
   }
-  hfut::io::InfantryPacketLayout rx_layout;
-  if (!hfut::io::parseInfantryPacketLayout(options.serial_rx_protocol, rx_layout)) {
-    throw std::invalid_argument("serial rx_protocol 不合法: " + options.serial_rx_protocol);
+  if (options.serial_rx_protocol != hfut::io::kInfantryFeedbackProtocol) {
+    throw std::invalid_argument("serial rx_protocol 固定为 infantry_20，不再支持旧反馈格式");
   }
   hfut::io::Infantry32TailFields fields;
   if (!hfut::io::parseInfantry32TailFields(options.infantry32_tail_fields, fields)) {
@@ -1343,8 +1337,7 @@ hfut::io::InfantrySerialConfig makeSerialConfig(const Options& options) {
   config.allow_fire = options.enable_fire;
   config.read_timeout_ms = options.serial_read_timeout_ms;
   config.write_timeout_ms = options.serial_write_timeout_ms;
-  hfut::io::parseInfantryPacketLayout(options.serial_tx_protocol, config.tx_layout);
-  hfut::io::parseInfantryPacketLayout(options.serial_rx_protocol, config.rx_layout);
+  hfut::io::parseInfantryCommandLayout(options.serial_tx_protocol, config.tx_layout);
   hfut::io::parseInfantry32TailFields(options.infantry32_tail_fields, config.tail_fields);
   return config;
 }
@@ -1602,7 +1595,7 @@ int run(const Options& options) {
   std::printf(
       "[standard] camera=%s serial=%s:%s@%d read_timeout=%dms write_timeout=%dms "
       "task=%s exposure=%.0fus dry_run=%s serial_send=%s fire=%s enemy=%s bullet=%.2f\n",
-      options.camera_backend.c_str(), hfut::io::infantryPacketLayoutName(serial_config.tx_layout),
+      options.camera_backend.c_str(), hfut::io::infantryCommandLayoutName(serial_config.tx_layout),
       options.serial_port.c_str(), options.serial_baudrate, options.serial_read_timeout_ms,
       options.serial_write_timeout_ms,
       options.aim_task.c_str(),
@@ -1706,6 +1699,18 @@ int run(const Options& options) {
     have_feedback = true;
     last_feedback_time = feedback_time;
     return true;
+  };
+  const auto currentFireDelay = [&]() -> std::optional<double> {
+    refreshLatestFeedback();
+    const double age_ms = elapsedMs(last_feedback_time, std::chrono::steady_clock::now());
+    if (options.dry_run || !latest_feedback.received || age_ms < 0.0 ||
+        age_ms > options.feedback_timeout_ms || !latest_feedback.fire_delay_s) {
+      return std::nullopt;
+    }
+    const double delay_s = *latest_feedback.fire_delay_s;
+    // 一秒作为异常值保护上限，避免错误反馈进入长时间外推或时间类型转换。
+    if (!std::isfinite(delay_s) || delay_s < 0.0 || delay_s > 1.0) return std::nullopt;
+    return delay_s;
   };
 
   while (!g_stop.load() && (options.max_frames < 0 || processed < options.max_frames)) {
@@ -1814,6 +1819,7 @@ int run(const Options& options) {
     auto_aim::Plan mpc_plan{};
     auto_aim::Plan buff_plan{};
     bool have_mpc_plan = false;
+    std::optional<double> fire_delay_s;
 
     if (use_buff_task) {
       const auto buff_start = std::chrono::steady_clock::now();
@@ -1881,6 +1887,7 @@ int run(const Options& options) {
       track_end = std::chrono::steady_clock::now();
       aim_start = track_end;
 
+      fire_delay_s = currentFireDelay();
       io::GimbalState buff_gimbal;
       // buff 规划器与符模型使用同一个世界坐标系；先将 HFUT 串口反馈转换后，
       // 再交给开火判定与规划结果进行比较。
@@ -1892,7 +1899,10 @@ int run(const Options& options) {
           command_limiter_config.sp_pitch_to_command_sign * aligned_feedback.pitch_rad);
       buff_gimbal.pitch_vel = 0.0F;
       buff_gimbal.bullet_speed = static_cast<float>(bullet_speed);
-      buff_plan = buff_runtime->plan(bullet_speed, buff_gimbal, timestamp);
+      buff_gimbal.fire_delay_s = fire_delay_s;
+      // 模型仍保留图像时刻；规划从当前时刻出发，避免漏算检测和跟踪耗时。
+      buff_plan = buff_runtime->plan(
+          bullet_speed, buff_gimbal, std::chrono::steady_clock::now());
       command_distance = buff_frame.target
           ? std::hypot(buff_frame.target->center.x(), buff_frame.target->center.y())
           : 0.0;
@@ -1920,6 +1930,7 @@ int run(const Options& options) {
       track_end = std::chrono::steady_clock::now();
 
       aim_start = track_end;
+      fire_delay_s = currentFireDelay();
       const bool target_is_outpost = !targets.empty() && targets.front().name == auto_aim::ArmorName::outpost;
       if (target_is_outpost && use_outpost_profile) {
         active_limiter_config = &outpost_limiter_config;
@@ -1932,7 +1943,7 @@ int run(const Options& options) {
         if (!targets.empty() && active_mpc_planner) {
           try {
             std::optional<auto_aim::Target> target{targets.front()};
-            mpc_plan = active_mpc_planner->plan(target, bullet_speed);
+            mpc_plan = active_mpc_planner->plan(target, bullet_speed, fire_delay_s.value_or(0.0));
             have_mpc_plan = mpc_plan.control;
             sp_command.control = mpc_plan.control;
             sp_command.shoot = mpc_plan.fire;
@@ -1950,7 +1961,7 @@ int run(const Options& options) {
           }
         }
       } else {
-        sp_command = aimer->aim(targets, timestamp, bullet_speed);
+        sp_command = aimer->aim(targets, timestamp, bullet_speed, true, fire_delay_s.value_or(0.0));
       }
       const Eigen::Vector3d gimbal_pos = tools::eulers(solver->R_gimbal2world(), 2, 1, 0);
       if (!use_mpc_planner) {
@@ -2030,6 +2041,12 @@ int run(const Options& options) {
     }
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
+    // 实车缺少有效发弹延迟时仍可跟踪，但禁止按错误的出膛时间发送开火建议。
+    if (!options.dry_run &&
+        (!fire_delay_s || elapsedMs(last_feedback_time, std::chrono::steady_clock::now()) >
+                              options.feedback_timeout_ms)) {
+      command.fire_advice = false;
+    }
     const FireGateResult fire_gate = applyFireGate(
         command, raw_desired_yaw, raw_desired_pitch, *active_limiter_config);
     const bool fire_advice = sp_command.shoot;
@@ -2103,8 +2120,8 @@ int run(const Options& options) {
     web_status.fire_enabled = options.enable_fire;
     web_status.enemy_color = options.enemy_color;
     web_status.camera_backend = options.camera_backend;
-    web_status.serial_tx = hfut::io::infantryPacketLayoutName(serial_config.tx_layout);
-    web_status.serial_rx = hfut::io::infantryPacketLayoutName(serial_config.rx_layout);
+    web_status.serial_tx = hfut::io::infantryCommandLayoutName(serial_config.tx_layout);
+    web_status.serial_rx = hfut::io::kInfantryFeedbackProtocol;
 
     const auto visual_start = std::chrono::steady_clock::now();
     if (options.display || publish_visual_frame) {
@@ -2128,6 +2145,9 @@ int run(const Options& options) {
     const auto visual_end = std::chrono::steady_clock::now();
 
     if (visual_end - last_log > std::chrono::seconds(1)) {
+      const std::string fire_delay_text = fire_delay_s
+          ? std::to_string(*fire_delay_s * 1000.0) + "ms"
+          : "config";
       std::printf(
           "[standard] task=%s frames=%llu frames_per_second=%.1f detections=%d tracked_targets=%d state=%s "
            "buff=%d "
@@ -2135,7 +2155,7 @@ int run(const Options& options) {
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg "
            "buff_guard=%d/%d plan_distance=%.3f "
-           "sp_fire=%d fire=%d gate=%d latency=%.1fms "
+           "sp_fire=%d fire=%d gate=%d latency=%.1fms fire_delay=%s fire_delay_source=%s "
           "timing=serial_receive %.1fms camera_frame_wait %.1fms detection %.1fms "
           "buff_processing %.1fms tracking %.1fms aiming %.1fms serial_transmit %.1fms "
           "visualization %.1fms loop_total %.1fms send_success=%d\n",
@@ -2157,6 +2177,8 @@ int run(const Options& options) {
           fire_advice ? 1 : 0, command.fire_advice ? 1 : 0,
           fire_gate.blocked ? 1 : 0,
           elapsedMs(detect_start, aim_end),
+          fire_delay_text.c_str(),
+          fire_delay_s ? "feedback" : "config",
           elapsedMs(serial_rx_start, serial_rx_end), elapsedMs(capture_start, capture_end),
           elapsedMs(detect_start, detect_end), buff_solver_ms, elapsedMs(track_start, track_end),
           elapsedMs(aim_start, aim_end), elapsedMs(serial_tx_start, serial_tx_end),

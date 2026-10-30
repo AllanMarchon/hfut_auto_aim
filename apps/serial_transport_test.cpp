@@ -13,9 +13,10 @@ void printUsage(const char* argv0) {
   std::fprintf(
       stderr,
       "用法: %s [port] [baudrate] [tx_protocol] [rx_protocol] [tail_fields]\n"
-      "协议: infantry | infantry_16 | infantry_32\n"
+      "发送: infantry_16 | infantry_24 | infantry_32\n"
+      "接收: 固定为 infantry_20，仅支持新版电控反馈。\n"
       "tail_fields: acceleration | duplicate_velocity\n"
-      "示例: %s /dev/ttyACM0 115200 infantry_32 infantry acceleration\n"
+      "示例: %s /dev/ttyACM0 115200 infantry_32 infantry_20 acceleration\n"
       "说明: 串口收发单位固定为 rad / rad/s / rad/s²。\n",
       argv0, argv0);
 }
@@ -29,8 +30,7 @@ int main(int argc, char** argv) {
   }
 
   hfut::io::InfantrySerialConfig config;
-  config.tx_layout = hfut::io::InfantryPacketLayout::kInfantry32;
-  config.rx_layout = hfut::io::InfantryPacketLayout::kInfantry24;
+  config.tx_layout = hfut::io::InfantryCommandLayout::kInfantry32;
   config.tail_fields = hfut::io::Infantry32TailFields::kAcceleration;
   config.command_angles_in_degrees = false;
   config.feedback_angles_in_degrees = false;
@@ -39,12 +39,12 @@ int main(int argc, char** argv) {
 
   if (argc >= 2) config.port = argv[1];
   if (argc >= 3) config.baudrate = std::atoi(argv[2]);
-  if (argc >= 4 && !hfut::io::parseInfantryPacketLayout(argv[3], config.tx_layout)) {
+  if (argc >= 4 && !hfut::io::parseInfantryCommandLayout(argv[3], config.tx_layout)) {
     std::fprintf(stderr, "不支持的 tx_protocol: %s\n", argv[3]);
     return 1;
   }
-  if (argc >= 5 && !hfut::io::parseInfantryPacketLayout(argv[4], config.rx_layout)) {
-    std::fprintf(stderr, "不支持的 rx_protocol: %s\n", argv[4]);
+  if (argc >= 5 && std::string(argv[4]) != hfut::io::kInfantryFeedbackProtocol) {
+    std::fprintf(stderr, "rx_protocol 固定为 infantry_20，不再支持旧反馈格式: %s\n", argv[4]);
     return 1;
   }
   if (argc >= 6 && !hfut::io::parseInfantry32TailFields(argv[5], config.tail_fields)) {
@@ -52,12 +52,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  if (config.tx_layout != config.rx_layout) {
-    std::fprintf(stderr, "收发协议不对称: tx=%s rx=%s\n",
-                 hfut::io::infantryPacketLayoutName(config.tx_layout),
-                 hfut::io::infantryPacketLayoutName(config.rx_layout));
-  }
-  if (config.tx_layout == hfut::io::InfantryPacketLayout::kInfantry32) {
+  if (config.tx_layout == hfut::io::InfantryCommandLayout::kInfantry32) {
     std::fprintf(stderr, "infantry_32 尾部字段: %s\n",
                  hfut::io::infantry32TailFieldsName(config.tail_fields));
   }
@@ -71,8 +66,8 @@ int main(int argc, char** argv) {
 
   std::printf("串口已打开: %s @ %d tx=%s rx=%s tail=%s\n",
               config.port.c_str(), config.baudrate,
-              hfut::io::infantryPacketLayoutName(config.tx_layout),
-              hfut::io::infantryPacketLayoutName(config.rx_layout),
+              hfut::io::infantryCommandLayoutName(config.tx_layout),
+              hfut::io::kInfantryFeedbackProtocol,
               hfut::io::infantry32TailFieldsName(config.tail_fields));
 
   while (true) {
@@ -81,9 +76,14 @@ int main(int argc, char** argv) {
     command.fire_advice = false;
 
     if (serial.readFeedback(feedback)) {
-      std::printf("反馈 mode=%u roll=%.4f yaw=%.4f pitch=%.4f rad\n",
+      std::printf("反馈 mode=%u roll=%.4f yaw=%.4f pitch=%.4f rad ",
                   static_cast<unsigned>(feedback.mode), feedback.roll_rad,
                   feedback.yaw_rad, feedback.pitch_rad);
+      if (feedback.fire_delay_s) {
+        std::printf("fire_delay=%.3fms\n", *feedback.fire_delay_s * 1000.0);
+      } else {
+        std::printf("fire_delay=empty\n");
+      }
       command.yaw = feedback.yaw_rad;
       command.pitch = feedback.pitch_rad;
       command.distance = 0.0;

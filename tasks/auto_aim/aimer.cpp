@@ -37,14 +37,18 @@ Aimer::Aimer(const std::string & config_path)
 
 io::Command Aimer::aim(
   std::list<Target> targets, std::chrono::steady_clock::time_point timestamp, double bullet_speed,
-  bool to_now)
+  bool to_now, double fire_delay_s)
 {
-  if (targets.empty()) return {false, false, 0, 0};
+  if (targets.empty() || !std::isfinite(fire_delay_s) || fire_delay_s < 0.0) {
+    return {false, false, 0, 0};
+  }
   auto target = targets.front();
 
   auto ekf = target.ekf();
   double delay_time =
     target.ekf_x()[7] > decision_speed_ ? high_speed_delay_time_ : low_speed_delay_time_;
+  // 配置延迟保留为额外补偿，电控发弹延迟只在此处计入一次。
+  delay_time += fire_delay_s;
 
   if (bullet_speed < 14) bullet_speed = 23;
 
@@ -58,7 +62,7 @@ io::Command Aimer::aim(
   }
 
   else {
-    auto dt = 0.005 + delay_time;  //detector-aimer耗时0.005+发弹延时0.1
+    auto dt = 0.005 + delay_time;  // 离线模式使用固定处理耗时，再加发弹延迟和额外补偿。
     // tools::logger()->info("dt is {:.4f} second", dt);
     future += std::chrono::microseconds(int(dt * 1e6));
     target.predict(future);
@@ -130,7 +134,7 @@ io::Command Aimer::aim(
 
 io::Command Aimer::aim(
   std::list<Target> targets, std::chrono::steady_clock::time_point timestamp, double bullet_speed,
-  io::ShootMode shoot_mode, bool to_now)
+  io::ShootMode shoot_mode, bool to_now, double fire_delay_s)
 {
   double yaw_offset;
   if (shoot_mode == io::left_shoot && left_yaw_offset_.has_value()) {
@@ -141,7 +145,7 @@ io::Command Aimer::aim(
     yaw_offset = yaw_offset_;
   }
 
-  auto command = aim(targets, timestamp, bullet_speed, to_now);
+  auto command = aim(targets, timestamp, bullet_speed, to_now, fire_delay_s);
   command.yaw = command.yaw - yaw_offset_ + yaw_offset;
 
   return command;

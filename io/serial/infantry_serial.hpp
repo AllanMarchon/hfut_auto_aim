@@ -13,11 +13,15 @@
 
 namespace hfut::io {
 
-enum class InfantryPacketLayout {
+// 仅描述上位机发送的控制包；电控反馈固定使用下方的20字节格式。
+enum class InfantryCommandLayout {
   kInfantry16,
   kInfantry24,
   kInfantry32,
 };
+
+inline constexpr std::size_t kInfantryFeedbackPacketSize = 20;
+inline constexpr char kInfantryFeedbackProtocol[] = "infantry_20";
 
 enum class Infantry32TailFields {
   kAcceleration,
@@ -32,8 +36,7 @@ enum class InfantryStatusByte {
 struct InfantrySerialConfig {
   std::string port = "/dev/ttyACM0";
   int baudrate = 115200;
-  InfantryPacketLayout tx_layout = InfantryPacketLayout::kInfantry24;
-  InfantryPacketLayout rx_layout = InfantryPacketLayout::kInfantry24;
+  InfantryCommandLayout tx_layout = InfantryCommandLayout::kInfantry32;
   Infantry32TailFields tail_fields = Infantry32TailFields::kDuplicateVelocity;
   InfantryStatusByte status_byte = InfantryStatusByte::kFireAdvice;
   bool command_angles_in_degrees = false;
@@ -45,9 +48,9 @@ struct InfantrySerialConfig {
 
 GimbalCommand sanitizeInfantryCommandForTransport(const GimbalCommand& command);
 
-bool parseInfantryPacketLayout(const std::string& value,
-                               InfantryPacketLayout& layout);
-const char* infantryPacketLayoutName(InfantryPacketLayout layout);
+bool parseInfantryCommandLayout(const std::string& value,
+                                InfantryCommandLayout& layout);
+const char* infantryCommandLayoutName(InfantryCommandLayout layout);
 
 bool parseInfantry32TailFields(const std::string& value,
                                Infantry32TailFields& fields);
@@ -69,7 +72,6 @@ class InfantrySerialTransport final : public GimbalTransport {
   template <std::size_t Capacity>
   bool sendCommandPacket(const GimbalCommand& command);
 
-  template <std::size_t Capacity>
   bool readFeedbackPacket(SerialFeedback& feedback);
 
   static float finiteOrZero(double value);

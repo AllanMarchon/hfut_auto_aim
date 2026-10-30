@@ -27,11 +27,11 @@ public:
   explicit Aimer(const std::string & config_path);
   io::Command aim(
     std::list<Target> targets, std::chrono::steady_clock::time_point timestamp, double bullet_speed,
-    bool to_now = true);
+    bool to_now = true, double fire_delay_s = 0.0);
 
   io::Command aim(
     std::list<Target> targets, std::chrono::steady_clock::time_point timestamp, double bullet_speed,
-    io::ShootMode shoot_mode, bool to_now = true);
+    io::ShootMode shoot_mode, bool to_now = true, double fire_delay_s = 0.0);
   void setArmorAvoidanceConfig(const ArmorAvoidanceConfig & config);
 
 private:

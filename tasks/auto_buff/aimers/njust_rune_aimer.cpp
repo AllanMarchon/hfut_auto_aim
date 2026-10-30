@@ -38,7 +38,7 @@ NjustRuneAimer::NjustRuneAimer(BuffConfig::Planner config, Config njust_config)
 
 std::optional<RuneAim> NjustRuneAimer::aim(
   std::uint64_t generation, const std::optional<RuneEstimate> & target, double speed,
-  const io::GimbalState &, Timestamp now)
+  const io::GimbalState & gimbal, Timestamp now)
 {
   auto_aim::Plan result;
   if (!target) {
@@ -52,13 +52,18 @@ std::optional<RuneAim> NjustRuneAimer::aim(
   }
   if (speed < config_.bullet_speed_min || speed > config_.bullet_speed_max)
     speed = config_.bullet_speed_default;
+  const double feedback_delay = gimbal.fire_delay_s.value_or(0.0);
+  if (!std::isfinite(feedback_delay) || feedback_delay < 0.0) return std::nullopt;
+  // 配置值作为额外补偿，与反馈发弹延迟相加；没有反馈时只使用配置值。
+  const double shoot_delay = feedback_delay + njust_config_.shoot_delay;
+  if (!std::isfinite(shoot_delay) || shoot_delay < 0.0) return std::nullopt;
   const double distance = target->center.norm();
   double fly_time = distance / speed;
   AimSolution solution;
   // RMCS 开火控制：每次都基于原始估计重新迭代，最多求解五次。
   Timestamp prediction_time;
   for (int i = 0; i < 5; ++i) {
-    prediction_time = offset_time(now, njust_config_.shoot_delay + fly_time);
+    prediction_time = offset_time(now, shoot_delay + fly_time);
     const auto next = aim_at(*target, prediction_time, speed);
     if (!next) return std::nullopt;
     solution = *next;
