@@ -154,17 +154,22 @@ bool InfantrySerialTransport::readFeedbackPacket(SerialFeedback& feedback) {
   float pitch = 0.0F;
   float yaw = 0.0F;
   float fire_delay_ms = 0.0F;
+  float bullet_speed = 0.0F;
   packet.unload(mode, 1);
   packet.unload(roll, 2);
   packet.unload(pitch, 6);
   packet.unload(yaw, 10);
   packet.unload(fire_delay_ms, 14);
+  packet.unload(bullet_speed, 18);
 
   feedback.received = true;
   feedback.mode = mode;
   feedback.roll_rad = feedbackAngleToRad(roll);
   feedback.pitch_rad = feedbackAngleToRad(pitch);
   feedback.yaw_rad = feedbackAngleToRad(yaw);
+  // 无效弹速留给主程序使用配置值回退。
+  feedback.bullet_speed =
+      std::isfinite(bullet_speed) && bullet_speed >= 14.0F ? bullet_speed : 0.0;
   feedback.fire_delay_s.reset();
   // 电控发送毫秒，内部保存秒；非法延迟不作为有效值，不影响姿态反馈。
   if (std::isfinite(fire_delay_ms) && fire_delay_ms >= 0.0F) {
@@ -188,7 +193,7 @@ bool InfantrySerialTransport::readFeedback(SerialFeedback& feedback) {
 
   bool got_latest = false;
   SerialFeedback parsed;
-  // 电控只发送新版20字节反馈；一次收到多帧时取最后一帧。
+  // 电控只发送新版24字节反馈；一次收到多帧时取最后一帧。
   while (readFeedbackPacket(parsed)) {
     feedback = parsed;
     got_latest = true;

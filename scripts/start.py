@@ -399,7 +399,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--serial-port", default="/dev/ttyACM0")
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--serial-tx-protocol", choices=["infantry_16", "infantry_24", "infantry_32"], default="infantry_32")
-    parser.add_argument("--serial-rx-protocol", choices=["infantry_20"], default="infantry_20")
+    parser.add_argument("--serial-rx-protocol", choices=["infantry_feedback_24"], default="infantry_feedback_24")
     parser.add_argument("--infantry32-tail-fields", default="acceleration")
     parser.add_argument("--manual-yaw-range-deg", type=float, default=20.0)
     parser.add_argument("--manual-pitch-range-deg", type=float, default=15.0)

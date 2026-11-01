@@ -1087,7 +1087,7 @@ Options parseOptions(int argc, char** argv) {
           "  --serial-port PATH       串口设备\n"
           "  --baudrate N             串口波特率\n"
           "  --serial-tx-protocol NAME  infantry_16 | infantry_24 | infantry_32\n"
-          "  --serial-rx-protocol NAME  固定为 infantry_20（新版电控反馈）\n"
+          "  --serial-rx-protocol NAME  固定为 infantry_feedback_24（新版电控反馈）\n"
           "  --no-serial-send       打开串口收反馈，但不下发控制包\n"
           "  --enemy-color COLOR      red | blue\n"
           "  --bullet-speed MPS       弹速覆盖\n"
@@ -1211,7 +1211,7 @@ Options parseOptions(int argc, char** argv) {
     throw std::invalid_argument("serial tx_protocol 不合法: " + options.serial_tx_protocol);
   }
   if (options.serial_rx_protocol != hfut::io::kInfantryFeedbackProtocol) {
-    throw std::invalid_argument("serial rx_protocol 固定为 infantry_20，不再支持旧反馈格式");
+    throw std::invalid_argument("serial rx_protocol 固定为 infantry_feedback_24，不再支持旧反馈格式");
   }
   hfut::io::Infantry32TailFields fields;
   if (!hfut::io::parseInfantry32TailFields(options.infantry32_tail_fields, fields)) {

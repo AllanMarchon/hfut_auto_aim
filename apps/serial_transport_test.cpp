@@ -14,9 +14,9 @@ void printUsage(const char* argv0) {
       stderr,
       "用法: %s [port] [baudrate] [tx_protocol] [rx_protocol] [tail_fields]\n"
       "发送: infantry_16 | infantry_24 | infantry_32\n"
-      "接收: 固定为 infantry_20，仅支持新版电控反馈。\n"
+      "接收: 固定为 infantry_feedback_24，仅支持新版电控反馈。\n"
       "tail_fields: acceleration | duplicate_velocity\n"
-      "示例: %s /dev/ttyACM0 115200 infantry_32 infantry_20 acceleration\n"
+      "示例: %s /dev/ttyACM0 115200 infantry_32 infantry_feedback_24 acceleration\n"
       "说明: 串口收发单位固定为 rad / rad/s / rad/s²。\n",
       argv0, argv0);
 }
@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   if (argc >= 5 && std::string(argv[4]) != hfut::io::kInfantryFeedbackProtocol) {
-    std::fprintf(stderr, "rx_protocol 固定为 infantry_20，不再支持旧反馈格式: %s\n", argv[4]);
+    std::fprintf(stderr, "rx_protocol 固定为 infantry_feedback_24，不再支持旧反馈格式: %s\n", argv[4]);
     return 1;
   }
   if (argc >= 6 && !hfut::io::parseInfantry32TailFields(argv[5], config.tail_fields)) {
@@ -80,10 +80,11 @@ int main(int argc, char** argv) {
                   static_cast<unsigned>(feedback.mode), feedback.roll_rad,
                   feedback.yaw_rad, feedback.pitch_rad);
       if (feedback.fire_delay_s) {
-        std::printf("fire_delay=%.3fms\n", *feedback.fire_delay_s * 1000.0);
+        std::printf("fire_delay=%.3fms ", *feedback.fire_delay_s * 1000.0);
       } else {
-        std::printf("fire_delay=empty\n");
+        std::printf("fire_delay=empty ");
       }
+      std::printf("bullet_speed=%.3fm/s\n", feedback.bullet_speed);
       command.yaw = feedback.yaw_rad;
       command.pitch = feedback.pitch_rad;
       command.distance = 0.0;

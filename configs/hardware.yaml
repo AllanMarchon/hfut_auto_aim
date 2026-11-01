@@ -31,7 +31,7 @@ hardware:
     port: "/dev/ttyACM0"
     baudrate: 115200
     tx_protocol: "infantry_32"    # 发给下位机：32字节，包含角加速度
-    rx_protocol: "infantry_20"    # 反馈固定20字节，不支持旧反馈格式，包含姿态和 fire_delay_ms
+    rx_protocol: "infantry_feedback_24"  # 电控反馈24字节，含姿态、发弹延迟和弹速
     infantry32_tail_fields: "acceleration"  # 32字节尾部发送 pitch_acc/yaw_acc
     command_angles_in_degrees: false  # false=下发 rad、rad/s、rad/s²；true=下发角度制
     feedback_angles_in_degrees: false  # false=反馈按 rad 解析；true=反馈按角度制解析后转内部弧度

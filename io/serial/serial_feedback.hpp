@@ -9,7 +9,7 @@ namespace hfut::io {
 struct SerialFeedback {
   bool received = false;
   std::uint8_t mode = 0;
-  double bullet_speed = 23.0;  // empty：新版反馈未提供弹速，保留原默认值。
+  double bullet_speed = 23.0;  // 电控反馈弹速，单位 m/s；无效时由主程序回退到配置值。
   double roll_rad = 0.0;
   double yaw_rad = 0.0;
   double pitch_rad = 0.0;

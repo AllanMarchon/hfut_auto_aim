@@ -267,7 +267,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  std::printf("手动云台测试已打开: %s @ %d，TX=infantry_32，RX=infantry_20，单位=rad\n",
+  std::printf("手动云台测试已打开: %s @ %d，TX=infantry_32，RX=infantry_feedback_24，单位=rad\n",
               options.port.c_str(), options.baudrate);
   auto last = std::chrono::steady_clock::now();
   auto last_print = last;

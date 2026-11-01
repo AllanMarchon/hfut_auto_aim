@@ -13,15 +13,15 @@
 
 namespace hfut::io {
 
-// 仅描述上位机发送的控制包；电控反馈固定使用下方的20字节格式。
+// 仅描述上位机发送的控制包；电控反馈使用独立固定格式。
 enum class InfantryCommandLayout {
   kInfantry16,
   kInfantry24,
   kInfantry32,
 };
 
-inline constexpr std::size_t kInfantryFeedbackPacketSize = 20;
-inline constexpr char kInfantryFeedbackProtocol[] = "infantry_20";
+inline constexpr std::size_t kInfantryFeedbackPacketSize = 24;
+inline constexpr char kInfantryFeedbackProtocol[] = "infantry_feedback_24";
 
 enum class Infantry32TailFields {
   kAcceleration,

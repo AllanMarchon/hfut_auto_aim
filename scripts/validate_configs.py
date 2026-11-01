@@ -25,7 +25,7 @@ YOLO_MODELS = {
     "yolo11": "yolo11_model_path",
 }
 SERIAL_TX_PROTOCOLS = {"infantry_16", "infantry_24", "infantry_32"}
-SERIAL_RX_PROTOCOLS = {"infantry_20"}
+SERIAL_RX_PROTOCOLS = {"infantry_feedback_24"}
 
 
 class Report:
