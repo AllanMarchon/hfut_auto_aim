@@ -113,6 +113,7 @@ add_library(hfut_real_io STATIC
   io/serial/uart_transport.cpp
   io/serial/infantry_serial.cpp
   io/serial/infantry32_serial.cpp
+  io/serial/sentry_serial.cpp
   io/serial/hfut_serial_gimbal.cpp
   io/web/debug_mjpeg_server.cpp
 )

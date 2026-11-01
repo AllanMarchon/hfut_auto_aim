@@ -24,8 +24,8 @@ YOLO_MODELS = {
     "yolov8": "yolov8_model_path",
     "yolo11": "yolo11_model_path",
 }
-SERIAL_TX_PROTOCOLS = {"infantry_16", "infantry_24", "infantry_32"}
-SERIAL_RX_PROTOCOLS = {"infantry_feedback_24"}
+SERIAL_TX_PROTOCOLS = {"infantry_16", "infantry_24", "infantry_32", "sentry_64"}
+SERIAL_RX_PROTOCOLS = {"infantry_feedback_24", "sentry_feedback_64"}
 
 
 class Report:
@@ -207,19 +207,26 @@ def validate_hardware(report: Report, repo_root: Path, hardware: Any, camera_inf
             report.error("hardware.serial.protocol 已移除，请分别配置 tx_protocol 和 rx_protocol")
         require_choice(report, serial.get("tx_protocol"), "hardware.serial.tx_protocol", SERIAL_TX_PROTOCOLS)
         require_choice(report, serial.get("rx_protocol"), "hardware.serial.rx_protocol", SERIAL_RX_PROTOCOLS)
+        tx_protocol = serial.get("tx_protocol")
+        rx_protocol = serial.get("rx_protocol")
+        if tx_protocol == "sentry_64" and rx_protocol != "sentry_feedback_64":
+            report.error("sentry_64 必须搭配 sentry_feedback_64")
+        if rx_protocol == "sentry_feedback_64" and tx_protocol != "sentry_64":
+            report.error("sentry_feedback_64 必须搭配 sentry_64")
         require_choice(report, serial.get("infantry32_tail_fields"), "hardware.serial.infantry32_tail_fields", {"duplicate_velocity", "acceleration"})
-        require_false(
-            report,
-            serial.get("command_angles_in_degrees"),
-            "hardware.serial.command_angles_in_degrees",
-            "电控串口下发统一使用 rad / rad/s / rad/s²",
-        )
-        require_false(
-            report,
-            serial.get("feedback_angles_in_degrees"),
-            "hardware.serial.feedback_angles_in_degrees",
-            "电控串口反馈统一按 rad 解析",
-        )
+        if tx_protocol != "sentry_64":
+            require_false(
+                report,
+                serial.get("command_angles_in_degrees"),
+                "hardware.serial.command_angles_in_degrees",
+                "infantry 串口下发统一使用 rad / rad/s / rad/s²",
+            )
+            require_false(
+                report,
+                serial.get("feedback_angles_in_degrees"),
+                "hardware.serial.feedback_angles_in_degrees",
+                "infantry 串口反馈统一按 rad 解析",
+            )
         require_number(report, serial.get("read_timeout_ms"), "hardware.serial.read_timeout_ms")
         require_number(report, serial.get("write_timeout_ms"), "hardware.serial.write_timeout_ms")
         require_number(report, serial.get("feedback_timeout_ms"), "hardware.serial.feedback_timeout_ms", positive=True)

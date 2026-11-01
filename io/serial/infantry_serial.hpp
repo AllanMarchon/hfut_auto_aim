@@ -66,7 +66,7 @@ class InfantrySerialTransport final : public GimbalTransport {
   bool readFeedback(SerialFeedback& feedback) override;
   bool sendCommand(const GimbalCommand& command) override;
 
-  const std::string& errorMessage() const { return uart_->errorMessage(); }
+  const std::string& errorMessage() const override { return uart_->errorMessage(); }
 
  private:
   template <std::size_t Capacity>

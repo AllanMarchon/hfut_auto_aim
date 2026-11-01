@@ -110,6 +110,7 @@ class FixedPacket {
 using FixedPacket16 = FixedPacket<16>;
 using FixedPacket24 = FixedPacket<24>;
 using FixedPacket32 = FixedPacket<32>;
+using FixedPacket64 = FixedPacket<64>;
 
 }  // namespace hfut::io
 

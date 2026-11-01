@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -11,7 +12,10 @@
 #include <opencv2/imgproc.hpp>
 
 #include "hfut_auto_aim/gimbal_command.hpp"
+#include "io/serial/gimbal_transport.hpp"
 #include "io/serial/infantry_serial.hpp"
+#include "io/serial/sentry_packet.hpp"
+#include "io/serial/sentry_serial.hpp"
 
 namespace {
 
@@ -24,6 +28,9 @@ constexpr int kWindowHeight = 650;
 struct Options {
   std::string port = "/dev/ttyACM0";
   int baudrate = 115200;
+  std::string tx_protocol = hfut::io::kSentryCommandProtocol;
+  std::string rx_protocol = hfut::io::kSentryFeedbackProtocol;
+  std::string infantry32_tail_fields = "acceleration";
   double yaw_range_deg = 20.0;
   double pitch_range_deg = 15.0;
   double hz = 100.0;
@@ -57,6 +64,9 @@ void printUsage(const char* argv0) {
       "用法: %s [options]\n"
       "  --port PATH                 串口设备，默认 /dev/ttyACM0\n"
       "  --baudrate N                波特率，默认 115200\n"
+      "  --serial-tx-protocol NAME   infantry_16/24/32 或 sentry_64\n"
+      "  --serial-rx-protocol NAME   infantry_feedback_24 或 sentry_feedback_64\n"
+      "  --infantry32-tail-fields    acceleration 或 duplicate_velocity\n"
       "  --yaw-range-deg DEG         鼠标横向半幅 yaw，默认 20\n"
       "  --pitch-range-deg DEG       鼠标纵向半幅 pitch，默认 15\n"
       "  --hz N                      下发频率，默认 100\n"
@@ -65,7 +75,7 @@ void printUsage(const char* argv0) {
       "  --max-acc-rad-s2 N          加速度限幅，默认 80\n"
       "  --no-feedback               不读取下位机反馈\n"
       "按键: q/Esc 退出，Space/p 暂停，r 回中，WASD/IJKL/方向键移动。\n"
-      "说明: 串口收发单位固定为 rad / rad/s / rad/s²，窗口显示为度制。\n",
+      "说明: infantry 线路单位为弧度，sentry_64 为角度；窗口显示为度制。\n",
       argv0);
 }
 
@@ -106,6 +116,18 @@ bool parseArgs(int argc, char** argv, Options& options) {
     } else if (arg == "--baudrate") {
       const char* value = needValue("--baudrate");
       if (!value || !parseInt(value, options.baudrate)) return false;
+    } else if (arg == "--serial-tx-protocol") {
+      const char* value = needValue("--serial-tx-protocol");
+      if (!value) return false;
+      options.tx_protocol = value;
+    } else if (arg == "--serial-rx-protocol") {
+      const char* value = needValue("--serial-rx-protocol");
+      if (!value) return false;
+      options.rx_protocol = value;
+    } else if (arg == "--infantry32-tail-fields") {
+      const char* value = needValue("--infantry32-tail-fields");
+      if (!value) return false;
+      options.infantry32_tail_fields = value;
     } else if (arg == "--yaw-range-deg") {
       const char* value = needValue("--yaw-range-deg");
       if (!value || !parseDouble(value, options.yaw_range_deg)) return false;
@@ -234,19 +256,37 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  hfut::io::InfantrySerialConfig serial_config;
-  serial_config.port = options.port;
-  serial_config.baudrate = options.baudrate;
-  serial_config.tx_layout = hfut::io::InfantryCommandLayout::kInfantry32;
-  serial_config.tail_fields = hfut::io::Infantry32TailFields::kAcceleration;
-  serial_config.command_angles_in_degrees = false;
-  serial_config.feedback_angles_in_degrees = false;
-  serial_config.allow_fire = false;
-  serial_config.read_timeout_ms = 1;
-
-  hfut::io::InfantrySerialTransport serial(serial_config);
-  if (!serial.open()) {
-    std::fprintf(stderr, "串口打开失败: %s\n", serial.errorMessage().c_str());
+  const bool sentry = options.tx_protocol == hfut::io::kSentryCommandProtocol;
+  std::unique_ptr<hfut::io::GimbalTransport> serial;
+  if (sentry) {
+    if (options.rx_protocol != hfut::io::kSentryFeedbackProtocol) {
+      std::fprintf(stderr, "sentry_64 必须搭配 sentry_feedback_64\n");
+      return 1;
+    }
+    hfut::io::SentrySerialConfig config;
+    config.port = options.port;
+    config.baudrate = options.baudrate;
+    config.allow_fire = false;
+    config.read_timeout_ms = 1;
+    serial = std::make_unique<hfut::io::SentrySerialTransport>(config);
+  } else {
+    hfut::io::InfantrySerialConfig config;
+    config.port = options.port;
+    config.baudrate = options.baudrate;
+    config.command_angles_in_degrees = false;
+    config.feedback_angles_in_degrees = false;
+    config.allow_fire = false;
+    config.read_timeout_ms = 1;
+    if (!hfut::io::parseInfantryCommandLayout(options.tx_protocol, config.tx_layout) ||
+        options.rx_protocol != hfut::io::kInfantryFeedbackProtocol ||
+        !hfut::io::parseInfantry32TailFields(options.infantry32_tail_fields, config.tail_fields)) {
+      std::fprintf(stderr, "infantry 协议组合或 infantry32_tail_fields 不合法\n");
+      return 1;
+    }
+    serial = std::make_unique<hfut::io::InfantrySerialTransport>(config);
+  }
+  if (!serial->open()) {
+    std::fprintf(stderr, "串口打开失败: %s\n", serial->errorMessage().c_str());
     return 1;
   }
 
@@ -267,8 +307,9 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  std::printf("手动云台测试已打开: %s @ %d，TX=infantry_32，RX=infantry_feedback_24，单位=rad\n",
-              options.port.c_str(), options.baudrate);
+  std::printf("手动云台测试已打开: %s @ %d，TX=%s，RX=%s\n",
+              options.port.c_str(), options.baudrate,
+              options.tx_protocol.c_str(), options.rx_protocol.c_str());
   auto last = std::chrono::steady_clock::now();
   auto last_print = last;
   const auto period = std::chrono::duration<double>(1.0 / options.hz);
@@ -281,7 +322,7 @@ int main(int argc, char** argv) {
 
     if (options.read_feedback) {
       hfut::io::SerialFeedback feedback;
-      if (serial.readFeedback(feedback)) {
+      if (serial->readFeedback(feedback)) {
         latest_feedback = feedback;
         have_feedback = true;
       }
@@ -302,8 +343,8 @@ int main(int argc, char** argv) {
     command.fire_advice = false;
     command.mode = mouse.paused ? hfut::GimbalMode::no_valid_measurement : hfut::GimbalMode::normal_measurement;
 
-    if (!serial.sendCommand(command)) {
-      std::fprintf(stderr, "串口发送失败: %s\n", serial.errorMessage().c_str());
+    if (!serial->sendCommand(command)) {
+      std::fprintf(stderr, "串口发送失败: %s\n", serial->errorMessage().c_str());
     }
 
     drawWindow(mouse, options, command, latest_feedback, have_feedback, yaw_acc, pitch_acc);
@@ -345,7 +386,7 @@ int main(int argc, char** argv) {
   safe.fire_advice = false;
   safe.distance = -1.0;
   for (int i = 0; i < 5; ++i) {
-    serial.sendCommand(safe);
+    serial->sendCommand(safe);
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   return 0;

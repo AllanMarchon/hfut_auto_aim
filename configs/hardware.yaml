@@ -30,11 +30,11 @@ hardware:
   serial:
     port: "/dev/ttyACM0"
     baudrate: 115200
-    tx_protocol: "infantry_32"    # 发给下位机：32字节，包含角加速度
-    rx_protocol: "infantry_feedback_24"  # 电控反馈24字节，含姿态、发弹延迟和弹速
+    tx_protocol: "sentry_64"      # 哨兵下发：64字节，含目标、距离和角速度
+    rx_protocol: "sentry_feedback_64"  # 哨兵反馈：64字节，含姿态与保留字段
     infantry32_tail_fields: "acceleration"  # 32字节尾部发送 pitch_acc/yaw_acc
-    command_angles_in_degrees: false  # false=下发 rad、rad/s、rad/s²；true=下发角度制
-    feedback_angles_in_degrees: false  # false=反馈按 rad 解析；true=反馈按角度制解析后转内部弧度
+    command_angles_in_degrees: false  # infantry 专用；sentry_64 固定使用角度制
+    feedback_angles_in_degrees: false  # infantry 专用；sentry_feedback_64 固定按角度制接收
     read_timeout_ms: 2
     write_timeout_ms: 5          # 串口写入最多阻塞时间；超时丢本帧命令，不拖慢视觉循环
     feedback_timeout_ms: 100

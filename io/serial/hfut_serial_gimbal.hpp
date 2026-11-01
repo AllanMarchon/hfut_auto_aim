@@ -5,18 +5,23 @@
 #include <chrono>
 #include <cstddef>
 #include <deque>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
 #include "hfut_auto_aim/gimbal_command.hpp"
+#include "io/serial/gimbal_transport.hpp"
 #include "io/serial/infantry_serial.hpp"
 #include "io/serial/serial_feedback.hpp"
+#include "io/serial/sentry_serial.hpp"
 
 namespace hfut::io {
 
 struct HfutSerialGimbalConfig {
   InfantrySerialConfig serial;
+  std::optional<SentrySerialConfig> sentry_serial;
   std::size_t history_size = 1000;
   double timestamp_offset_s = 0.001;
   double max_sample_age_s = 0.05;
@@ -60,7 +65,7 @@ class HfutSerialGimbal {
   static double normalizeAngle(double angle);
 
   HfutSerialGimbalConfig config_;
-  InfantrySerialTransport transport_;
+  std::unique_ptr<GimbalTransport> transport_;
   std::atomic<bool> running_{false};
   std::atomic<bool> send_pending_{false};
   std::thread receive_thread_;

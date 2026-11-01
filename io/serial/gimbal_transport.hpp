@@ -1,6 +1,8 @@
 #ifndef HFUT_AUTO_AIM_GIMBAL_TRANSPORT_HPP
 #define HFUT_AUTO_AIM_GIMBAL_TRANSPORT_HPP
 
+#include <string>
+
 #include "hfut_auto_aim/gimbal_command.hpp"
 #include "io/serial/serial_feedback.hpp"
 
@@ -15,6 +17,7 @@ class GimbalTransport {
   virtual bool isOpen() const = 0;
   virtual bool readFeedback(SerialFeedback& feedback) = 0;
   virtual bool sendCommand(const GimbalCommand& command) = 0;
+  virtual const std::string& errorMessage() const = 0;
 };
 
 }  // namespace hfut::io

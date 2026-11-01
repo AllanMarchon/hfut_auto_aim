@@ -180,6 +180,11 @@ def build_standard_command(args: argparse.Namespace) -> list[str]:
         "--controller-config", str(args.controller_config),
         "--camera-backend", args.camera_backend,
         "--web-port", str(args.web_port),
+        "--serial-port", args.serial_port,
+        "--baudrate", str(args.baudrate),
+        "--serial-tx-protocol", args.serial_tx_protocol,
+        "--serial-rx-protocol", args.serial_rx_protocol,
+        "--infantry32-tail-fields", args.infantry32_tail_fields,
     ]
     if args.mode == "dry":
         cmd.append("--dry-run")
@@ -247,8 +252,9 @@ def run_serial_test(args: argparse.Namespace, env: dict[str, str]) -> int:
         str(args.baudrate),
         args.serial_tx_protocol,
         args.serial_rx_protocol,
-        args.infantry32_tail_fields,
     ]
+    if args.serial_tx_protocol != "sentry_64":
+        cmd.append(args.infantry32_tail_fields)
     return run(cmd, env=env).returncode
 
 
@@ -265,6 +271,9 @@ def run_manual_gimbal_test(args: argparse.Namespace, env: dict[str, str]) -> int
         str(exe),
         "--port", args.serial_port,
         "--baudrate", str(args.baudrate),
+        "--serial-tx-protocol", args.serial_tx_protocol,
+        "--serial-rx-protocol", args.serial_rx_protocol,
+        "--infantry32-tail-fields", args.infantry32_tail_fields,
         "--yaw-range-deg", str(args.manual_yaw_range_deg),
         "--pitch-range-deg", str(args.manual_pitch_range_deg),
         "--hz", str(args.manual_hz),
@@ -398,8 +407,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.set_defaults(serial_send=True)
     parser.add_argument("--serial-port", default="/dev/ttyACM0")
     parser.add_argument("--baudrate", type=int, default=115200)
-    parser.add_argument("--serial-tx-protocol", choices=["infantry_16", "infantry_24", "infantry_32"], default="infantry_32")
-    parser.add_argument("--serial-rx-protocol", choices=["infantry_feedback_24"], default="infantry_feedback_24")
+    parser.add_argument("--serial-tx-protocol", choices=["infantry_16", "infantry_24", "infantry_32", "sentry_64"], default="sentry_64")
+    parser.add_argument("--serial-rx-protocol", choices=["infantry_feedback_24", "sentry_feedback_64"], default="sentry_feedback_64")
     parser.add_argument("--infantry32-tail-fields", default="acceleration")
     parser.add_argument("--manual-yaw-range-deg", type=float, default=20.0)
     parser.add_argument("--manual-pitch-range-deg", type=float, default=15.0)

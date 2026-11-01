@@ -12,7 +12,12 @@ constexpr double kPi = 3.14159265358979323846;
 }  // namespace
 
 HfutSerialGimbal::HfutSerialGimbal(HfutSerialGimbalConfig config)
-    : config_(std::move(config)), transport_(config_.serial) {
+    : config_(std::move(config)),
+      transport_(config_.sentry_serial
+                     ? std::unique_ptr<GimbalTransport>(
+                           std::make_unique<SentrySerialTransport>(*config_.sentry_serial))
+                     : std::unique_ptr<GimbalTransport>(
+                           std::make_unique<InfantrySerialTransport>(config_.serial))) {
   config_.history_size = std::max<std::size_t>(config_.history_size, 2U);
 }
 
@@ -22,7 +27,7 @@ bool HfutSerialGimbal::open() {
   if (running_.load()) return true;
   {
     std::lock_guard<std::mutex> lock(transport_mutex_);
-    if (!transport_.open()) return false;
+    if (!transport_->open()) return false;
   }
   running_.store(true);
   receive_thread_ = std::thread(&HfutSerialGimbal::receiveLoop, this);
@@ -33,12 +38,12 @@ void HfutSerialGimbal::close() {
   running_.store(false);
   if (receive_thread_.joinable()) receive_thread_.join();
   std::lock_guard<std::mutex> lock(transport_mutex_);
-  transport_.close();
+  transport_->close();
 }
 
 bool HfutSerialGimbal::isOpen() const {
   std::lock_guard<std::mutex> lock(transport_mutex_);
-  return transport_.isOpen();
+  return transport_->isOpen();
 }
 
 bool HfutSerialGimbal::latest(SerialFeedback& feedback, TimePoint* feedback_time) const {
@@ -108,13 +113,13 @@ bool HfutSerialGimbal::send(const GimbalCommand& command) {
   bool ok = false;
   {
     std::lock_guard<std::mutex> lock(transport_mutex_);
-    ok = transport_.sendCommand(adaptCommandForWire(command));
+    ok = transport_->sendCommand(adaptCommandForWire(command));
   }
   send_pending_.store(false);
   return ok;
 }
 
-const std::string& HfutSerialGimbal::errorMessage() const { return transport_.errorMessage(); }
+const std::string& HfutSerialGimbal::errorMessage() const { return transport_->errorMessage(); }
 
 void HfutSerialGimbal::receiveLoop() {
   while (running_.load()) {
@@ -130,7 +135,7 @@ void HfutSerialGimbal::receiveLoop() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         continue;
       }
-      received = transport_.readFeedback(feedback);
+      received = transport_->readFeedback(feedback);
     }
     if (received) pushFeedback(Clock::now(), feedback);
   }

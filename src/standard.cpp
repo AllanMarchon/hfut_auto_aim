@@ -37,6 +37,7 @@
 #include "io/camera/opencv_camera_source.hpp"
 #include "io/serial/hfut_serial_gimbal.hpp"
 #include "io/serial/infantry_serial.hpp"
+#include "io/serial/sentry_packet.hpp"
 #include "io/web/debug_mjpeg_server.hpp"
 
 #include "tasks/auto_aim/aimer.hpp"
@@ -1086,8 +1087,8 @@ Options parseOptions(int argc, char** argv) {
           "  --flip-image             旋转工业相机画面 180 度\n"
           "  --serial-port PATH       串口设备\n"
           "  --baudrate N             串口波特率\n"
-          "  --serial-tx-protocol NAME  infantry_16 | infantry_24 | infantry_32\n"
-          "  --serial-rx-protocol NAME  固定为 infantry_feedback_24（新版电控反馈）\n"
+          "  --serial-tx-protocol NAME  infantry_16 | infantry_24 | infantry_32 | sentry_64\n"
+          "  --serial-rx-protocol NAME  infantry_feedback_24 | sentry_feedback_64\n"
           "  --no-serial-send       打开串口收反馈，但不下发控制包\n"
           "  --enemy-color COLOR      red | blue\n"
           "  --bullet-speed MPS       弹速覆盖\n"
@@ -1207,11 +1208,18 @@ Options parseOptions(int argc, char** argv) {
     throw std::invalid_argument("web_frame_step 必须 > 0");
   }
   hfut::io::InfantryCommandLayout tx_layout;
-  if (!hfut::io::parseInfantryCommandLayout(options.serial_tx_protocol, tx_layout)) {
-    throw std::invalid_argument("serial tx_protocol 不合法: " + options.serial_tx_protocol);
-  }
-  if (options.serial_rx_protocol != hfut::io::kInfantryFeedbackProtocol) {
-    throw std::invalid_argument("serial rx_protocol 固定为 infantry_feedback_24，不再支持旧反馈格式");
+  const bool sentry_protocol = options.serial_tx_protocol == hfut::io::kSentryCommandProtocol;
+  if (sentry_protocol) {
+    if (options.serial_rx_protocol != hfut::io::kSentryFeedbackProtocol) {
+      throw std::invalid_argument("sentry_64 必须搭配 sentry_feedback_64");
+    }
+  } else {
+    if (!hfut::io::parseInfantryCommandLayout(options.serial_tx_protocol, tx_layout)) {
+      throw std::invalid_argument("serial tx_protocol 不合法: " + options.serial_tx_protocol);
+    }
+    if (options.serial_rx_protocol != hfut::io::kInfantryFeedbackProtocol) {
+      throw std::invalid_argument("infantry_16/24/32 必须搭配 infantry_feedback_24");
+    }
   }
   hfut::io::Infantry32TailFields fields;
   if (!hfut::io::parseInfantry32TailFields(options.infantry32_tail_fields, fields)) {
@@ -1339,6 +1347,16 @@ hfut::io::InfantrySerialConfig makeSerialConfig(const Options& options) {
   config.write_timeout_ms = options.serial_write_timeout_ms;
   hfut::io::parseInfantryCommandLayout(options.serial_tx_protocol, config.tx_layout);
   hfut::io::parseInfantry32TailFields(options.infantry32_tail_fields, config.tail_fields);
+  return config;
+}
+
+hfut::io::SentrySerialConfig makeSentrySerialConfig(const Options& options) {
+  hfut::io::SentrySerialConfig config;
+  config.port = options.serial_port;
+  config.baudrate = options.serial_baudrate;
+  config.allow_fire = options.enable_fire;
+  config.read_timeout_ms = options.serial_read_timeout_ms;
+  config.write_timeout_ms = options.serial_write_timeout_ms;
   return config;
 }
 
@@ -1500,7 +1518,11 @@ int run(const Options& options) {
     loadBuffControlConfig(adapted_config_path, options.aim_task, command_limiter_config);
   }
   hfut::io::HfutSerialGimbalConfig gimbal_config;
-  gimbal_config.serial = serial_config;
+  if (options.serial_tx_protocol == hfut::io::kSentryCommandProtocol) {
+    gimbal_config.sentry_serial = makeSentrySerialConfig(options);
+  } else {
+    gimbal_config.serial = serial_config;
+  }
   gimbal_config.history_size = static_cast<std::size_t>(command_limiter_config.feedback_alignment_history_size);
   gimbal_config.timestamp_offset_s = command_limiter_config.feedback_alignment_offset_s;
   gimbal_config.max_sample_age_s = command_limiter_config.feedback_alignment_max_sample_age_s;
@@ -1595,7 +1617,7 @@ int run(const Options& options) {
   std::printf(
       "[standard] camera=%s serial=%s:%s@%d read_timeout=%dms write_timeout=%dms "
       "task=%s exposure=%.0fus dry_run=%s serial_send=%s fire=%s enemy=%s bullet=%.2f\n",
-      options.camera_backend.c_str(), hfut::io::infantryCommandLayoutName(serial_config.tx_layout),
+      options.camera_backend.c_str(), options.serial_tx_protocol.c_str(),
       options.serial_port.c_str(), options.serial_baudrate, options.serial_read_timeout_ms,
       options.serial_write_timeout_ms,
       options.aim_task.c_str(),
@@ -2120,8 +2142,8 @@ int run(const Options& options) {
     web_status.fire_enabled = options.enable_fire;
     web_status.enemy_color = options.enemy_color;
     web_status.camera_backend = options.camera_backend;
-    web_status.serial_tx = hfut::io::infantryCommandLayoutName(serial_config.tx_layout);
-    web_status.serial_rx = hfut::io::kInfantryFeedbackProtocol;
+    web_status.serial_tx = options.serial_tx_protocol;
+    web_status.serial_rx = options.serial_rx_protocol;
 
     const auto visual_start = std::chrono::steady_clock::now();
     if (options.display || publish_visual_frame) {
