@@ -1360,12 +1360,18 @@ hfut::io::SentrySerialConfig makeSentrySerialConfig(const Options& options) {
   return config;
 }
 
+double feedbackPitchToWorldSign(const Options& options) {
+  // 哨兵反馈 pitch 与 simple_auto_aim 一样直接参与 Ry；步兵协议保留原有坐标适配。
+  return options.serial_rx_protocol == hfut::io::kSentryFeedbackProtocol ? 1.0 : -1.0;
+}
+
 Eigen::Quaterniond feedbackQuaternion(
-    const hfut::io::SerialFeedback& feedback, const CommandLimiterConfig& config) {
+    const hfut::io::SerialFeedback& feedback, const CommandLimiterConfig& config,
+    double pitch_to_world_sign) {
   const Eigen::Matrix3d gimbal_to_world =
       (Eigen::AngleAxisd(
            config.feedback_yaw_to_world_sign * feedback.yaw_rad, Eigen::Vector3d::UnitZ()) *
-       Eigen::AngleAxisd(-feedback.pitch_rad, Eigen::Vector3d::UnitY()) *
+       Eigen::AngleAxisd(pitch_to_world_sign * feedback.pitch_rad, Eigen::Vector3d::UnitY()) *
        Eigen::AngleAxisd(feedback.roll_rad, Eigen::Vector3d::UnitX()))
           .toRotationMatrix();
   return Eigen::Quaterniond(gimbal_to_world).normalized();
@@ -1846,7 +1852,9 @@ int run(const Options& options) {
     if (use_buff_task) {
       const auto buff_start = std::chrono::steady_clock::now();
       const auto buff_frame = buff_runtime->process(
-          frame.image, timestamp, feedbackQuaternion(aligned_feedback, command_limiter_config),
+          frame.image, timestamp,
+          feedbackQuaternion(aligned_feedback, command_limiter_config,
+                             feedbackPitchToWorldSign(options)),
           options.enemy_color == "red");
       detect_end = std::chrono::steady_clock::now();
       detection_count = static_cast<int>(buff_frame.bullseye_count + buff_frame.icon_count);
@@ -1939,7 +1947,8 @@ int run(const Options& options) {
         (detection_count > 0 ? "detecting" : "lost");
       buff_solver_ms = elapsedMs(buff_start, std::chrono::steady_clock::now());
     } else {
-      solver->set_R_gimbal2world(feedbackQuaternion(aligned_feedback, command_limiter_config));
+      solver->set_R_gimbal2world(feedbackQuaternion(
+          aligned_feedback, command_limiter_config, feedbackPitchToWorldSign(options)));
       armors = detector->detect(frame.image, static_cast<int>(frame.seq));
       detection_count = static_cast<int>(armors.size());
       detect_end = std::chrono::steady_clock::now();
