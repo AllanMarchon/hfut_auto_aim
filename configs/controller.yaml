@@ -24,8 +24,8 @@ gimbal_pipeline:
         #目标旋转速度阈值7rad/s
         decision_speed: 7.0
         # 高低速额外补偿，单位秒；会与电控反馈的发弹延迟相加，不要重复填写发弹延迟。
-        high_speed_delay_time: 0.153
-        low_speed_delay_time: 0.153
+        high_speed_delay_time: 0.00
+        low_speed_delay_time: 0.0
         
         max_yaw_acc: 100.0
         Q_yaw: [9000000.0, 0.0]
@@ -42,7 +42,7 @@ gimbal_pipeline:
         max_pitch_acc: 140.0
         Q_pitch: [12000000.0, 0.0]
         R_pitch: [0.8]
-        low_speed_delay_time: 0.153
+        low_speed_delay_time: 0.01
 
       # 备用 Aimer 链路的云台能力上限。planner.mode: mpc 时最终下发限幅使用 mpc_planner.max_*_acc。
       # 单位：rad/s²。
@@ -86,12 +86,12 @@ gimbal_pipeline:
       # 串口下发字段开关。默认保持与电控约定一致，仍发送速度和加速度。
       # 上车排查抖动时可临时关掉某一项，让 32 字节包格式不变但对应字段发 0。
       # velocity_mode:
-      #   target_rate    = 直接发送规划器给出的目标角速度，与 simple_auto_aim 一致。
+      #   target_rate    = 只发送规划器给出的目标角速度。
       #   feedback_error = 额外叠加 K*(cmd-fb)，仅在确认下位机需要该补偿时启用。
       serial_command:
         send_velocity: true
         send_acceleration: true
-        velocity_mode: target_rate
+        velocity_mode: feedback_error
         yaw_error_gain: 6.0     # 1/s；yaw_v += gain * (cmd_yaw - fb_yaw)
         pitch_error_gain: 6.0   # 1/s；pitch_v += gain * (cmd_pitch - fb_pitch)
         max_yaw_velocity: 120.0   # deg/s；限制最终下发 yaw_v
@@ -122,7 +122,7 @@ gimbal_pipeline:
         yaw_tolerance: 3.0
         pitch_tolerance: 1.5
 
-      # SP25 输出到电控的 pitch 符号适配。哨兵协议与 simple_auto_aim 一样直接传递，设为 1.0。
+      # SP25 输出 pitch 符号适配：1.0 表示保持原符号，-1.0 表示取反。
       output_adapter:
         sp_pitch_to_command_sign: 1.0
 
