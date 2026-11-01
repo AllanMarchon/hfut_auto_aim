@@ -2063,8 +2063,10 @@ int run(const Options& options) {
     }
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
-    // 实车缺少有效发弹延迟时仍可跟踪，但禁止按错误的出膛时间发送开火建议。
-    if (!options.dry_run &&
+    // infantry 反馈包必须提供有效发弹延迟；哨兵反馈包没有该字段，不能因此清除开火建议。
+    const bool require_feedback_fire_delay =
+        options.serial_rx_protocol == hfut::io::kInfantryFeedbackProtocol;
+    if (!options.dry_run && require_feedback_fire_delay &&
         (!fire_delay_s || elapsedMs(last_feedback_time, std::chrono::steady_clock::now()) >
                               options.feedback_timeout_ms)) {
       command.fire_advice = false;
