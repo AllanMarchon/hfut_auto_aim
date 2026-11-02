@@ -38,8 +38,8 @@ gimbal_pipeline:
       # 26 赛季前哨站三块板存在 102mm 高度差，pitch 切板响应通常需要单独调。
       outpost_mpc_planner:
         enable: true
-        max_yaw_acc: 50.0
-        max_pitch_acc: 140.0
+        max_yaw_acc: 100.0
+        max_pitch_acc: 100.0
         Q_pitch: [12000000.0, 0.0]
         R_pitch: [0.8]
         low_speed_delay_time: 0.01
