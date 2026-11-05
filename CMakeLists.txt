@@ -193,3 +193,10 @@ target_link_libraries(capture_calibration_images PRIVATE
   yaml-cpp
   Threads::Threads
 )
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(fire_decision_test tests/fire_decision_test.cpp)
+  target_include_directories(fire_decision_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME fire_decision_test COMMAND fire_decision_test)
+endif()

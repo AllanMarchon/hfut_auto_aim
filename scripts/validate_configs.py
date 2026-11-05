@@ -416,8 +416,41 @@ def validate_controller(report: Report, config: Any) -> None:
         report.error("controller.fire_gate 缺失或不是对象")
     else:
         require_bool(report, fire_gate.get("enable"), "controller.fire_gate.enable")
+        if "require_tracking" in fire_gate:
+            require_bool(report, fire_gate["require_tracking"], "controller.fire_gate.require_tracking")
+        if "min_aligned_frames" in fire_gate:
+            require_int(
+                report,
+                fire_gate["min_aligned_frames"],
+                "controller.fire_gate.min_aligned_frames",
+                positive=True,
+            )
         require_number(report, fire_gate.get("yaw_tolerance"), "controller.fire_gate.yaw_tolerance", positive=True)
         require_number(report, fire_gate.get("pitch_tolerance"), "controller.fire_gate.pitch_tolerance", positive=True)
+
+    outpost_fire_gate = controller.get("outpost_fire_gate")
+    if outpost_fire_gate is not None:
+        if not isinstance(outpost_fire_gate, dict):
+            report.error("controller.outpost_fire_gate 必须是对象")
+        else:
+            for key in ("enable", "require_tracking"):
+                if key in outpost_fire_gate:
+                    require_bool(report, outpost_fire_gate[key], f"controller.outpost_fire_gate.{key}")
+            if "min_aligned_frames" in outpost_fire_gate:
+                require_int(
+                    report,
+                    outpost_fire_gate["min_aligned_frames"],
+                    "controller.outpost_fire_gate.min_aligned_frames",
+                    positive=True,
+                )
+            for key in ("yaw_tolerance", "pitch_tolerance"):
+                if key in outpost_fire_gate:
+                    require_number(
+                        report,
+                        outpost_fire_gate[key],
+                        f"controller.outpost_fire_gate.{key}",
+                        positive=True,
+                    )
 
     output_adapter = controller.get("output_adapter")
     if not isinstance(output_adapter, dict):

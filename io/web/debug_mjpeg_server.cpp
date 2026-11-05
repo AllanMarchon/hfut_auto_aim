@@ -87,6 +87,8 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"target_pitch_deg\":" << finiteOrZero(status.target_pitch_deg)
       << ",\"limiter_yaw_error_deg\":" << finiteOrZero(status.limiter_yaw_error_deg)
       << ",\"limiter_pitch_error_deg\":" << finiteOrZero(status.limiter_pitch_error_deg)
+      << ",\"fire_aim_yaw_deg\":" << finiteOrZero(status.fire_aim_yaw_deg)
+      << ",\"fire_aim_pitch_deg\":" << finiteOrZero(status.fire_aim_pitch_deg)
       << ",\"distance_m\":" << finiteOrZero(status.distance_m)
       << ",\"pnp_blade_distance_m\":" << finiteOrZero(status.pnp_blade_distance_m)
       << ",\"pnp_first_distance_m\":" << finiteOrZero(status.pnp_first_distance_m)
@@ -97,6 +99,8 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"fire_advice\":" << (status.fire_advice ? "true" : "false")
       << ",\"fire\":" << (status.fire ? "true" : "false")
       << ",\"fire_blocked_by_limiter\":" << (status.fire_blocked_by_limiter ? "true" : "false")
+      << ",\"fire_aligned_frames\":" << status.fire_aligned_frames
+      << ",\"fire_gate_reason\":\"" << escapeJson(status.fire_gate_reason) << "\""
       << ",\"dry_run\":" << (status.dry_run ? "true" : "false")
       << ",\"fire_enabled\":" << (status.fire_enabled ? "true" : "false")
       << ",\"enemy_color\":\"" << escapeJson(status.enemy_color) << "\""
@@ -553,9 +557,10 @@ const CHARTS = [
       {key: 'feedback_yaw_deg', label: 'fb_yaw', color: COLORS.feedback, digits: 2},
       {key: 'aligned_feedback_yaw_deg', label: 'align_fb', color: '#65d6ff', digits: 2},
       {key: 'raw_target_yaw_deg', label: 'raw_sp', color: COLORS.target, digits: 2},
+      {key: 'fire_aim_yaw_deg', label: 'hit_aim', color: '#ff9f43', digits: 2},
       {key: 'target_yaw_deg', label: 'stable_sp', color: '#d3b7ff', digits: 2},
       {key: 'command_yaw_deg', label: 'cmd_yaw', color: COLORS.command, digits: 2},
-      {key: 'limiter_yaw_error_deg', label: 'lim_err', color: COLORS.error, digits: 2}
+      {key: 'limiter_yaw_error_deg', label: 'fire_aim_err', color: COLORS.error, digits: 2}
     ]
   },
   {
@@ -567,9 +572,10 @@ const CHARTS = [
       {key: 'feedback_pitch_deg', label: 'fb_pitch', color: COLORS.feedback, digits: 2},
       {key: 'aligned_feedback_pitch_deg', label: 'align_fb', color: '#65d6ff', digits: 2},
       {key: 'raw_target_pitch_deg', label: 'raw_sp', color: COLORS.target, digits: 2},
+      {key: 'fire_aim_pitch_deg', label: 'hit_aim', color: '#ff9f43', digits: 2},
       {key: 'target_pitch_deg', label: 'stable_sp', color: '#d3b7ff', digits: 2},
       {key: 'command_pitch_deg', label: 'cmd_pitch', color: COLORS.command, digits: 2},
-      {key: 'limiter_pitch_error_deg', label: 'lim_err', color: COLORS.error, digits: 2}
+      {key: 'limiter_pitch_error_deg', label: 'fire_aim_err', color: COLORS.error, digits: 2}
     ]
   },
   {
@@ -579,7 +585,8 @@ const CHARTS = [
     unit: '0/1',
     fixedRange: [0, 1],
     series: [
-      {key: 'fire_advice', label: 'fire_advice', color: COLORS.fire, digits: 0, step: true}
+      {key: 'fire_advice', label: 'MPC candidate', color: COLORS.fire, digits: 0, step: true},
+      {key: 'fire', label: 'serial bit', color: '#ff9f43', digits: 0, step: true}
     ]
   },
   {
@@ -612,7 +619,11 @@ const TELEMETRY = [
   ['pnp blade distance', 'pnp_blade_distance_m', 3, ' m'],
   ['lim yaw err', 'limiter_yaw_error_deg', 2, ' deg'],
   ['lim pitch err', 'limiter_pitch_error_deg', 2, ' deg'],
+  ['fire aim yaw', 'fire_aim_yaw_deg', 2, ' deg'],
+  ['fire aim pitch', 'fire_aim_pitch_deg', 2, ' deg'],
   ['fire blocked', 'fire_blocked_by_limiter', null, ''],
+  ['fire gate reason', 'fire_gate_reason', null, ''],
+  ['fire aligned frames', 'fire_aligned_frames', 0, ''],
   ['cmd yaw vel', 'command_yaw_vel_deg_s', 1, ' deg/s'],
   ['cmd pitch vel', 'command_pitch_vel_deg_s', 1, ' deg/s'],
   ['cmd yaw acc', 'command_yaw_acc_deg_s2', 1, ' deg/s^2'],
@@ -932,7 +943,9 @@ function updateCards(status) {
 
   document.getElementById('value-fire').textContent = status.fire ? 'SEND' : (status.fire_advice ? 'BLOCK' : 'HOLD');
   document.getElementById('meta-fire').textContent =
-      `sp=${status.fire_advice ? 1 : 0} sent=${status.fire ? 1 : 0} gate=${status.fire_blocked_by_limiter ? 1 : 0}`;
+      `mpc=${status.fire_advice ? 1 : 0} serial=${status.fire ? 1 : 0} ` +
+      `aim_err=${fmt(finite(status.limiter_yaw_error_deg), 2)}/${fmt(finite(status.limiter_pitch_error_deg), 2)}° ` +
+      `aligned=${status.fire_aligned_frames ?? 0} reason=${status.fire_gate_reason ?? 'unknown'}`;
 
   const pill = document.getElementById('track-pill');
   if (status.fire) {

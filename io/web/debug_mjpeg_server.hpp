@@ -60,6 +60,8 @@ struct DebugMjpegStatus {
   double target_pitch_deg{0.0};
   double limiter_yaw_error_deg{0.0};
   double limiter_pitch_error_deg{0.0};
+  double fire_aim_yaw_deg{0.0};
+  double fire_aim_pitch_deg{0.0};
   double distance_m{0.0};
   double pnp_blade_distance_m{0.0};
   double pnp_first_distance_m{0.0};
@@ -70,6 +72,8 @@ struct DebugMjpegStatus {
   bool fire_advice{false};
   bool fire{false};
   bool fire_blocked_by_limiter{false};
+  int fire_aligned_frames{0};
+  std::string fire_gate_reason{"none"};
   bool dry_run{false};
   bool fire_enabled{false};
   std::string enemy_color;

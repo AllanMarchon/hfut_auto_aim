@@ -35,6 +35,7 @@
 #include "io/camera/hik_camera_source.hpp"
 #endif
 #include "io/camera/opencv_camera_source.hpp"
+#include "io/fire_decision.hpp"
 #include "io/serial/hfut_serial_gimbal.hpp"
 #include "io/serial/infantry_serial.hpp"
 #include "io/web/debug_mjpeg_server.hpp"
@@ -116,6 +117,8 @@ struct CommandLimiterConfig {
   bool enable_clamping{true};
   bool enable_rate_limiter{true};
   bool enable_fire_gate{true};
+  bool fire_gate_require_tracking{true};
+  int fire_gate_min_aligned_frames{1};
   bool enable_target_stabilizer{true};
   bool target_stabilizer_freeze_on_unstable_state{true};
   double max_yaw_diff_rad{15.0 * kPi / 180.0};
@@ -243,6 +246,8 @@ struct FireGateResult {
   double yaw_error_rad{0.0};
   double pitch_error_rad{0.0};
   bool blocked{false};
+  int aligned_frames{0};
+  std::string reason{"not_evaluated"};
 };
 
 class SimpleCommandGuard {
@@ -680,7 +685,14 @@ FireGateResult applyFireGate(hfut::GimbalCommand& command,
   FireGateResult result;
   result.yaw_error_rad = std::abs(tools::limit_rad(desired_yaw - command.yaw));
   result.pitch_error_rad = std::abs(desired_pitch - command.pitch);
-  if (!command.fire_advice || !config.enable_fire_gate) return result;
+  if (!command.fire_advice) {
+    result.reason = "no_candidate_or_disabled";
+    return result;
+  }
+  if (!config.enable_fire_gate) {
+    result.reason = "gate_disabled";
+    return result;
+  }
 
   const double feedback_yaw_error_rad = std::abs(command.yaw_diff);
   const double feedback_pitch_error_rad = std::abs(command.pitch_diff);
@@ -690,6 +702,9 @@ FireGateResult applyFireGate(hfut::GimbalCommand& command,
       feedback_pitch_error_rad > config.fire_pitch_tolerance_rad) {
     command.fire_advice = false;
     result.blocked = true;
+    result.reason = "command_limited";
+  } else {
+    result.reason = "allowed";
   }
   return result;
 }
@@ -831,6 +846,10 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
 
   if (fire_gate) {
     config.enable_fire_gate = parseBool(fire_gate["enable"], config.enable_fire_gate);
+    config.fire_gate_require_tracking = parseBool(
+        fire_gate["require_tracking"], config.fire_gate_require_tracking);
+    config.fire_gate_min_aligned_frames = parseInt(
+        fire_gate["min_aligned_frames"], config.fire_gate_min_aligned_frames);
     config.fire_yaw_tolerance_rad = degToRad(
         parseDouble(fire_gate["yaw_tolerance"], config.fire_yaw_tolerance_rad * kRadToDeg));
     config.fire_pitch_tolerance_rad = degToRad(
@@ -890,6 +909,9 @@ CommandLimiterConfig loadCommandLimiterConfig(const std::string& path) {
   }
   if (config.fire_yaw_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire yaw tolerance 必须 > 0");
   if (config.fire_pitch_tolerance_rad <= 0.0) throw std::invalid_argument("controller fire pitch tolerance 必须 > 0");
+  if (config.fire_gate_min_aligned_frames < 1) {
+    throw std::invalid_argument("controller.fire_gate.min_aligned_frames 必须 >= 1");
+  }
   if (config.target_stabilizer_max_yaw_jump_rad <= 0.0) {
     throw std::invalid_argument("controller.target_stabilizer.max_yaw_jump 必须 > 0");
   }
@@ -960,6 +982,10 @@ CommandLimiterConfig loadOutpostCommandLimiterConfig(
 
   if (outpost_fire_gate) {
     config.enable_fire_gate = parseBool(outpost_fire_gate["enable"], config.enable_fire_gate);
+    config.fire_gate_require_tracking = parseBool(
+        outpost_fire_gate["require_tracking"], config.fire_gate_require_tracking);
+    config.fire_gate_min_aligned_frames = parseInt(
+        outpost_fire_gate["min_aligned_frames"], config.fire_gate_min_aligned_frames);
     config.fire_yaw_tolerance_rad = degToRad(
         parseDouble(outpost_fire_gate["yaw_tolerance"], config.fire_yaw_tolerance_rad * kRadToDeg));
     config.fire_pitch_tolerance_rad = degToRad(
@@ -975,6 +1001,9 @@ CommandLimiterConfig loadOutpostCommandLimiterConfig(
   }
   if (config.fire_pitch_tolerance_rad <= 0.0) {
     throw std::invalid_argument("controller.outpost_fire_gate pitch_tolerance 必须 > 0");
+  }
+  if (config.fire_gate_min_aligned_frames < 1) {
+    throw std::invalid_argument("controller.outpost_fire_gate min_aligned_frames 必须 >= 1");
   }
   return config;
 }
@@ -1619,6 +1648,7 @@ int run(const Options& options) {
   std::printf(
       "[standard] controller_config=%s planner=%s guard=%s yaw_step=%.2fdeg pitch_step=%.2fdeg "
       "yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s yaw_tol=%.2fdeg pitch_tol=%.2fdeg "
+      "tracking_only=%s aligned_frames=%d "
       "sp_pitch_to_cmd=%.0f yaw_world_sign=%.0f outlier_guard=%s jump=%.1fdeg "
       "target_rate=%.1fdeg/s hold=%d lost_hold=%.2fs fb_align=%s offset=%.1fms max_age=%.1fms "
       "send_v=%s send_acc=%s vel_mode=%s vel_k=%.1f/%.1f vel_lim=%.0f/%.0fdeg/s\n",
@@ -1631,6 +1661,8 @@ int run(const Options& options) {
       command_limiter_config.enable_fire_gate ? "on" : "off",
       command_limiter_config.fire_yaw_tolerance_rad * kRadToDeg,
       command_limiter_config.fire_pitch_tolerance_rad * kRadToDeg,
+      command_limiter_config.fire_gate_require_tracking ? "on" : "off",
+      command_limiter_config.fire_gate_min_aligned_frames,
       command_limiter_config.sp_pitch_to_command_sign,
       command_limiter_config.feedback_yaw_to_world_sign,
       command_limiter_config.enable_target_stabilizer ? "on" : "off",
@@ -1656,13 +1688,15 @@ int run(const Options& options) {
   if (use_outpost_profile) {
     std::printf(
         "[standard] outpost_profile mpc=%s yaw_acc=%.2f pitch_acc=%.2f fire_gate=%s "
-        "yaw_tol=%.2fdeg pitch_tol=%.2fdeg\n",
+        "aim_tol=%.2f/%.2fdeg tracking_only=%s aligned_frames=%d\n",
         outpost_mpc_profile_enabled ? "on" : "inherit",
         outpost_limiter_config.max_yaw_acc_rad_s2,
         outpost_limiter_config.max_pitch_acc_rad_s2,
         outpost_limiter_config.enable_fire_gate ? "on" : "off",
         outpost_limiter_config.fire_yaw_tolerance_rad * kRadToDeg,
-        outpost_limiter_config.fire_pitch_tolerance_rad * kRadToDeg);
+        outpost_limiter_config.fire_pitch_tolerance_rad * kRadToDeg,
+        outpost_limiter_config.fire_gate_require_tracking ? "on" : "off",
+        outpost_limiter_config.fire_gate_min_aligned_frames);
   }
 
   hfut::io::SerialFeedback latest_feedback;
@@ -1676,6 +1710,7 @@ int run(const Options& options) {
   uint64_t frames = 0;
   int processed = 0;
   int buff_pose_missing_frames = 0;
+  int fire_aligned_frames = 0;
   struct BuffRotationObservation {
     std::uint64_t generation{0};
     std::size_t update_count{0};
@@ -2041,15 +2076,58 @@ int run(const Options& options) {
     }
     const double desired_yaw = command.yaw;
     const double desired_pitch = command.pitch;
-    // 实车缺少有效发弹延迟时仍可跟踪，但禁止按错误的出膛时间发送开火建议。
-    if (!options.dry_run &&
-        (!fire_delay_s || elapsedMs(last_feedback_time, std::chrono::steady_clock::now()) >
-                              options.feedback_timeout_ms)) {
-      command.fire_advice = false;
-    }
-    const FireGateResult fire_gate = applyFireGate(
-        command, raw_desired_yaw, raw_desired_pitch, *active_limiter_config);
     const bool fire_advice = sp_command.shoot;
+    FireGateResult fire_gate;
+    double fire_aim_yaw = raw_desired_yaw;
+    double fire_aim_pitch = raw_desired_pitch;
+    const double gate_feedback_age_ms =
+        elapsedMs(last_feedback_time, std::chrono::steady_clock::now());
+    const bool gate_feedback_fresh = options.dry_run ||
+        (latest_feedback.received && gate_feedback_age_ms >= 0.0 &&
+         gate_feedback_age_ms <= options.feedback_timeout_ms);
+    const bool gate_fire_delay_valid = options.dry_run ||
+        (fire_delay_s.has_value() && gate_feedback_fresh);
+    if (use_mpc_planner && !use_buff_task) {
+      // MPC 预测的瞄准角对应预计命中位置；只看反馈角与下发角接近，无法发现云台仍落后于该角度。
+      fire_aim_yaw = active_limiter_config->feedback_yaw_to_world_sign * mpc_plan.target_yaw;
+      fire_aim_pitch = active_limiter_config->sp_pitch_to_command_sign * mpc_plan.target_pitch;
+
+      hfut::io::FireDecisionConfig fire_config;
+      fire_config.enable_alignment_gate = active_limiter_config->enable_fire_gate;
+      fire_config.require_tracking = active_limiter_config->fire_gate_require_tracking;
+      fire_config.yaw_tolerance_rad = active_limiter_config->fire_yaw_tolerance_rad;
+      fire_config.pitch_tolerance_rad = active_limiter_config->fire_pitch_tolerance_rad;
+      fire_config.min_aligned_frames = active_limiter_config->fire_gate_min_aligned_frames;
+
+      hfut::io::FireDecisionInput fire_input;
+      fire_input.mpc_candidate = fire_advice;
+      fire_input.fire_enabled = options.enable_fire;
+      fire_input.control_valid = command.mode == hfut::GimbalMode::normal_measurement && have_mpc_plan;
+      fire_input.target_valid = tracked_count > 0;
+      fire_input.tracking = track_state == "tracking";
+      fire_input.feedback_fresh = gate_feedback_fresh;
+      fire_input.fire_delay_valid = gate_fire_delay_valid;
+      fire_input.aim_yaw_rad = fire_aim_yaw;
+      fire_input.aim_pitch_rad = fire_aim_pitch;
+      fire_input.feedback_yaw_rad = latest_feedback.yaw_rad;
+      fire_input.feedback_pitch_rad = latest_feedback.pitch_rad;
+      const auto decision = hfut::io::evaluateFireDecision(
+          fire_config, fire_input, fire_aligned_frames);
+
+      command.yaw_diff = tools::limit_rad(command.yaw - latest_feedback.yaw_rad);
+      command.pitch_diff = command.pitch - latest_feedback.pitch_rad;
+      command.fire_advice = decision.allowed;
+      fire_gate.yaw_error_rad = decision.yaw_error_rad;
+      fire_gate.pitch_error_rad = decision.pitch_error_rad;
+      fire_gate.blocked = decision.blocked;
+      fire_gate.aligned_frames = decision.aligned_frames;
+      fire_gate.reason = decision.reason;
+    } else {
+      fire_aligned_frames = 0;
+      if (!gate_fire_delay_valid) command.fire_advice = false;
+      fire_gate = applyFireGate(
+          command, raw_desired_yaw, raw_desired_pitch, *active_limiter_config);
+    }
     const auto aim_end = std::chrono::steady_clock::now();
 
     const auto serial_tx_start = aim_end;
@@ -2109,6 +2187,8 @@ int run(const Options& options) {
     web_status.pitch_error_deg = command.pitch_diff * kRadToDeg;
     web_status.limiter_yaw_error_deg = fire_gate.yaw_error_rad * kRadToDeg;
     web_status.limiter_pitch_error_deg = fire_gate.pitch_error_rad * kRadToDeg;
+    web_status.fire_aim_yaw_deg = fire_aim_yaw * kRadToDeg;
+    web_status.fire_aim_pitch_deg = fire_aim_pitch * kRadToDeg;
     web_status.distance_m = command.distance;
     web_status.pnp_blade_distance_m = 0.0;
     web_status.feedback_age_ms = options.dry_run ? 0.0 : static_cast<double>(current_feedback_age.count());
@@ -2116,6 +2196,8 @@ int run(const Options& options) {
     web_status.fire_advice = fire_advice;
     web_status.fire = command.fire_advice;
     web_status.fire_blocked_by_limiter = fire_gate.blocked;
+    web_status.fire_aligned_frames = fire_gate.aligned_frames;
+    web_status.fire_gate_reason = fire_gate.reason;
     web_status.dry_run = options.dry_run;
     web_status.fire_enabled = options.enable_fire;
     web_status.enemy_color = options.enemy_color;
