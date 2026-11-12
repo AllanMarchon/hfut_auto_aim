@@ -324,6 +324,10 @@ def validate_controller(report: Report, config: Any) -> None:
         require_number(report, mpc_planner.get("yaw_offset"), "controller.mpc_planner.yaw_offset")
         require_number(report, mpc_planner.get("pitch_offset"), "controller.mpc_planner.pitch_offset")
         require_number(report, mpc_planner.get("fire_thresh"), "controller.mpc_planner.fire_thresh", positive=True)
+        for key in ("coming_angle", "leaving_angle"):
+            require_number(report, mpc_planner.get(key), f"controller.mpc_planner.{key}", positive=True)
+            if is_finite_number(mpc_planner.get(key)) and float(mpc_planner[key]) > 180.0:
+                report.error(f"controller.mpc_planner.{key} 必须不超过 180 度")
         require_number(report, mpc_planner.get("decision_speed"), "controller.mpc_planner.decision_speed", positive=True)
         for key in ("high_speed_delay_time", "low_speed_delay_time"):
             require_number(report, mpc_planner.get(key), f"controller.mpc_planner.{key}")

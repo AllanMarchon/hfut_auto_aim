@@ -22,6 +22,8 @@ gimbal_pipeline:
         yaw_offset: 1.2
         pitch_offset: 2.5
         fire_thresh: 0.0035
+        coming_angle: 55.0              # 普通 MPC 允许装甲板进入的角度范围，单位度
+        leaving_angle: 20.0             # 按旋转方向允许装甲板离开的角度，单位度
         # 兼容旧两档延迟的速度阈值；普通旋转目标优先使用下面的标定表。
         decision_speed: 6.0
         # 旧两档额外补偿，单位秒；普通目标配置标定表后使用表内 extra_prediction_s。

@@ -34,6 +34,15 @@ int main() {
     0.0, 0.0, 0.20, 0.0, 0.0, 0.0, 0.05, 0.10, 0.02);
   if (!check(!edge_miss, "装甲板中心超出弹道角宽时不应提出开火候选")) return 1;
 
+  if (!check(auto_aim::armorInsideAimWindow(-0.4, 8.0, 1.0, 0.35),
+             "正向旋转时进入侧装甲板应处于开火窗口") ||
+      !check(!auto_aim::armorInsideAimWindow(0.4, 8.0, 1.0, 0.35),
+             "正向旋转时离开侧装甲板应离开开火窗口") ||
+      !check(auto_aim::armorInsideAimWindow(0.4, -8.0, 1.0, 0.35),
+             "反向旋转时进入侧应随方向反转") ||
+      !check(!auto_aim::armorInsideAimWindow(1.1, 1.0, 1.0, 0.35),
+             "低速目标超出进入角时仍应退出窗口")) return 1;
+
   std::puts("高速反小陀螺策略测试通过");
   return 0;
 }

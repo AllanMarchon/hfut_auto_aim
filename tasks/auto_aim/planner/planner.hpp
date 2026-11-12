@@ -20,6 +20,12 @@ constexpr int HORIZON = HALF_HORIZON * 2;
 
 using Trajectory = Eigen::Matrix<double, 4, HORIZON>;  // yaw, yaw_vel, pitch, pitch_vel
 
+struct AimReference
+{
+  Eigen::Vector2d yaw_pitch{Eigen::Vector2d::Zero()};
+  bool angle_window_valid{false};
+};
+
 struct Plan
 {
   bool control;
@@ -59,6 +65,8 @@ private:
   double yaw_offset_;
   double pitch_offset_;
   double fire_thresh_;
+  double coming_angle_rad_{55.0 / 57.3};
+  double leaving_angle_rad_{20.0 / 57.3};
   double low_speed_delay_time_, high_speed_delay_time_, decision_speed_;
   SpinSpeedProfile ordinary_spin_profile_;
   bool anti_spin_enabled_{true};
@@ -71,6 +79,8 @@ private:
   std::string planner_profile_;
   ArmorAvoidanceConfig armor_avoidance_config_;
   ArmorAvoidanceResult armor_avoidance_result_;
+  int aim_lock_id_{-1};
+  bool trajectory_angle_window_valid_{true};
 
   TinySolver * yaw_solver_;
   TinySolver * pitch_solver_;
@@ -79,7 +89,7 @@ private:
   void setup_yaw_solver(const std::string & config_path);
   void setup_pitch_solver(const std::string & config_path);
 
-  Eigen::Matrix<double, 2, 1> aim(const Target & target, double bullet_speed);
+  AimReference aim(const Target & target, double bullet_speed);
   Trajectory get_trajectory(Target & target, double yaw0, double bullet_speed);
   bool updateAntiSpinState(const Target & target);
   Plan planAntiSpin(Target target, double bullet_speed);

@@ -49,6 +49,8 @@ Planner::Planner(const std::string & config_path, const std::string & planner_pr
   yaw_offset_ = read_planner_value<double>(yaml, fallback, "yaw_offset") / 57.3;
   pitch_offset_ = read_planner_value<double>(yaml, fallback, "pitch_offset") / 57.3;
   fire_thresh_ = read_planner_value<double>(yaml, fallback, "fire_thresh");
+  coming_angle_rad_ = read_planner_value<double>(yaml, fallback, "coming_angle") / 57.3;
+  leaving_angle_rad_ = read_planner_value<double>(yaml, fallback, "leaving_angle") / 57.3;
   decision_speed_ = read_planner_value<double>(yaml, fallback, "decision_speed");
   high_speed_delay_time_ = read_planner_value<double>(yaml, fallback, "high_speed_delay_time");
   low_speed_delay_time_ = read_planner_value<double>(yaml, fallback, "low_speed_delay_time");
@@ -193,11 +195,14 @@ Plan Planner::plan(Target target, double bullet_speed)
   if (bullet_traj.unsolvable) return {false};
   target.predict(bullet_traj.fly_time);
 
-  // 2. Get trajectory
+  // 2. 生成预测轨迹，并记下本周期是否存在通过进入角/出角筛选的装甲板。
+  trajectory_angle_window_valid_ = true;
   double yaw0;
   Trajectory traj;
   try {
-    yaw0 = aim(target, bullet_speed)(0);
+    const auto initial_aim = aim(target, bullet_speed);
+    trajectory_angle_window_valid_ = initial_aim.angle_window_valid;
+    yaw0 = initial_aim.yaw_pitch(0);
     traj = get_trajectory(target, yaw0, bullet_speed);
   } catch (const std::exception & e) {
     tools::logger()->warn("Unsolvable target {:.2f}", bullet_speed);
@@ -258,7 +263,7 @@ Plan Planner::plan(Target target, double bullet_speed)
 
   // 发弹延迟已计入参考轨迹；这里保留原有两步控制误差前视，不再重复加发弹延迟。
   auto shoot_offset_ = 2;
-  plan.fire =
+  plan.fire = trajectory_angle_window_valid_ &&
     std::hypot(
       traj(0, HALF_HORIZON + shoot_offset_) - yaw_solver_->work->x(0, HALF_HORIZON + shoot_offset_),
       traj(2, HALF_HORIZON + shoot_offset_) -
@@ -493,22 +498,75 @@ void Planner::setup_pitch_solver(const std::string & config_path)
   pitch_solver_->settings->max_iter = 10;
 }
 
-Eigen::Matrix<double, 2, 1> Planner::aim(const Target & target, double bullet_speed)
+AimReference Planner::aim(const Target & target, double bullet_speed)
 {
-  Eigen::Vector3d xyz;
-  double yaw;
-  auto min_dist = 1e10;
+  struct Candidate
+  {
+    Eigen::Vector3d xyz;
+    double yaw{0.0};
+    double distance{0.0};
+    double relative_angle{0.0};
+    int id{0};
+  };
 
+  const Eigen::VectorXd state = target.ekf_x();
+  const double center_yaw = std::atan2(state[2], state[0]);
+  const double spin_speed = state[7];
+  const bool filter_angle_window = target.name != ArmorName::outpost;
   const auto armor_xyza_list = target.armor_xyza_list();
   if (armor_xyza_list.empty()) throw std::runtime_error("Empty armor list!");
-  for (auto & xyza : armor_xyza_list) {
-    auto dist = xyza.head<2>().norm();
-    if (dist < min_dist) {
-      min_dist = dist;
-      xyz = xyza.head<3>();
-      yaw = xyza[3];
+
+  std::vector<Candidate> all_candidates;
+  std::vector<Candidate> window_candidates;
+  all_candidates.reserve(armor_xyza_list.size());
+  window_candidates.reserve(armor_xyza_list.size());
+  for (std::size_t i = 0; i < armor_xyza_list.size(); ++i) {
+    const auto & xyza = armor_xyza_list[i];
+    Candidate candidate;
+    candidate.xyz = xyza.head<3>();
+    candidate.yaw = xyza[3];
+    candidate.distance = candidate.xyz.head<2>().norm();
+    candidate.relative_angle = tools::limit_rad(candidate.yaw - center_yaw);
+    candidate.id = static_cast<int>(i);
+    all_candidates.push_back(candidate);
+
+    if (filter_angle_window && armorInsideAimWindow(
+          candidate.relative_angle, spin_speed, coming_angle_rad_, leaving_angle_rad_)) {
+      window_candidates.push_back(candidate);
     }
   }
+
+  const bool window_valid = !filter_angle_window || !window_candidates.empty();
+  const auto & candidates = window_candidates.empty() ? all_candidates : window_candidates;
+  if (candidates.empty()) throw std::runtime_error("No usable armor candidate");
+
+  const Candidate * selected = nullptr;
+  if (!window_candidates.empty()) {
+    const auto locked = std::find_if(
+      window_candidates.begin(), window_candidates.end(),
+      [&](const Candidate & candidate) { return candidate.id == aim_lock_id_; });
+    if (locked != window_candidates.end()) {
+      selected = &*locked;
+    } else {
+      selected = &*std::min_element(
+        window_candidates.begin(), window_candidates.end(),
+        [](const Candidate & lhs, const Candidate & rhs) {
+          return std::abs(lhs.relative_angle) < std::abs(rhs.relative_angle);
+        });
+    }
+    aim_lock_id_ = selected->id;
+  } else {
+    aim_lock_id_ = -1;
+    selected = &*std::min_element(
+      candidates.begin(), candidates.end(),
+      [](const Candidate & lhs, const Candidate & rhs) {
+        return lhs.distance < rhs.distance;
+      });
+  }
+
+  Eigen::Vector3d xyz = selected->xyz;
+  double yaw = selected->yaw;
+  double min_dist = selected->distance;
   if (armor_avoidance_config_.enabled) {
     if (!armor_avoidance_result_.valid) throw std::runtime_error("装甲板没有可用的避区瞄准点");
     applyArmorAvoidanceOffset(
@@ -521,7 +579,10 @@ Eigen::Matrix<double, 2, 1> Planner::aim(const Target & target, double bullet_sp
   auto bullet_traj = tools::Trajectory(bullet_speed, min_dist, xyz.z());
   if (bullet_traj.unsolvable) throw std::runtime_error("Unsolvable bullet trajectory!");
 
-  return {tools::limit_rad(azim + yaw_offset_), -bullet_traj.pitch - pitch_offset_};
+  AimReference result;
+  result.yaw_pitch << tools::limit_rad(azim + yaw_offset_), -bullet_traj.pitch - pitch_offset_;
+  result.angle_window_valid = window_valid;
+  return result;
 }
 
 Trajectory Planner::get_trajectory(Target & target, double yaw0, double bullet_speed)
@@ -531,14 +592,20 @@ Trajectory Planner::get_trajectory(Target & target, double yaw0, double bullet_s
   bool captured_horizon_xyza = false;
 
   target.predict(-DT * (HALF_HORIZON + 1));
-  auto yaw_pitch_last = aim(target, bullet_speed);
+  const auto first_aim = aim(target, bullet_speed);
+  auto yaw_pitch_last = first_aim.yaw_pitch;
 
   target.predict(DT);  // [0] = -HALF_HORIZON * DT -> [HHALF_HORIZON] = 0
-  auto yaw_pitch = aim(target, bullet_speed);
+  const auto center_aim = aim(target, bullet_speed);
+  auto yaw_pitch = center_aim.yaw_pitch;
+  bool yaw_pitch_window_valid = center_aim.angle_window_valid;
 
   for (int i = 0; i < HORIZON; i++) {
     target.predict(DT);
-    auto yaw_pitch_next = aim(target, bullet_speed);
+    const auto next_aim = aim(target, bullet_speed);
+    // 开火候选比较的是预测轨迹中点后两步，因此只记录该时刻的进入角/出角结果。
+    if (i == HALF_HORIZON + 2) trajectory_angle_window_valid_ = yaw_pitch_window_valid;
+    auto yaw_pitch_next = next_aim.yaw_pitch;
 
     auto yaw_vel = tools::limit_rad(yaw_pitch_next(0) - yaw_pitch_last(0)) / (2 * DT);
     auto pitch_vel = (yaw_pitch_next(1) - yaw_pitch_last(1)) / (2 * DT);
@@ -553,6 +620,7 @@ Trajectory Planner::get_trajectory(Target & target, double yaw0, double bullet_s
 
     yaw_pitch_last = yaw_pitch;
     yaw_pitch = yaw_pitch_next;
+    yaw_pitch_window_valid = next_aim.angle_window_valid;
   }
 
   if (captured_horizon_xyza) debug_xyza = horizon_xyza;
