@@ -19,8 +19,8 @@ gimbal_pipeline:
       # MPC 模式下 max_*_acc 同时作为 TinyMPC 内部约束和最终串口下发云台加速度限幅。
       # fire_thresh 只决定 MPC 是否提出开火候选；最终串口开火位还必须通过下方反馈角门控。
       mpc_planner:
-        yaw_offset: -6.8
-        pitch_offset: -2.0
+        yaw_offset: 1.2
+        pitch_offset: 2.5
         fire_thresh: 0.0035
         # 兼容旧两档延迟的速度阈值；普通旋转目标优先使用下面的标定表。
         decision_speed: 7.0
@@ -75,7 +75,7 @@ gimbal_pipeline:
       outpost_mpc_planner:
         enable: true
         fire_thresh: 0.0035
-        max_yaw_acc: 50.0
+        max_yaw_acc: 100.0
         max_pitch_acc: 140.0
         Q_pitch: [12000000.0, 0.0]
         R_pitch: [0.8]
@@ -150,7 +150,7 @@ gimbal_pipeline:
       fire_gate:
         enable: true
         require_tracking: true
-        min_aligned_frames: 5
+        min_aligned_frames: 1
         yaw_tolerance: 2.0
         pitch_tolerance: 2.0
 
