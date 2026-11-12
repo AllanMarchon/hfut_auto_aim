@@ -114,8 +114,8 @@ gimbal_pipeline:
       fire_gate:
         enable: true
         require_tracking: true
-        min_aligned_frames: 1
-        yaw_tolerance: 3.0
+        min_aligned_frames: 5
+        yaw_tolerance: 2.0
         pitch_tolerance: 2.0
 
       # 前哨站专用最终开火门控。不写的字段继承 fire_gate。
@@ -123,9 +123,9 @@ gimbal_pipeline:
       outpost_fire_gate:
         enable: true
         require_tracking: true
-        min_aligned_frames: 1
-        yaw_tolerance: 0.25
-        pitch_tolerance: 0.25
+        min_aligned_frames: 5
+        yaw_tolerance: 0.5
+        pitch_tolerance: 0.5
 
       # SP25 与旧电控的坐标适配。这里不改变串口反馈显示和 cmd-fb 误差，只改变
       # SP25 输出到旧电控、以及旧电控反馈到 SP25 世界坐标补偿的边界符号。

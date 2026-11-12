@@ -411,7 +411,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--calibration-output-dir", type=pathlib.Path, default=PROJECT_DIR / "calibration" / "images")
     parser.add_argument("--calibration-prefix", default="calib")
     parser.add_argument("--calibration-save-interval", type=int, default=20)
-    parser.add_argument("--calibration-max-images", type=int, default=40)
+    parser.add_argument("--calibration-max-images", type=int, default=60)
     parser.add_argument("--auto-chessboard", action="store_true",
                         help="采图时自动识别棋盘格，并只保存清晰、非重复的有效样本。")
     parser.add_argument("--calibration-min-sharpness", type=float, default=30.0,
