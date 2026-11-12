@@ -1,7 +1,9 @@
 #include "planner.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -54,6 +56,28 @@ Planner::Planner(const std::string & config_path, const std::string & planner_pr
     ? yaml["ordinary_spin_profile"]
     : fallback["ordinary_spin_profile"];
   ordinary_spin_profile_ = SpinSpeedProfile::fromYaml(spin_profile);
+
+  // 高速反小陀螺参数只作为普通目标的备用策略，前哨站在调用层直接排除。
+  const auto anti_spin = yaml["anti_spin"] ? yaml["anti_spin"] : fallback["anti_spin"];
+  const int enter_frames = anti_spin ? anti_spin["enter_frames"].as<int>(3) : 3;
+  const int exit_frames = anti_spin ? anti_spin["exit_frames"].as<int>(5) : 5;
+  if (anti_spin) {
+    anti_spin_enabled_ = anti_spin["enable"].as<bool>(anti_spin_enabled_);
+    anti_spin_exit_hysteresis_rad_s_ =
+      anti_spin["exit_hysteresis_rad_s"].as<double>(anti_spin_exit_hysteresis_rad_s_);
+    anti_spin_guard_stable_time_s_ =
+      anti_spin["guard_stable_time_ms"].as<double>(anti_spin_guard_stable_time_s_ * 1000.0) /
+      1000.0;
+    anti_spin_front_face_tolerance_rad_ =
+      anti_spin["front_face_tolerance_deg"].as<double>(
+        anti_spin_front_face_tolerance_rad_ * 57.3) / 57.3;
+  }
+  anti_spin_exit_hysteresis_rad_s_ = std::max(anti_spin_exit_hysteresis_rad_s_, 0.0);
+  anti_spin_guard_stable_time_s_ = std::max(anti_spin_guard_stable_time_s_, 0.0);
+  anti_spin_front_face_tolerance_rad_ = std::max(anti_spin_front_face_tolerance_rad_, 0.0);
+  anti_spin_mode_selector_.configure(
+    anti_spin_enabled_, decision_speed_, enter_frames, exit_frames,
+    anti_spin_exit_hysteresis_rad_s_);
 
   setup_yaw_solver(config_path);
   setup_pitch_solver(config_path);
@@ -123,6 +147,9 @@ Plan Planner::plan(Target target, double bullet_speed)
   if (!std::isfinite(bullet_speed) || bullet_speed < 14) {
     bullet_speed = 23;
   }
+
+  // 先判断是否进入高速反小陀螺模式。前哨站永远走原来的固定模型。
+  if (updateAntiSpinState(target)) return planAntiSpin(target, bullet_speed);
 
   // 1. Predict fly_time
   Eigen::Vector3d xyz;
@@ -195,12 +222,11 @@ Plan Planner::plan(Target target, double bullet_speed)
   plan.pitch = pitch_solver_->work->x(0, HALF_HORIZON);
   plan.pitch_vel = pitch_solver_->work->x(1, HALF_HORIZON);
   plan.pitch_acc = pitch_solver_->work->u(0, HALF_HORIZON);
+  plan.target_spin_speed_rad_s = target.ekf_x()[7];
+  plan.target_spin_speed_valid = std::isfinite(plan.target_spin_speed_rad_s);
   if (target.name != ArmorName::outpost && !ordinary_spin_profile_.empty()) {
-    const double spin_speed = target.ekf_x()[7];
+    const double spin_speed = plan.target_spin_speed_rad_s;
     const auto profile = ordinary_spin_profile_.sample(std::abs(spin_speed));
-    plan.ordinary_spin_profile_active = true;
-    plan.target_spin_speed_rad_s = spin_speed;
-    plan.spin_extra_prediction_s = profile.extra_prediction_s;
     plan.fire_alignment_hold_s = profile.aligned_hold_s;
   }
 
@@ -222,6 +248,139 @@ Plan Planner::plan(Target target, double bullet_speed)
   return plan;
 }
 
+bool Planner::updateAntiSpinState(const Target & target)
+{
+  if (target.ekf_x().size() <= 7) {
+    anti_spin_mode_selector_.reset();
+    return false;
+  }
+  return anti_spin_mode_selector_.update(
+    target.ekf_x()[7], target.name != ArmorName::outpost);
+}
+
+Plan Planner::planAntiSpin(Target target, double bullet_speed)
+{
+  Plan plan;
+  plan.control = true;
+  plan.anti_spin_active = true;
+  plan.target_spin_speed_rad_s = target.ekf_x()[7];
+  plan.target_spin_speed_valid = std::isfinite(plan.target_spin_speed_rad_s);
+  plan.fire_alignment_hold_s = anti_spin_guard_stable_time_s_;
+
+  const Eigen::VectorXd state = target.ekf_x();
+  if (state.size() <= 10 || !state.allFinite()) return {false};
+
+  const double radius = std::clamp(state[8], 0.05, 0.5);
+  const double initial_center_yaw = std::atan2(state[2], state[0]);
+  Eigen::Vector3d guard_xyz{
+    state[0] - radius * std::cos(initial_center_yaw),
+    state[2] - radius * std::sin(initial_center_yaw),
+    state[4]};
+  double guard_distance = std::hypot(guard_xyz.x(), guard_xyz.y());
+  tools::Trajectory guard_bullet(bullet_speed, guard_distance, guard_xyz.z());
+  if (guard_bullet.unsolvable) return {false};
+
+  // 用弹丸飞行时间预测命中时刻的目标中心，再选择届时最接近正面朝向的一块装甲板。
+  Target hit_target = target;
+  std::vector<Eigen::Vector4d> hit_armors;
+  Eigen::VectorXd hit_state;
+  int selected_id = 0;
+  for (int iteration = 0; iteration < 5; ++iteration) {
+    hit_target = target;
+    hit_target.predict(guard_bullet.fly_time);
+    hit_state = hit_target.ekf_x();
+    hit_armors = hit_target.armor_xyza_list();
+    if (hit_armors.empty()) return {false};
+
+    const double hit_center_yaw = std::atan2(hit_state[2], hit_state[0]);
+    double smallest_face_error = std::numeric_limits<double>::max();
+    for (std::size_t i = 0; i < hit_armors.size(); ++i) {
+      const double face_error = std::abs(
+        tools::limit_rad(hit_armors[i][3] - hit_center_yaw));
+      if (face_error < smallest_face_error) {
+        smallest_face_error = face_error;
+        selected_id = static_cast<int>(i);
+      }
+    }
+
+    const auto & predicted_front_plate = hit_armors[selected_id];
+    guard_xyz = predicted_front_plate.head<3>();
+    guard_distance = std::hypot(guard_xyz.x(), guard_xyz.y());
+    guard_bullet = tools::Trajectory(bullet_speed, guard_distance, guard_xyz.z());
+    if (guard_bullet.unsolvable) return {false};
+  }
+
+  // 守候方向取目标中心的预测方位，俯仰取下一块正面装甲板的高度。
+  const double guard_yaw_world = std::atan2(hit_state[2], hit_state[0]);
+  const double guard_yaw = tools::limit_rad(guard_yaw_world + yaw_offset_);
+  const double guard_pitch = -guard_bullet.pitch - pitch_offset_;
+  debug_xyza = Eigen::Vector4d(guard_xyz.x(), guard_xyz.y(), guard_xyz.z(), guard_yaw_world);
+
+  // 用固定守候角生成参考轨迹，避免 MPC 继续追着高速装甲板旋转。
+  Trajectory guard_traj = Trajectory::Zero();
+  for (int i = 0; i < HORIZON; ++i) {
+    guard_traj.col(i) << 0.0, 0.0, guard_pitch, 0.0;
+  }
+
+  Eigen::VectorXd x0(2);
+  x0 << guard_traj(0, 0), guard_traj(1, 0);
+  if (tiny_set_x0(yaw_solver_, x0) != 0) return {false};
+  yaw_solver_->work->Xref = guard_traj.block(0, 0, 2, HORIZON);
+  const int yaw_status = tiny_solve(yaw_solver_);
+
+  x0 << guard_traj(2, 0), guard_traj(3, 0);
+  if (tiny_set_x0(pitch_solver_, x0) != 0) return {false};
+  pitch_solver_->work->Xref = guard_traj.block(2, 0, 2, HORIZON);
+  const int pitch_status = tiny_solve(pitch_solver_);
+  if (yaw_status != 0 || pitch_status != 0) {
+    tools::logger()->debug(
+      "[Planner] 高速反小陀螺守候 MPC 未完全收敛 yaw={} pitch={}", yaw_status, pitch_status);
+  }
+
+  plan.target_yaw = guard_yaw;
+  plan.target_pitch = guard_pitch;
+  plan.yaw = tools::limit_rad(yaw_solver_->work->x(0, HALF_HORIZON) + guard_yaw);
+  plan.yaw_vel = yaw_solver_->work->x(1, HALF_HORIZON);
+  plan.yaw_acc = yaw_solver_->work->u(0, HALF_HORIZON);
+  plan.pitch = pitch_solver_->work->x(0, HALF_HORIZON);
+  plan.pitch_vel = pitch_solver_->work->x(1, HALF_HORIZON);
+  plan.pitch_acc = pitch_solver_->work->u(0, HALF_HORIZON);
+  plan.distance = static_cast<float>(guard_distance);
+
+  if (!std::isfinite(plan.yaw) || !std::isfinite(plan.yaw_vel) ||
+      !std::isfinite(plan.yaw_acc) || !std::isfinite(plan.pitch) ||
+      !std::isfinite(plan.pitch_vel) || !std::isfinite(plan.pitch_acc)) {
+    return {false};
+  }
+
+  // 同时检查板面朝向和装甲板中心是否落在守候弹道的有效角宽内。
+  const double hit_center_yaw = std::atan2(hit_state[2], hit_state[0]);
+  constexpr double kSmallArmorWidthM = 0.135;
+  constexpr double kBigArmorWidthM = 0.230;
+  constexpr double kArmorHeightM = 0.056;
+  const double armor_width = target.armor_type == ArmorType::big
+    ? kBigArmorWidthM
+    : kSmallArmorWidthM;
+  const double yaw_hit_tolerance =
+    std::atan2(armor_width * 0.5, std::max(guard_distance, 0.1));
+  const double pitch_hit_tolerance =
+    std::atan2(kArmorHeightM * 0.5, std::max(guard_distance, 0.1));
+  plan.fire = false;
+  for (const auto & armor : hit_armors) {
+    const double armor_yaw = std::atan2(armor.y(), armor.x());
+    const double armor_distance = std::hypot(armor.x(), armor.y());
+    const tools::Trajectory armor_bullet(bullet_speed, armor_distance, armor.z());
+    if (armor_bullet.unsolvable) continue;
+    const double armor_pitch = -armor_bullet.pitch - pitch_offset_;
+    plan.fire = plan.fire || antiSpinShotCandidate(
+      armor[3], hit_center_yaw, armor_yaw, guard_yaw_world,
+      armor_pitch, guard_pitch, anti_spin_front_face_tolerance_rad_,
+      yaw_hit_tolerance, pitch_hit_tolerance);
+    if (plan.fire) break;
+  }
+  return plan;
+}
+
 Plan Planner::plan(std::optional<Target> target, double bullet_speed, double fire_delay_s)
 {
   if (!target.has_value() || !std::isfinite(fire_delay_s) || fire_delay_s < 0.0) return {false};
@@ -235,7 +394,7 @@ Plan Planner::plan(std::optional<Target> target, double bullet_speed, double fir
   } else if (!ordinary_spin_profile_.empty()) {
     delay_time = ordinary_spin_profile_.sample(std::abs(target->ekf_x()[7])).extra_prediction_s;
   } else {
-    // Older external configs without a speed profile retain their two-band delay behavior.
+    // 兼容没有转速标定表的旧配置，继续使用原来的高低速延迟。
     delay_time = std::abs(target->ekf_x()[7]) > decision_speed_
       ? high_speed_delay_time_
       : low_speed_delay_time_;

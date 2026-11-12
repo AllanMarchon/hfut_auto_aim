@@ -204,4 +204,8 @@ if(BUILD_TESTING)
   target_include_directories(spin_speed_profile_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(spin_speed_profile_test PRIVATE yaml-cpp)
   add_test(NAME spin_speed_profile_test COMMAND spin_speed_profile_test)
+
+  add_executable(anti_spin_policy_test tests/anti_spin_policy_test.cpp)
+  target_include_directories(anti_spin_policy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME anti_spin_policy_test COMMAND anti_spin_policy_test)
 endif()

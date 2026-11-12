@@ -329,6 +329,17 @@ def validate_controller(report: Report, config: Any) -> None:
             require_number(report, mpc_planner.get(key), f"controller.mpc_planner.{key}")
             if is_finite_number(mpc_planner.get(key)) and float(mpc_planner[key]) < 0.0:
                 report.error(f"controller.mpc_planner.{key} 必须大于等于 0")
+        anti_spin = mpc_planner.get("anti_spin")
+        if not isinstance(anti_spin, dict):
+            report.error("controller.mpc_planner.anti_spin 缺失或不是对象")
+        else:
+            require_bool(report, anti_spin.get("enable"), "controller.mpc_planner.anti_spin.enable")
+            for key in ("enter_frames", "exit_frames"):
+                require_number(report, anti_spin.get(key), f"controller.mpc_planner.anti_spin.{key}", positive=True)
+            for key in ("exit_hysteresis_rad_s", "guard_stable_time_ms", "front_face_tolerance_deg"):
+                require_number(report, anti_spin.get(key), f"controller.mpc_planner.anti_spin.{key}")
+                if is_finite_number(anti_spin.get(key)) and float(anti_spin[key]) < 0.0:
+                    report.error(f"controller.mpc_planner.anti_spin.{key} 必须大于等于 0")
         spin_profile = mpc_planner.get("ordinary_spin_profile")
         if not isinstance(spin_profile, list) or len(spin_profile) < 2:
             report.error("controller.mpc_planner.ordinary_spin_profile 必须至少有两个标定点")

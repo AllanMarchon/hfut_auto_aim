@@ -76,10 +76,9 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"buff_angle_delta_speed_rad_s\":" << finiteOrZero(status.buff_angle_delta_speed_rad_s)
       << ",\"buff_motion_fit_cost\":" << finiteOrZero(status.buff_motion_fit_cost)
       << ",\"target_spin_speed_rad_s\":" << finiteOrZero(status.target_spin_speed_rad_s)
-      << ",\"spin_extra_prediction_ms\":" << finiteOrZero(status.spin_extra_prediction_ms)
-      << ",\"spin_fire_hold_ms\":" << finiteOrZero(status.spin_fire_hold_ms)
-      << ",\"ordinary_spin_profile_active\":"
-      << (status.ordinary_spin_profile_active ? "true" : "false")
+      << ",\"target_spin_speed_valid\":"
+      << (status.target_spin_speed_valid ? "true" : "false")
+      << ",\"anti_spin_active\":" << (status.anti_spin_active ? "true" : "false")
       << ",\"buff_rotation_speed_valid\":" << (status.buff_rotation_speed_valid ? "true" : "false")
       << ",\"buff_angle_delta_speed_valid\":" << (status.buff_angle_delta_speed_valid ? "true" : "false")
       << ",\"buff_motion_fit_valid\":" << (status.buff_motion_fit_valid ? "true" : "false")
@@ -637,9 +636,8 @@ const TELEMETRY = [
   ['cmd pitch acc', 'command_pitch_acc_deg_s2', 1, ' deg/s^2'],
   ['大符模型角速度', 'buff_rotation_speed_rad_s', 2, ' rad/s', 'buff_rotation_speed_valid'],
   ['角度差分速度', 'buff_angle_delta_speed_rad_s', 2, ' rad/s', 'buff_angle_delta_speed_valid'],
-  ['普通目标转速', 'target_spin_speed_rad_s', 2, ' rad/s', 'ordinary_spin_profile_active'],
-  ['档位预测补偿', 'spin_extra_prediction_ms', 1, ' ms', 'ordinary_spin_profile_active'],
-  ['档位开火保持', 'spin_fire_hold_ms', 1, ' ms', 'ordinary_spin_profile_active'],
+  ['目标旋转速度', 'target_spin_speed_rad_s', 2, ' rad/s', 'target_spin_speed_valid'],
+  ['反小陀螺模式', 'anti_spin_active', null, ''],
   ['运动拟合有效', 'buff_motion_fit_valid', null, ''],
   ['正弦拟合有效', 'buff_sine_fit_valid', null, ''],
   ['拟合代价', 'buff_motion_fit_cost', 4, ' rad^2', 'buff_motion_fit_valid'],

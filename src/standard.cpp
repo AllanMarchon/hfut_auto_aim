@@ -1715,6 +1715,9 @@ int run(const Options& options) {
   double fire_aligned_duration_s = 0.0;
   auto fire_gate_last_time = std::chrono::steady_clock::now();
   bool fire_gate_time_initialized = false;
+  bool fire_gate_was_safe = false;
+  bool anti_spin_gate_mode_initialized = false;
+  bool previous_anti_spin_gate_mode = false;
   struct BuffRotationObservation {
     std::uint64_t generation{0};
     std::size_t update_count{0};
@@ -2092,6 +2095,15 @@ int run(const Options& options) {
     const bool gate_fire_delay_valid = options.dry_run ||
         (fire_delay_s.has_value() && gate_feedback_fresh);
     if (use_mpc_planner && !use_buff_task) {
+      if (!anti_spin_gate_mode_initialized ||
+          previous_anti_spin_gate_mode != mpc_plan.anti_spin_active) {
+        fire_aligned_frames = 0;
+        fire_aligned_duration_s = 0.0;
+        fire_gate_time_initialized = false;
+        fire_gate_was_safe = false;
+        previous_anti_spin_gate_mode = mpc_plan.anti_spin_active;
+        anti_spin_gate_mode_initialized = true;
+      }
       // MPC 预测的瞄准角对应预计命中位置；只看反馈角与下发角接近，无法发现云台仍落后于该角度。
       fire_aim_yaw = active_limiter_config->feedback_yaw_to_world_sign * mpc_plan.target_yaw;
       fire_aim_pitch = active_limiter_config->sp_pitch_to_command_sign * mpc_plan.target_pitch;
@@ -2101,6 +2113,8 @@ int run(const Options& options) {
       fire_config.require_tracking = active_limiter_config->fire_gate_require_tracking;
       fire_config.yaw_tolerance_rad = active_limiter_config->fire_yaw_tolerance_rad;
       fire_config.pitch_tolerance_rad = active_limiter_config->fire_pitch_tolerance_rad;
+      // 高速反小陀螺时比较的是固定守候角，使用独立的持续守位时间；
+      // 普通模式继续使用原来的连续对齐帧数或速度表配置。
       fire_config.min_aligned_duration_s = mpc_plan.fire_alignment_hold_s;
       fire_config.min_aligned_frames = fire_config.min_aligned_duration_s > 0.0
           ? 1
@@ -2119,7 +2133,7 @@ int run(const Options& options) {
       fire_input.feedback_yaw_rad = latest_feedback.yaw_rad;
       fire_input.feedback_pitch_rad = latest_feedback.pitch_rad;
       const auto fire_gate_now = std::chrono::steady_clock::now();
-      const double fire_gate_elapsed_s = fire_gate_time_initialized
+      const double fire_gate_elapsed_s = fire_gate_time_initialized && fire_gate_was_safe
           ? std::chrono::duration<double>(fire_gate_now - fire_gate_last_time).count()
           : 0.0;
       fire_gate_last_time = fire_gate_now;
@@ -2137,10 +2151,13 @@ int run(const Options& options) {
       fire_gate.aligned_frames = decision.aligned_frames;
       fire_gate.aligned_duration_s = fire_aligned_duration_s;
       fire_gate.reason = decision.reason;
+      fire_gate_was_safe = decision.alignment_safe;
     } else {
       fire_aligned_frames = 0;
       fire_aligned_duration_s = 0.0;
       fire_gate_time_initialized = false;
+      fire_gate_was_safe = false;
+      anti_spin_gate_mode_initialized = false;
       if (!gate_fire_delay_valid) command.fire_advice = false;
       fire_gate = applyFireGate(
           command, raw_desired_yaw, raw_desired_pitch, *active_limiter_config);
@@ -2191,9 +2208,8 @@ int run(const Options& options) {
     web_status.buff_angle_delta_speed_rad_s = buff_angle_delta_speed_rad_s;
     web_status.buff_motion_fit_cost = buff_motion_fit_cost;
     web_status.target_spin_speed_rad_s = mpc_plan.target_spin_speed_rad_s;
-    web_status.spin_extra_prediction_ms = mpc_plan.spin_extra_prediction_s * 1000.0;
-    web_status.spin_fire_hold_ms = mpc_plan.fire_alignment_hold_s * 1000.0;
-    web_status.ordinary_spin_profile_active = mpc_plan.ordinary_spin_profile_active;
+    web_status.target_spin_speed_valid = mpc_plan.target_spin_speed_valid;
+    web_status.anti_spin_active = mpc_plan.anti_spin_active;
     web_status.buff_rotation_speed_valid = buff_rotation_speed_valid;
     web_status.buff_angle_delta_speed_valid = buff_angle_delta_speed_valid;
     web_status.buff_motion_fit_valid = buff_motion_fit_valid;
@@ -2258,6 +2274,7 @@ int run(const Options& options) {
           "fb=%.2f/%.2fdeg fb_align=%.2f/%.2fdeg fb_delta=%.2f/%.2fdeg align_age=%.1fms "
           "raw=%.2f/%.2fdeg stable=%.2f/%.2fdeg cmd=%.2f/%.2fdeg "
           "cmd_vel=%.1f/%.1fdeg/s cmd_acc=%.1f/%.1fdeg/s2 lim_err=%.2f/%.2fdeg "
+           "anti_spin=%d target_spin=%.2f rad/s "
            "buff_guard=%d/%d plan_distance=%.3f "
            "sp_fire=%d fire=%d gate=%d latency=%.1fms fire_delay=%s fire_delay_source=%s "
           "timing=serial_receive %.1fms camera_frame_wait %.1fms detection %.1fms "
@@ -2275,6 +2292,8 @@ int run(const Options& options) {
           command.yaw_vel * kRadToDeg, command.pitch_vel * kRadToDeg,
           command.yaw_acc * kRadToDeg, command.pitch_acc * kRadToDeg,
           fire_gate.yaw_error_rad * kRadToDeg, fire_gate.pitch_error_rad * kRadToDeg,
+          mpc_plan.anti_spin_active ? 1 : 0,
+          mpc_plan.target_spin_speed_valid ? mpc_plan.target_spin_speed_rad_s : 0.0,
            smallbuff_final_guard.yaw_limited ? 1 : 0,
            smallbuff_final_guard.pitch_limited ? 1 : 0,
            command.distance,

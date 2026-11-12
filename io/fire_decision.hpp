@@ -36,6 +36,7 @@ struct FireDecision {
   double yaw_error_rad{0.0};
   double pitch_error_rad{0.0};
   int aligned_frames{0};
+  bool alignment_safe{false};
   std::string reason{"no_candidate"};
 };
 
@@ -62,11 +63,12 @@ inline FireDecision evaluateFireDecision(const FireDecisionConfig& config,
   const bool fire_preconditions_met = input.fire_enabled && input.control_valid && input.target_valid &&
       (!config.require_tracking || input.tracking) && input.feedback_fresh &&
       input.fire_delay_valid && angles_finite;
+  result.alignment_safe = fire_preconditions_met && (!config.enable_alignment_gate || aligned);
   const bool use_duration_gate = config.min_aligned_duration_s > 0.0 && aligned_duration_s;
   if (use_duration_gate) {
-    if (fire_preconditions_met && (!config.enable_alignment_gate || aligned)) {
-      // MPC candidates can be intermittent at high spin rates. Keep measuring safe alignment
-      // across candidate gaps, but still require a candidate on the actual firing frame below.
+    if (result.alignment_safe) {
+      // 高速旋转时 MPC 候选可能短暂中断；守位安全时继续累计对齐时间，
+      // 但真正开火仍要求当前帧存在有效候选。
       if (std::isfinite(elapsed_s) && elapsed_s >= 0.0 && elapsed_s <= 0.1) {
         *aligned_duration_s += elapsed_s;
         aligned_frames = std::min(aligned_frames + 1, std::max(config.min_aligned_frames, 1));

@@ -52,6 +52,16 @@ gimbal_pipeline:
           - speed_rad_s: 15.0
             extra_prediction_s: 0.0
             aligned_hold_ms: 0.0
+
+        # 高速反小陀螺首版参数，仅普通目标使用，前哨站不进入该模式。
+        # decision_speed 仍是进入高速模式的速度阈值，以下参数只控制模式切换和守位开火。
+        anti_spin:
+          enable: true
+          enter_frames: 3                 # 超过 decision_speed 连续多少帧后进入高速模式
+          exit_frames: 5                  # 低于退出阈值连续多少帧后退出高速模式
+          exit_hysteresis_rad_s: 1.0      # 退出阈值 = decision_speed - 该值
+          guard_stable_time_ms: 40.0      # 守候角连续稳定时间，实际开火仍需命中候选
+          front_face_tolerance_deg: 12.0  # 装甲板正面朝向守候方向的相位容差
         
         max_yaw_acc: 100.0
         Q_yaw: [9000000.0, 0.0]

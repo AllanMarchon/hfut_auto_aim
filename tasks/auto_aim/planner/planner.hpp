@@ -8,6 +8,7 @@
 
 #include "tasks/auto_aim/target.hpp"
 #include "tasks/auto_aim/armor_avoidance_optimizer.hpp"
+#include "tasks/auto_aim/planner/anti_spin_policy.hpp"
 #include "tasks/auto_aim/spin_speed_profile.hpp"
 #include "tinympc/tiny_api.hpp"
 
@@ -23,6 +24,8 @@ struct Plan
 {
   bool control;
   bool fire;
+  // 高速反小陀螺模式是否生效。该模式的 yaw/pitch 是守候角，不是正在运动的装甲板角度。
+  bool anti_spin_active{false};
   float target_yaw;
   float target_pitch;
   float yaw;
@@ -32,9 +35,8 @@ struct Plan
   float pitch_vel;
   float pitch_acc;
   float distance{-1.0F};
-  bool ordinary_spin_profile_active{false};
+  bool target_spin_speed_valid{false};
   double target_spin_speed_rad_s{0.0};
-  double spin_extra_prediction_s{0.0};
   double fire_alignment_hold_s{0.0};
 };
 
@@ -56,6 +58,11 @@ private:
   double fire_thresh_;
   double low_speed_delay_time_, high_speed_delay_time_, decision_speed_;
   SpinSpeedProfile ordinary_spin_profile_;
+  bool anti_spin_enabled_{true};
+  double anti_spin_exit_hysteresis_rad_s_{1.0};
+  double anti_spin_guard_stable_time_s_{0.04};
+  double anti_spin_front_face_tolerance_rad_{12.0 / 57.3};
+  AntiSpinModeSelector anti_spin_mode_selector_;
   std::string planner_profile_;
   ArmorAvoidanceConfig armor_avoidance_config_;
   ArmorAvoidanceResult armor_avoidance_result_;
@@ -69,6 +76,8 @@ private:
 
   Eigen::Matrix<double, 2, 1> aim(const Target & target, double bullet_speed);
   Trajectory get_trajectory(Target & target, double yaw0, double bullet_speed);
+  bool updateAntiSpinState(const Target & target);
+  Plan planAntiSpin(Target target, double bullet_speed);
 };
 
 }  // namespace auto_aim

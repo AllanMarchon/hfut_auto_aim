@@ -92,6 +92,7 @@ int main() {
       config, input, duration_frames, 0.02, &aligned_duration_s);
   if (!check(!result.allowed, "无 MPC 候选时即使已对齐也不能开火") ||
       !check(result.aligned_frames == 1, "候选中断时仍可记录持续对齐") ||
+      !check(result.alignment_safe, "候选中断但守位安全时应继续累计对齐时间") ||
       !check(result.reason == "mpc_no_candidate", "候选中断时应报告无候选")) return 1;
   result = hfut::io::evaluateFireDecision(
       config, input, duration_frames, 0.02, &aligned_duration_s);
