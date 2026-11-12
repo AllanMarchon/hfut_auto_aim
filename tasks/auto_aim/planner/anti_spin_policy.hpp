@@ -73,6 +73,21 @@ inline double antiSpinAngularError(double lhs_rad, double rhs_rad)
   return std::abs(std::remainder(lhs_rad - rhs_rad, kTwoPi));
 }
 
+inline bool armorInsideAimWindow(double relative_angle_rad, double signed_speed_rad_s,
+                                 double coming_angle_rad, double leaving_angle_rad)
+{
+  if (!std::isfinite(relative_angle_rad) || !std::isfinite(signed_speed_rad_s) ||
+      !std::isfinite(coming_angle_rad) || !std::isfinite(leaving_angle_rad) ||
+      coming_angle_rad < 0.0 || leaving_angle_rad < 0.0 ||
+      std::abs(relative_angle_rad) > coming_angle_rad) {
+    return false;
+  }
+  if (std::abs(signed_speed_rad_s) <= 2.0) return true;
+  return signed_speed_rad_s >= 0.0
+    ? relative_angle_rad <= leaving_angle_rad
+    : relative_angle_rad >= -leaving_angle_rad;
+}
+
 inline bool antiSpinShotCandidate(
   double armor_facing_yaw_rad, double target_center_yaw_rad,
   double armor_ray_yaw_rad, double guard_yaw_rad,
