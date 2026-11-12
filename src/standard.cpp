@@ -2113,6 +2113,16 @@ int run(const Options& options) {
       fire_config.require_tracking = active_limiter_config->fire_gate_require_tracking;
       fire_config.yaw_tolerance_rad = active_limiter_config->fire_yaw_tolerance_rad;
       fire_config.pitch_tolerance_rad = active_limiter_config->fire_pitch_tolerance_rad;
+      if (mpc_plan.anti_spin_active) {
+        if (mpc_plan.fire_gate_yaw_tolerance_override_rad >= 0.0) {
+          fire_config.yaw_tolerance_rad =
+              mpc_plan.fire_gate_yaw_tolerance_override_rad;
+        }
+        if (mpc_plan.fire_gate_pitch_tolerance_override_rad >= 0.0) {
+          fire_config.pitch_tolerance_rad =
+              mpc_plan.fire_gate_pitch_tolerance_override_rad;
+        }
+      }
       // 高速反小陀螺时比较的是固定守候角，使用独立的持续守位时间；
       // 普通模式继续使用原来的连续对齐帧数或速度表配置。
       fire_config.min_aligned_duration_s = mpc_plan.fire_alignment_hold_s;

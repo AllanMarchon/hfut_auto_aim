@@ -23,7 +23,7 @@ gimbal_pipeline:
         pitch_offset: 2.5
         fire_thresh: 0.0035
         # 兼容旧两档延迟的速度阈值；普通旋转目标优先使用下面的标定表。
-        decision_speed: 7.0
+        decision_speed: 6.0
         # 旧两档额外补偿，单位秒；普通目标配置标定表后使用表内 extra_prediction_s。
         # 前哨站继续使用此处的高低速补偿，并与电控反馈的发弹延迟相加。
         high_speed_delay_time: 0.00
@@ -31,7 +31,7 @@ gimbal_pipeline:
 
         # 普通旋转目标（不含前哨站）的转速标定表，按 |目标角速度| 查表并线性插值。
         # extra_prediction_s 是额外预测时间；aligned_hold_ms 是反馈角持续对齐时间。
-        # 0ms 预测补偿表示不增加额外时间；0ms 对齐保持表示沿用下方 fire_gate 的 10 帧门槛。
+        # 0ms 预测补偿表示不增加额外时间；0ms 对齐保持表示沿用下方 fire_gate 的连续帧门槛。
         # 请用实测结果逐档标定；前哨站继续使用现有固定转速和独立配置。
         ordinary_spin_profile:
           - speed_rad_s: 0.0
@@ -57,11 +57,13 @@ gimbal_pipeline:
         # decision_speed 仍是进入高速模式的速度阈值，以下参数只控制模式切换和守位开火。
         anti_spin:
           enable: true
-          enter_frames: 3                 # 超过 decision_speed 连续多少帧后进入高速模式
+          enter_frames: 3                 # 达到 decision_speed 连续多少帧后进入高速模式
           exit_frames: 5                  # 低于退出阈值连续多少帧后退出高速模式
           exit_hysteresis_rad_s: 1.0      # 退出阈值 = decision_speed - 该值
-          guard_stable_time_ms: 40.0      # 守候角连续稳定时间，实际开火仍需命中候选
-          front_face_tolerance_deg: 12.0  # 装甲板正面朝向守候方向的相位容差
+          guard_stable_time_ms: 5.0       # 高速模式只要求短暂守位确认，避免错过装甲板通过窗口
+          front_face_tolerance_deg: 15.0  # 稍微放宽正面相位窗口，仍需通过装甲板几何命中检查
+          fire_yaw_tolerance_deg: 3.0     # 仅高速反小陀螺放宽反馈 yaw 门限；普通模式仍为 2 度
+          fire_pitch_tolerance_deg: 2.5   # 仅高速反小陀螺放宽反馈 pitch 门限；普通模式仍为 2 度
         
         max_yaw_acc: 100.0
         Q_yaw: [9000000.0, 0.0]
@@ -150,7 +152,7 @@ gimbal_pipeline:
       fire_gate:
         enable: true
         require_tracking: true
-        min_aligned_frames: 1
+        min_aligned_frames: 2
         yaw_tolerance: 2.0
         pitch_tolerance: 2.0
 

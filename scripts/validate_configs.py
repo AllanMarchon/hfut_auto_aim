@@ -340,6 +340,11 @@ def validate_controller(report: Report, config: Any) -> None:
                 require_number(report, anti_spin.get(key), f"controller.mpc_planner.anti_spin.{key}")
                 if is_finite_number(anti_spin.get(key)) and float(anti_spin[key]) < 0.0:
                     report.error(f"controller.mpc_planner.anti_spin.{key} 必须大于等于 0")
+            for key in ("fire_yaw_tolerance_deg", "fire_pitch_tolerance_deg"):
+                if key in anti_spin:
+                    require_number(report, anti_spin.get(key), f"controller.mpc_planner.anti_spin.{key}")
+                    if is_finite_number(anti_spin.get(key)) and float(anti_spin[key]) <= 0.0:
+                        report.error(f"controller.mpc_planner.anti_spin.{key} 必须大于 0")
         spin_profile = mpc_planner.get("ordinary_spin_profile")
         if not isinstance(spin_profile, list) or len(spin_profile) < 2:
             report.error("controller.mpc_planner.ordinary_spin_profile 必须至少有两个标定点")

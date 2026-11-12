@@ -38,6 +38,9 @@ struct Plan
   bool target_spin_speed_valid{false};
   double target_spin_speed_rad_s{0.0};
   double fire_alignment_hold_s{0.0};
+  // 高速反小陀螺可独立放宽最终反馈角门限；负值表示沿用普通门限。
+  double fire_gate_yaw_tolerance_override_rad{-1.0};
+  double fire_gate_pitch_tolerance_override_rad{-1.0};
 };
 
 class Planner
@@ -62,6 +65,8 @@ private:
   double anti_spin_exit_hysteresis_rad_s_{1.0};
   double anti_spin_guard_stable_time_s_{0.04};
   double anti_spin_front_face_tolerance_rad_{12.0 / 57.3};
+  double anti_spin_fire_yaw_tolerance_rad_{-1.0};
+  double anti_spin_fire_pitch_tolerance_rad_{-1.0};
   AntiSpinModeSelector anti_spin_mode_selector_;
   std::string planner_profile_;
   ArmorAvoidanceConfig armor_avoidance_config_;

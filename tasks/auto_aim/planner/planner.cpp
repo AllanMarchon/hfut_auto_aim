@@ -71,6 +71,24 @@ Planner::Planner(const std::string & config_path, const std::string & planner_pr
     anti_spin_front_face_tolerance_rad_ =
       anti_spin["front_face_tolerance_deg"].as<double>(
         anti_spin_front_face_tolerance_rad_ * 57.3) / 57.3;
+    // 高速模式单独使用稍宽的反馈角门限，避免云台刚好落后时把所有候选拦掉。
+    // 不配置时保持普通 fire_gate 的门限。
+    if (anti_spin["fire_yaw_tolerance_deg"]) {
+      const double tolerance_deg = anti_spin["fire_yaw_tolerance_deg"].as<double>();
+      if (!std::isfinite(tolerance_deg) || tolerance_deg <= 0.0) {
+        throw std::invalid_argument(
+          "controller.mpc_planner.anti_spin.fire_yaw_tolerance_deg 必须 > 0");
+      }
+      anti_spin_fire_yaw_tolerance_rad_ = tolerance_deg / 57.3;
+    }
+    if (anti_spin["fire_pitch_tolerance_deg"]) {
+      const double tolerance_deg = anti_spin["fire_pitch_tolerance_deg"].as<double>();
+      if (!std::isfinite(tolerance_deg) || tolerance_deg <= 0.0) {
+        throw std::invalid_argument(
+          "controller.mpc_planner.anti_spin.fire_pitch_tolerance_deg 必须 > 0");
+      }
+      anti_spin_fire_pitch_tolerance_rad_ = tolerance_deg / 57.3;
+    }
   }
   anti_spin_exit_hysteresis_rad_s_ = std::max(anti_spin_exit_hysteresis_rad_s_, 0.0);
   anti_spin_guard_stable_time_s_ = std::max(anti_spin_guard_stable_time_s_, 0.0);
@@ -266,6 +284,8 @@ Plan Planner::planAntiSpin(Target target, double bullet_speed)
   plan.target_spin_speed_rad_s = target.ekf_x()[7];
   plan.target_spin_speed_valid = std::isfinite(plan.target_spin_speed_rad_s);
   plan.fire_alignment_hold_s = anti_spin_guard_stable_time_s_;
+  plan.fire_gate_yaw_tolerance_override_rad = anti_spin_fire_yaw_tolerance_rad_;
+  plan.fire_gate_pitch_tolerance_override_rad = anti_spin_fire_pitch_tolerance_rad_;
 
   const Eigen::VectorXd state = target.ekf_x();
   if (state.size() <= 10 || !state.allFinite()) return {false};
