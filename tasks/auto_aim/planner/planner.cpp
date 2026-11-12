@@ -50,6 +50,10 @@ Planner::Planner(const std::string & config_path, const std::string & planner_pr
   decision_speed_ = read_planner_value<double>(yaml, fallback, "decision_speed");
   high_speed_delay_time_ = read_planner_value<double>(yaml, fallback, "high_speed_delay_time");
   low_speed_delay_time_ = read_planner_value<double>(yaml, fallback, "low_speed_delay_time");
+  const auto spin_profile = yaml["ordinary_spin_profile"]
+    ? yaml["ordinary_spin_profile"]
+    : fallback["ordinary_spin_profile"];
+  ordinary_spin_profile_ = SpinSpeedProfile::fromYaml(spin_profile);
 
   setup_yaw_solver(config_path);
   setup_pitch_solver(config_path);
@@ -191,6 +195,14 @@ Plan Planner::plan(Target target, double bullet_speed)
   plan.pitch = pitch_solver_->work->x(0, HALF_HORIZON);
   plan.pitch_vel = pitch_solver_->work->x(1, HALF_HORIZON);
   plan.pitch_acc = pitch_solver_->work->u(0, HALF_HORIZON);
+  if (target.name != ArmorName::outpost && !ordinary_spin_profile_.empty()) {
+    const double spin_speed = target.ekf_x()[7];
+    const auto profile = ordinary_spin_profile_.sample(std::abs(spin_speed));
+    plan.ordinary_spin_profile_active = true;
+    plan.target_spin_speed_rad_s = spin_speed;
+    plan.spin_extra_prediction_s = profile.extra_prediction_s;
+    plan.fire_alignment_hold_s = profile.aligned_hold_s;
+  }
 
   if (
     !std::isfinite(plan.yaw) || !std::isfinite(plan.yaw_vel) || !std::isfinite(plan.yaw_acc) ||
@@ -214,8 +226,20 @@ Plan Planner::plan(std::optional<Target> target, double bullet_speed, double fir
 {
   if (!target.has_value() || !std::isfinite(fire_delay_s) || fire_delay_s < 0.0) return {false};
 
-  double delay_time =
-    std::abs(target->ekf_x()[7]) > decision_speed_ ? high_speed_delay_time_ : low_speed_delay_time_;
+  double delay_time;
+  if (target->name == ArmorName::outpost) {
+    // 前哨站保留既有固定模型和高低速延迟处理，不使用普通目标转速表。
+    delay_time = std::abs(target->ekf_x()[7]) > decision_speed_
+      ? high_speed_delay_time_
+      : low_speed_delay_time_;
+  } else if (!ordinary_spin_profile_.empty()) {
+    delay_time = ordinary_spin_profile_.sample(std::abs(target->ekf_x()[7])).extra_prediction_s;
+  } else {
+    // Older external configs without a speed profile retain their two-band delay behavior.
+    delay_time = std::abs(target->ekf_x()[7]) > decision_speed_
+      ? high_speed_delay_time_
+      : low_speed_delay_time_;
+  }
   // 先预测到出膛时刻，再由下层加入弹丸飞行时间；高低速配置仅作为额外补偿。
   delay_time += fire_delay_s;
 

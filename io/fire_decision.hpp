@@ -13,6 +13,7 @@ struct FireDecisionConfig {
   double yaw_tolerance_rad{0.0};
   double pitch_tolerance_rad{0.0};
   int min_aligned_frames{1};
+  double min_aligned_duration_s{0.0};
 };
 
 struct FireDecisionInput {
@@ -40,7 +41,9 @@ struct FireDecision {
 
 inline FireDecision evaluateFireDecision(const FireDecisionConfig& config,
                                          const FireDecisionInput& input,
-                                         int& aligned_frames) {
+                                         int& aligned_frames,
+                                         double elapsed_s = 0.0,
+                                         double* aligned_duration_s = nullptr) {
   FireDecision result;
   const bool angles_finite = std::isfinite(input.aim_yaw_rad) &&
                              std::isfinite(input.aim_pitch_rad) &&
@@ -56,14 +59,31 @@ inline FireDecision evaluateFireDecision(const FireDecisionConfig& config,
   const bool aligned = angles_finite &&
       result.yaw_error_rad <= config.yaw_tolerance_rad &&
       result.pitch_error_rad <= config.pitch_tolerance_rad;
-  const bool fire_preconditions_met = input.mpc_candidate && input.fire_enabled &&
-      input.control_valid && input.target_valid &&
+  const bool fire_preconditions_met = input.fire_enabled && input.control_valid && input.target_valid &&
       (!config.require_tracking || input.tracking) && input.feedback_fresh &&
       input.fire_delay_valid && angles_finite;
-  if (fire_preconditions_met && (!config.enable_alignment_gate || aligned)) {
+  const bool use_duration_gate = config.min_aligned_duration_s > 0.0 && aligned_duration_s;
+  if (use_duration_gate) {
+    if (fire_preconditions_met && (!config.enable_alignment_gate || aligned)) {
+      // MPC candidates can be intermittent at high spin rates. Keep measuring safe alignment
+      // across candidate gaps, but still require a candidate on the actual firing frame below.
+      if (std::isfinite(elapsed_s) && elapsed_s >= 0.0 && elapsed_s <= 0.1) {
+        *aligned_duration_s += elapsed_s;
+        aligned_frames = std::min(aligned_frames + 1, std::max(config.min_aligned_frames, 1));
+      } else {
+        *aligned_duration_s = 0.0;
+        aligned_frames = 0;
+      }
+    } else {
+      *aligned_duration_s = 0.0;
+      aligned_frames = 0;
+    }
+  } else if (input.mpc_candidate && fire_preconditions_met &&
+             (!config.enable_alignment_gate || aligned)) {
     aligned_frames = std::min(aligned_frames + 1, std::max(config.min_aligned_frames, 1));
   } else {
     aligned_frames = 0;
+    if (aligned_duration_s) *aligned_duration_s = 0.0;
   }
   result.aligned_frames = aligned_frames;
 
@@ -85,6 +105,9 @@ inline FireDecision evaluateFireDecision(const FireDecisionConfig& config,
     result.reason = "invalid_angle";
   } else if (config.enable_alignment_gate && !aligned) {
     result.reason = "not_aligned";
+  } else if (config.enable_alignment_gate && use_duration_gate &&
+             *aligned_duration_s + 1e-9 < config.min_aligned_duration_s) {
+    result.reason = "aligning";
   } else if (config.enable_alignment_gate &&
              aligned_frames < std::max(config.min_aligned_frames, 1)) {
     result.reason = "aligning";

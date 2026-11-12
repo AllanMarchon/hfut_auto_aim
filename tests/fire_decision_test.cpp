@@ -81,6 +81,35 @@ int main() {
       !check(result.reason == "feedback_stale", "反馈过期时应报告原因") ||
       !check(result.aligned_frames == 0, "反馈过期时连续对准帧数应清零")) return 1;
 
+  config.enable_alignment_gate = true;
+  config.min_aligned_frames = 1;
+  config.min_aligned_duration_s = 0.03;
+  input.feedback_fresh = true;
+  input.mpc_candidate = false;
+  int duration_frames = 0;
+  double aligned_duration_s = 0.0;
+  result = hfut::io::evaluateFireDecision(
+      config, input, duration_frames, 0.02, &aligned_duration_s);
+  if (!check(!result.allowed, "无 MPC 候选时即使已对齐也不能开火") ||
+      !check(result.aligned_frames == 1, "候选中断时仍可记录持续对齐") ||
+      !check(result.reason == "mpc_no_candidate", "候选中断时应报告无候选")) return 1;
+  result = hfut::io::evaluateFireDecision(
+      config, input, duration_frames, 0.02, &aligned_duration_s);
+  if (!check(!result.allowed, "持续对齐期间没有候选仍不得开火")) return 1;
+  input.mpc_candidate = true;
+  result = hfut::io::evaluateFireDecision(
+      config, input, duration_frames, 0.01, &aligned_duration_s);
+  if (!check(result.allowed, "持续对齐达标且当前帧有候选时应允许开火")) return 1;
+  result = hfut::io::evaluateFireDecision(
+      config, input, duration_frames, 0.2, &aligned_duration_s);
+  if (!check(!result.allowed && result.aligned_frames == 0,
+             "观测间隔过长时不能把间隔直接当作连续对齐时间")) return 1;
+  input.aim_yaw_rad = 1.0;
+  result = hfut::io::evaluateFireDecision(
+      config, input, duration_frames, 0.01, &aligned_duration_s);
+  if (!check(!result.allowed && result.aligned_frames == 0,
+             "角度失配后持续对齐计时必须清零")) return 1;
+
   std::puts("开火门控测试通过");
   return 0;
 }

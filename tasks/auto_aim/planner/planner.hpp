@@ -8,6 +8,7 @@
 
 #include "tasks/auto_aim/target.hpp"
 #include "tasks/auto_aim/armor_avoidance_optimizer.hpp"
+#include "tasks/auto_aim/spin_speed_profile.hpp"
 #include "tinympc/tiny_api.hpp"
 
 namespace auto_aim
@@ -31,6 +32,10 @@ struct Plan
   float pitch_vel;
   float pitch_acc;
   float distance{-1.0F};
+  bool ordinary_spin_profile_active{false};
+  double target_spin_speed_rad_s{0.0};
+  double spin_extra_prediction_s{0.0};
+  double fire_alignment_hold_s{0.0};
 };
 
 class Planner
@@ -50,6 +55,7 @@ private:
   double pitch_offset_;
   double fire_thresh_;
   double low_speed_delay_time_, high_speed_delay_time_, decision_speed_;
+  SpinSpeedProfile ordinary_spin_profile_;
   std::string planner_profile_;
   ArmorAvoidanceConfig armor_avoidance_config_;
   ArmorAvoidanceResult armor_avoidance_result_;

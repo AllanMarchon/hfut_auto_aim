@@ -247,6 +247,7 @@ struct FireGateResult {
   double pitch_error_rad{0.0};
   bool blocked{false};
   int aligned_frames{0};
+  double aligned_duration_s{0.0};
   std::string reason{"not_evaluated"};
 };
 
@@ -1711,6 +1712,9 @@ int run(const Options& options) {
   int processed = 0;
   int buff_pose_missing_frames = 0;
   int fire_aligned_frames = 0;
+  double fire_aligned_duration_s = 0.0;
+  auto fire_gate_last_time = std::chrono::steady_clock::now();
+  bool fire_gate_time_initialized = false;
   struct BuffRotationObservation {
     std::uint64_t generation{0};
     std::size_t update_count{0};
@@ -2097,7 +2101,10 @@ int run(const Options& options) {
       fire_config.require_tracking = active_limiter_config->fire_gate_require_tracking;
       fire_config.yaw_tolerance_rad = active_limiter_config->fire_yaw_tolerance_rad;
       fire_config.pitch_tolerance_rad = active_limiter_config->fire_pitch_tolerance_rad;
-      fire_config.min_aligned_frames = active_limiter_config->fire_gate_min_aligned_frames;
+      fire_config.min_aligned_duration_s = mpc_plan.fire_alignment_hold_s;
+      fire_config.min_aligned_frames = fire_config.min_aligned_duration_s > 0.0
+          ? 1
+          : active_limiter_config->fire_gate_min_aligned_frames;
 
       hfut::io::FireDecisionInput fire_input;
       fire_input.mpc_candidate = fire_advice;
@@ -2111,8 +2118,15 @@ int run(const Options& options) {
       fire_input.aim_pitch_rad = fire_aim_pitch;
       fire_input.feedback_yaw_rad = latest_feedback.yaw_rad;
       fire_input.feedback_pitch_rad = latest_feedback.pitch_rad;
+      const auto fire_gate_now = std::chrono::steady_clock::now();
+      const double fire_gate_elapsed_s = fire_gate_time_initialized
+          ? std::chrono::duration<double>(fire_gate_now - fire_gate_last_time).count()
+          : 0.0;
+      fire_gate_last_time = fire_gate_now;
+      fire_gate_time_initialized = true;
       const auto decision = hfut::io::evaluateFireDecision(
-          fire_config, fire_input, fire_aligned_frames);
+          fire_config, fire_input, fire_aligned_frames, fire_gate_elapsed_s,
+          &fire_aligned_duration_s);
 
       command.yaw_diff = tools::limit_rad(command.yaw - latest_feedback.yaw_rad);
       command.pitch_diff = command.pitch - latest_feedback.pitch_rad;
@@ -2121,9 +2135,12 @@ int run(const Options& options) {
       fire_gate.pitch_error_rad = decision.pitch_error_rad;
       fire_gate.blocked = decision.blocked;
       fire_gate.aligned_frames = decision.aligned_frames;
+      fire_gate.aligned_duration_s = fire_aligned_duration_s;
       fire_gate.reason = decision.reason;
     } else {
       fire_aligned_frames = 0;
+      fire_aligned_duration_s = 0.0;
+      fire_gate_time_initialized = false;
       if (!gate_fire_delay_valid) command.fire_advice = false;
       fire_gate = applyFireGate(
           command, raw_desired_yaw, raw_desired_pitch, *active_limiter_config);
@@ -2173,6 +2190,10 @@ int run(const Options& options) {
     web_status.buff_rotation_speed_rad_s = buff_rotation_speed_rad_s;
     web_status.buff_angle_delta_speed_rad_s = buff_angle_delta_speed_rad_s;
     web_status.buff_motion_fit_cost = buff_motion_fit_cost;
+    web_status.target_spin_speed_rad_s = mpc_plan.target_spin_speed_rad_s;
+    web_status.spin_extra_prediction_ms = mpc_plan.spin_extra_prediction_s * 1000.0;
+    web_status.spin_fire_hold_ms = mpc_plan.fire_alignment_hold_s * 1000.0;
+    web_status.ordinary_spin_profile_active = mpc_plan.ordinary_spin_profile_active;
     web_status.buff_rotation_speed_valid = buff_rotation_speed_valid;
     web_status.buff_angle_delta_speed_valid = buff_angle_delta_speed_valid;
     web_status.buff_motion_fit_valid = buff_motion_fit_valid;
@@ -2197,6 +2218,7 @@ int run(const Options& options) {
     web_status.fire = command.fire_advice;
     web_status.fire_blocked_by_limiter = fire_gate.blocked;
     web_status.fire_aligned_frames = fire_gate.aligned_frames;
+    web_status.fire_aligned_duration_ms = fire_gate.aligned_duration_s * 1000.0;
     web_status.fire_gate_reason = fire_gate.reason;
     web_status.dry_run = options.dry_run;
     web_status.fire_enabled = options.enable_fire;

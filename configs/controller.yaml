@@ -22,11 +22,36 @@ gimbal_pipeline:
         yaw_offset: -6.8
         pitch_offset: -2.0
         fire_thresh: 0.0035
-        #目标旋转速度阈值7rad/s
+        # 兼容旧两档延迟的速度阈值；普通旋转目标优先使用下面的标定表。
         decision_speed: 7.0
-        # 高低速额外补偿，单位秒；会与电控反馈的发弹延迟相加，不要重复填写发弹延迟。
+        # 旧两档额外补偿，单位秒；普通目标配置标定表后使用表内 extra_prediction_s。
+        # 前哨站继续使用此处的高低速补偿，并与电控反馈的发弹延迟相加。
         high_speed_delay_time: 0.00
         low_speed_delay_time: 0.0
+
+        # 普通旋转目标（不含前哨站）的转速标定表，按 |目标角速度| 查表并线性插值。
+        # extra_prediction_s 是额外预测时间；aligned_hold_ms 是反馈角持续对齐时间。
+        # 0ms 预测补偿表示不增加额外时间；0ms 对齐保持表示沿用下方 fire_gate 的 10 帧门槛。
+        # 请用实测结果逐档标定；前哨站继续使用现有固定转速和独立配置。
+        ordinary_spin_profile:
+          - speed_rad_s: 0.0
+            extra_prediction_s: 0.0
+            aligned_hold_ms: 0.0
+          - speed_rad_s: 3.0
+            extra_prediction_s: 0.0
+            aligned_hold_ms: 0.0
+          - speed_rad_s: 6.0
+            extra_prediction_s: 0.0
+            aligned_hold_ms: 0.0
+          - speed_rad_s: 9.0
+            extra_prediction_s: 0.0
+            aligned_hold_ms: 0.0
+          - speed_rad_s: 12.0
+            extra_prediction_s: 0.0
+            aligned_hold_ms: 0.0
+          - speed_rad_s: 15.0
+            extra_prediction_s: 0.0
+            aligned_hold_ms: 0.0
         
         max_yaw_acc: 100.0
         Q_yaw: [9000000.0, 0.0]
@@ -110,6 +135,7 @@ gimbal_pipeline:
         lost_target_hold_s: 0.25  # s；短暂丢目标时继续保持上一帧稳定瞄准角，避免视野被拉走
 
       # 开火门控：yaw/pitch 门限比较当前反馈角与 MPC 预测的命中瞄准角。
+      # 普通旋转目标在标定表 aligned_hold_ms > 0 时改用持续对齐时间；为 0 时使用下方帧数。
       # 不满足时，本帧最终串口开火位立即为 0。
       fire_gate:
         enable: true

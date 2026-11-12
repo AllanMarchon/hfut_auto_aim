@@ -329,6 +329,29 @@ def validate_controller(report: Report, config: Any) -> None:
             require_number(report, mpc_planner.get(key), f"controller.mpc_planner.{key}")
             if is_finite_number(mpc_planner.get(key)) and float(mpc_planner[key]) < 0.0:
                 report.error(f"controller.mpc_planner.{key} 必须大于等于 0")
+        spin_profile = mpc_planner.get("ordinary_spin_profile")
+        if not isinstance(spin_profile, list) or len(spin_profile) < 2:
+            report.error("controller.mpc_planner.ordinary_spin_profile 必须至少有两个标定点")
+        else:
+            previous_speed = -1.0
+            for index, point in enumerate(spin_profile):
+                field = f"controller.mpc_planner.ordinary_spin_profile[{index}]"
+                if not isinstance(point, dict):
+                    report.error(f"{field} 必须是对象")
+                    continue
+                speed = point.get("speed_rad_s")
+                delay = point.get("extra_prediction_s")
+                hold = point.get("aligned_hold_ms")
+                require_number(report, speed, f"{field}.speed_rad_s")
+                require_number(report, delay, f"{field}.extra_prediction_s")
+                require_number(report, hold, f"{field}.aligned_hold_ms")
+                if is_finite_number(speed):
+                    if float(speed) < 0.0 or float(speed) <= previous_speed:
+                        report.error(f"{field}.speed_rad_s 必须非负且严格递增")
+                    previous_speed = float(speed)
+                for key, value in (("extra_prediction_s", delay), ("aligned_hold_ms", hold)):
+                    if is_finite_number(value) and float(value) < 0.0:
+                        report.error(f"{field}.{key} 必须大于等于 0")
         require_number(report, mpc_planner.get("max_yaw_acc"), "controller.mpc_planner.max_yaw_acc", positive=True)
         require_number(report, mpc_planner.get("max_pitch_acc"), "controller.mpc_planner.max_pitch_acc", positive=True)
         require_vector(report, mpc_planner.get("Q_yaw"), "controller.mpc_planner.Q_yaw", 2)

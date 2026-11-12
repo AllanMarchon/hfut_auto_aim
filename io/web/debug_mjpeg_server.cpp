@@ -75,6 +75,11 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"buff_rotation_speed_rad_s\":" << finiteOrZero(status.buff_rotation_speed_rad_s)
       << ",\"buff_angle_delta_speed_rad_s\":" << finiteOrZero(status.buff_angle_delta_speed_rad_s)
       << ",\"buff_motion_fit_cost\":" << finiteOrZero(status.buff_motion_fit_cost)
+      << ",\"target_spin_speed_rad_s\":" << finiteOrZero(status.target_spin_speed_rad_s)
+      << ",\"spin_extra_prediction_ms\":" << finiteOrZero(status.spin_extra_prediction_ms)
+      << ",\"spin_fire_hold_ms\":" << finiteOrZero(status.spin_fire_hold_ms)
+      << ",\"ordinary_spin_profile_active\":"
+      << (status.ordinary_spin_profile_active ? "true" : "false")
       << ",\"buff_rotation_speed_valid\":" << (status.buff_rotation_speed_valid ? "true" : "false")
       << ",\"buff_angle_delta_speed_valid\":" << (status.buff_angle_delta_speed_valid ? "true" : "false")
       << ",\"buff_motion_fit_valid\":" << (status.buff_motion_fit_valid ? "true" : "false")
@@ -100,6 +105,7 @@ std::string statusJson(const DebugMjpegStatus& status) {
       << ",\"fire\":" << (status.fire ? "true" : "false")
       << ",\"fire_blocked_by_limiter\":" << (status.fire_blocked_by_limiter ? "true" : "false")
       << ",\"fire_aligned_frames\":" << status.fire_aligned_frames
+      << ",\"fire_aligned_duration_ms\":" << finiteOrZero(status.fire_aligned_duration_ms)
       << ",\"fire_gate_reason\":\"" << escapeJson(status.fire_gate_reason) << "\""
       << ",\"dry_run\":" << (status.dry_run ? "true" : "false")
       << ",\"fire_enabled\":" << (status.fire_enabled ? "true" : "false")
@@ -624,12 +630,16 @@ const TELEMETRY = [
   ['fire blocked', 'fire_blocked_by_limiter', null, ''],
   ['fire gate reason', 'fire_gate_reason', null, ''],
   ['fire aligned frames', 'fire_aligned_frames', 0, ''],
+  ['fire aligned duration', 'fire_aligned_duration_ms', 1, ' ms'],
   ['cmd yaw vel', 'command_yaw_vel_deg_s', 1, ' deg/s'],
   ['cmd pitch vel', 'command_pitch_vel_deg_s', 1, ' deg/s'],
   ['cmd yaw acc', 'command_yaw_acc_deg_s2', 1, ' deg/s^2'],
   ['cmd pitch acc', 'command_pitch_acc_deg_s2', 1, ' deg/s^2'],
   ['大符模型角速度', 'buff_rotation_speed_rad_s', 2, ' rad/s', 'buff_rotation_speed_valid'],
   ['角度差分速度', 'buff_angle_delta_speed_rad_s', 2, ' rad/s', 'buff_angle_delta_speed_valid'],
+  ['普通目标转速', 'target_spin_speed_rad_s', 2, ' rad/s', 'ordinary_spin_profile_active'],
+  ['档位预测补偿', 'spin_extra_prediction_ms', 1, ' ms', 'ordinary_spin_profile_active'],
+  ['档位开火保持', 'spin_fire_hold_ms', 1, ' ms', 'ordinary_spin_profile_active'],
   ['运动拟合有效', 'buff_motion_fit_valid', null, ''],
   ['正弦拟合有效', 'buff_sine_fit_valid', null, ''],
   ['拟合代价', 'buff_motion_fit_cost', 4, ' rad^2', 'buff_motion_fit_valid'],
@@ -945,7 +955,8 @@ function updateCards(status) {
   document.getElementById('meta-fire').textContent =
       `mpc=${status.fire_advice ? 1 : 0} serial=${status.fire ? 1 : 0} ` +
       `aim_err=${fmt(finite(status.limiter_yaw_error_deg), 2)}/${fmt(finite(status.limiter_pitch_error_deg), 2)}° ` +
-      `aligned=${status.fire_aligned_frames ?? 0} reason=${status.fire_gate_reason ?? 'unknown'}`;
+      `aligned=${status.fire_aligned_frames ?? 0} frames/${fmt(finite(status.fire_aligned_duration_ms), 0, 'ms')} ` +
+      `reason=${status.fire_gate_reason ?? 'unknown'}`;
 
   const pill = document.getElementById('track-pill');
   if (status.fire) {
