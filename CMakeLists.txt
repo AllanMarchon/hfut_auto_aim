@@ -81,6 +81,7 @@ add_library(auto_aim STATIC
   tasks/auto_aim/armor.cpp
   tasks/auto_aim/classifier.cpp
   tasks/auto_aim/detector.cpp
+  tasks/auto_aim/planner/high_spin_guard.cpp
   tasks/auto_aim/planner/planner.cpp
   tasks/auto_aim/shooter.cpp
   tasks/auto_aim/solver.cpp

@@ -54,6 +54,44 @@ Planner::Planner(const std::string & config_path, const std::string & planner_pr
     ? yaml["ordinary_spin_profile"]
     : fallback["ordinary_spin_profile"];
   ordinary_spin_profile_ = SpinSpeedProfile::fromYaml(spin_profile);
+  
+    const auto guard = yaml["high_spin_guard"]
+    ? yaml["high_spin_guard"]
+    : fallback["high_spin_guard"];
+
+  // 没有该配置时默认关闭，兼容旧 controller.yaml。
+  if (guard) {
+    high_spin_guard_config_.enable =
+      guard["enable"]
+        ? guard["enable"].as<bool>()
+        : false;
+
+    high_spin_guard_config_.enter_speed_rad_s =
+      guard["enter_speed_rad_s"]
+        ? guard["enter_speed_rad_s"].as<double>()
+        : 10.0;
+
+    high_spin_guard_config_.exit_speed_rad_s =
+      guard["exit_speed_rad_s"]
+        ? guard["exit_speed_rad_s"].as<double>()
+        : 8.0;
+
+    high_spin_guard_config_.phase_tolerance_rad =
+      guard["phase_tolerance_rad"]
+        ? guard["phase_tolerance_rad"].as<double>()
+        : 0.12;
+
+    high_spin_guard_config_.aligned_hold_s =
+      guard["aligned_hold_ms"]
+        ? guard["aligned_hold_ms"].as<double>() / 1000.0
+        : 0.02;
+  } else {
+    high_spin_guard_config_.enable = false;
+  }
+
+  // configure() 内部会完整检查参数，然后重置策略状态。
+  high_spin_guard_.configure(
+    high_spin_guard_config_);
 
   setup_yaw_solver(config_path);
   setup_pitch_solver(config_path);
@@ -124,29 +162,85 @@ Plan Planner::plan(Target target, double bullet_speed)
     bullet_speed = 23;
   }
 
+    bool guard_active = false;
+
+  if (target.name == ArmorName::outpost) {
+    // 前哨站继续使用原有独立策略。
+    high_spin_guard_.reset();
+  } else {
+    guard_active = high_spin_guard_.update(target);
+  }
+
   // 1. Predict fly_time
   Eigen::Vector3d xyz;
-  auto min_dist = 1e10;
+  double min_dist = 1e10;
   double selected_yaw = 0.0;
-  const auto armor_xyza_list = target.armor_xyza_list();
-  if (armor_xyza_list.empty()) return {false};
-  for (auto & xyza : armor_xyza_list) {
-    auto dist = xyza.head<2>().norm();
-    if (dist < min_dist) {
-      min_dist = dist;
-      xyz = xyza.head<3>();
-      selected_yaw = xyza[3];
+
+  if (guard_active) {
+    // 高速模式瞄准旋转中心前方固定守点。
+    const Eigen::Vector4d guard_point =
+      high_spin_guard_.aimPoint(target);
+
+    xyz = guard_point.head<3>();
+    selected_yaw = guard_point[3];
+    min_dist = xyz.head<2>().norm();
+  } else {
+    // 低速模式完整保留原来的最近装甲板选择。
+    const auto armor_xyza_list =
+      target.armor_xyza_list();
+
+    if (armor_xyza_list.empty()) {
+      return {false};
+    }
+
+    for (const auto & xyza : armor_xyza_list) {
+      const double dist = xyza.head<2>().norm();
+
+      if (dist < min_dist) {
+        min_dist = dist;
+        xyz = xyza.head<3>();
+        selected_yaw = xyza[3];
+      }
     }
   }
+
   if (armor_avoidance_config_.enabled) {
-    if (!armor_avoidance_result_.valid) return {false};
+    if (!armor_avoidance_result_.valid) {
+      return {false};
+    }
+
     applyArmorAvoidanceOffset(
-      armor_avoidance_result_, selected_yaw, xyz.x(), xyz.y(), xyz.z());
+      armor_avoidance_result_,
+      selected_yaw,
+      xyz.x(),
+      xyz.y(),
+      xyz.z());
+
     min_dist = xyz.head<2>().norm();
   }
-  auto bullet_traj = tools::Trajectory(bullet_speed, min_dist, xyz.z());
-  if (bullet_traj.unsolvable) return {false};
+
+  auto bullet_traj =
+    tools::Trajectory(
+      bullet_speed,
+      min_dist,
+      xyz.z());
+
+  if (bullet_traj.unsolvable) {
+    return {false};
+  }
+
+  // 外层 plan(optional...) 已经预测了发弹延迟；
+  // 这里继续预测弹丸飞行时间，得到预计命中时刻的目标状态。
   target.predict(bullet_traj.fly_time);
+
+  const double high_spin_phase_error =
+    guard_active
+      ? high_spin_guard_.phaseError(target)
+      : 0.0;
+
+  const bool high_spin_phase_ready =
+    !guard_active ||
+    high_spin_guard_.phaseReady(target);
 
   // 2. Get trajectory
   double yaw0;
@@ -182,7 +276,7 @@ Plan Planner::plan(Target target, double bullet_speed)
     }
   }
 
-  Plan plan;
+  Plan plan{};
   plan.control = true;
 
   plan.target_yaw = tools::limit_rad(traj(0, HALF_HORIZON) + yaw0);
@@ -204,6 +298,15 @@ Plan Planner::plan(Target target, double bullet_speed)
     plan.fire_alignment_hold_s = profile.aligned_hold_s;
   }
 
+  plan.high_spin_guard_active = guard_active;
+  plan.high_spin_phase_error_rad =
+    high_spin_phase_error;
+
+  if (guard_active) {
+    // 高速模式使用自己的云台稳定保持时间。
+    plan.fire_alignment_hold_s =
+      high_spin_guard_config_.aligned_hold_s;
+  }
   if (
     !std::isfinite(plan.yaw) || !std::isfinite(plan.yaw_vel) || !std::isfinite(plan.yaw_acc) ||
     !std::isfinite(plan.pitch) || !std::isfinite(plan.pitch_vel) ||
@@ -213,12 +316,23 @@ Plan Planner::plan(Target target, double bullet_speed)
   }
 
   // 发弹延迟已计入参考轨迹；这里保留原有两步控制误差前视，不再重复加发弹延迟。
-  auto shoot_offset_ = 2;
-  plan.fire =
+    constexpr int shoot_offset = 2;
+
+  const bool mpc_ready =
     std::hypot(
-      traj(0, HALF_HORIZON + shoot_offset_) - yaw_solver_->work->x(0, HALF_HORIZON + shoot_offset_),
-      traj(2, HALF_HORIZON + shoot_offset_) -
-        pitch_solver_->work->x(0, HALF_HORIZON + shoot_offset_)) < fire_thresh_;
+      traj(0, HALF_HORIZON + shoot_offset) -
+        yaw_solver_->work->x(
+          0, HALF_HORIZON + shoot_offset),
+      traj(2, HALF_HORIZON + shoot_offset) -
+        pitch_solver_->work->x(
+          0, HALF_HORIZON + shoot_offset)) <
+    fire_thresh_;
+
+  // 低速时 high_spin_phase_ready 恒为 true，因此行为与原来一致。
+  // 高速时必须同时满足 MPC 就绪和预计命中相位就绪。
+  plan.fire =
+    mpc_ready &&
+    high_spin_phase_ready;
   return plan;
 }
 
@@ -294,55 +408,138 @@ void Planner::setup_pitch_solver(const std::string & config_path)
     throw std::runtime_error("Invalid pitch MPC weight dimensions");
   }
 
-  Eigen::MatrixXd A{{1, DT}, {0, 1}};
+    Eigen::MatrixXd A{{1, DT}, {0, 1}};
   Eigen::MatrixXd B{{0}, {DT}};
   Eigen::VectorXd f{{0, 0}};
   Eigen::Matrix<double, 2, 1> Q(Q_pitch.data());
   Eigen::Matrix<double, 1, 1> R(R_pitch.data());
-  if (tiny_setup(&pitch_solver_, A, B, f, Q.asDiagonal(), R.asDiagonal(), 1.0, 2, 1, HORIZON, 0) != 0) {
-    throw std::runtime_error("Failed to setup pitch MPC solver");
+
+  if (
+    tiny_setup(
+      &pitch_solver_,
+      A,
+      B,
+      f,
+      Q.asDiagonal(),
+      R.asDiagonal(),
+      1.0,
+      2,
+      1,
+      HORIZON,
+      0) != 0) {
+    throw std::runtime_error(
+      "Failed to setup pitch solver");
   }
 
-  Eigen::MatrixXd x_min = Eigen::MatrixXd::Constant(2, HORIZON, -1e17);
-  Eigen::MatrixXd x_max = Eigen::MatrixXd::Constant(2, HORIZON, 1e17);
-  Eigen::MatrixXd u_min = Eigen::MatrixXd::Constant(1, HORIZON - 1, -max_pitch_acc);
-  Eigen::MatrixXd u_max = Eigen::MatrixXd::Constant(1, HORIZON - 1, max_pitch_acc);
-  if (tiny_set_bound_constraints(pitch_solver_, x_min, x_max, u_min, u_max) != 0) {
-    throw std::runtime_error("Failed to setup pitch MPC bounds");
+  Eigen::MatrixXd x_min =
+    Eigen::MatrixXd::Constant(
+      2, HORIZON, -1e17);
+
+  Eigen::MatrixXd x_max =
+    Eigen::MatrixXd::Constant(
+      2, HORIZON, 1e17);
+
+  Eigen::MatrixXd u_min =
+    Eigen::MatrixXd::Constant(
+      1, HORIZON - 1, -max_pitch_acc);
+
+  Eigen::MatrixXd u_max =
+    Eigen::MatrixXd::Constant(
+      1, HORIZON - 1, max_pitch_acc);
+
+  if (
+    tiny_set_bound_constraints(
+      pitch_solver_,
+      x_min,
+      x_max,
+      u_min,
+      u_max) != 0) {
+    throw std::runtime_error(
+      "Failed to setup pitch MPC bounds");
   }
 
   pitch_solver_->settings->max_iter = 10;
 }
-
-Eigen::Matrix<double, 2, 1> Planner::aim(const Target & target, double bullet_speed)
+Eigen::Matrix<double, 2, 1> Planner::aim(
+  const Target & target,
+  double bullet_speed)
 {
   Eigen::Vector3d xyz;
-  double yaw;
-  auto min_dist = 1e10;
+  double yaw = 0.0;
+  double min_dist = 1e10;
 
-  const auto armor_xyza_list = target.armor_xyza_list();
-  if (armor_xyza_list.empty()) throw std::runtime_error("Empty armor list!");
-  for (auto & xyza : armor_xyza_list) {
-    auto dist = xyza.head<2>().norm();
-    if (dist < min_dist) {
-      min_dist = dist;
-      xyz = xyza.head<3>();
-      yaw = xyza[3];
+  if (high_spin_guard_.active()) {
+    // 高速模式下，目标转动不会再改变瞄准点；
+    // 瞄准点只跟随旋转中心的平移。
+    const Eigen::Vector4d guard_point =
+      high_spin_guard_.aimPoint(target);
+
+    xyz = guard_point.head<3>();
+    yaw = guard_point[3];
+    min_dist = xyz.head<2>().norm();
+  } else {
+    // 低速模式完整保留原有最近装甲板选择。
+    const auto armor_xyza_list =
+      target.armor_xyza_list();
+
+    if (armor_xyza_list.empty()) {
+      throw std::runtime_error(
+        "Empty armor list!");
+    }
+
+    for (const auto & xyza : armor_xyza_list) {
+      const double dist =
+        xyza.head<2>().norm();
+
+      if (dist < min_dist) {
+        min_dist = dist;
+        xyz = xyza.head<3>();
+        yaw = xyza[3];
+      }
     }
   }
+
   if (armor_avoidance_config_.enabled) {
-    if (!armor_avoidance_result_.valid) throw std::runtime_error("装甲板没有可用的避区瞄准点");
+    if (!armor_avoidance_result_.valid) {
+      throw std::runtime_error(
+        "装甲板没有可用的避区瞄准点");
+    }
+
     applyArmorAvoidanceOffset(
-      armor_avoidance_result_, yaw, xyz.x(), xyz.y(), xyz.z());
+      armor_avoidance_result_,
+      yaw,
+      xyz.x(),
+      xyz.y(),
+      xyz.z());
+
     min_dist = xyz.head<2>().norm();
   }
-  debug_xyza = Eigen::Vector4d(xyz.x(), xyz.y(), xyz.z(), yaw);
 
-  auto azim = std::atan2(xyz.y(), xyz.x());
-  auto bullet_traj = tools::Trajectory(bullet_speed, min_dist, xyz.z());
-  if (bullet_traj.unsolvable) throw std::runtime_error("Unsolvable bullet trajectory!");
+  debug_xyza = Eigen::Vector4d(
+    xyz.x(),
+    xyz.y(),
+    xyz.z(),
+    yaw);
 
-  return {tools::limit_rad(azim + yaw_offset_), -bullet_traj.pitch - pitch_offset_};
+  const double azim =
+    std::atan2(xyz.y(), xyz.x());
+
+  auto bullet_traj =
+    tools::Trajectory(
+      bullet_speed,
+      min_dist,
+      xyz.z());
+
+  if (bullet_traj.unsolvable) {
+    throw std::runtime_error(
+      "Unsolvable bullet trajectory!");
+  }
+
+  return {
+    tools::limit_rad(
+      azim + yaw_offset_),
+    -bullet_traj.pitch - pitch_offset_
+  };
 }
 
 Trajectory Planner::get_trajectory(Target & target, double yaw0, double bullet_speed)

@@ -52,7 +52,16 @@ gimbal_pipeline:
           - speed_rad_s: 15.0
             extra_prediction_s: 0.0
             aligned_hold_ms: 0.0
-        
+        # 高速小陀螺守点模式。
+        # 低速保持原有 EKF 预测和 MPC 追踪；超过进入阈值后改为瞄准旋转中心前方守点。
+        # 只有预计弹丸命中时装甲板进入相位窗口，才产生开火候选。
+        high_spin_guard:
+          enable: true
+          enter_speed_rad_s: 10.0
+          exit_speed_rad_s: 8.0
+          phase_tolerance_rad: 0.12
+          aligned_hold_ms: 20.0
+    
         max_yaw_acc: 100.0
         Q_yaw: [9000000.0, 0.0]
         R_yaw: [1.0]
